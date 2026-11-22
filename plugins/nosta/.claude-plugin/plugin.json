@@ -1,0 +1,16 @@
+{
+  "name": "nosta",
+  "version": "0.2.0",
+  "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
+  "author": {
+    "name": "hanhylee"
+  },
+  "mcpServers": {
+    "nosta": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/dist/server.mjs"
+      ]
+    }
+  }
+}

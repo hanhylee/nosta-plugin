@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "name": "nosta",
+  "displayName": "Nosta",
+  "version": "0.2.0",
+  "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
+  "compat": {
+    "manifestDir": ".muse-plugin"
+  },
+  "capabilities": {
+    "skills": [
+      {
+        "id": "running-nosta-flows",
+        "path": "skills/running-nosta-flows/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "speccing-a-ticket",
+        "path": "skills/speccing-a-ticket/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "building-a-node",
+        "path": "skills/building-a-node/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "closing-a-node",
+        "path": "skills/closing-a-node/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "shipping-a-flow",
+        "path": "skills/shipping-a-flow/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "reviewing-code-quality",
+        "path": "skills/reviewing-code-quality/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "writing-pr-descriptions",
+        "path": "skills/writing-pr-descriptions/SKILL.md",
+        "enabledDefault": true
+      },
+      {
+        "id": "landing-the-pr",
+        "path": "skills/landing-the-pr/SKILL.md",
+        "enabledDefault": true
+      }
+    ],
+    "hooks": [
+      {
+        "id": "approve-guard",
+        "event": "PreToolUse",
+        "command": [
+          "bash",
+          "hooks/muse-approve-guard.sh"
+        ]
+      }
+    ],
+    "mcpServers": [
+      {
+        "id": "nosta",
+        "transport": "stdio",
+        "command": [
+          "node",
+          "dist/server.mjs"
+        ]
+      }
+    ]
+  }
+}

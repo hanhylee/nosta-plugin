@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "nosta-plugin",
+  "description": "Official Nosta plugin marketplace for Claude Code and Muse.",
+  "owner": {
+    "name": "hanhylee"
+  },
+  "plugins": [
+    {
+      "name": "nosta",
+      "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
+      "version": "0.2.0",
+      "author": {
+        "name": "hanhylee"
+      },
+      "source": "./plugins/nosta",
+      "homepage": "https://nosta.dev"
+    }
+  ]
+}
