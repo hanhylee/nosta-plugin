@@ -1,141 +1,12 @@
 #!/usr/bin/env node
 
-// src/plugin/server.ts
+// src/server.ts
 import { createInterface } from "node:readline";
 
-// src/shared/security.ts
-function isLoopbackHost(hostname) {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
-  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
-}
-
-// src/plugin/backend.ts
-function backendFromEnv(env = process.env) {
-  const url = (env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086").replace(/\/$/, "");
-  const token = env.NOSTA_PLUGIN_TOKEN ?? "";
-  const parsed = new URL(url);
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  return {
-    baseUrl: url,
-    token,
-    streamUrl(path) {
-      return `${url}${path}`;
-    },
-    async request(path, init = {}) {
-      const headers = new Headers(init.headers);
-      headers.set("authorization", `Bearer ${token}`);
-      const response = await fetch(`${url}${path}`, {
-        ...init,
-        headers,
-        signal: AbortSignal.timeout(30000)
-      });
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(`backend answered ${response.status}: ${text.slice(0, 300)}`);
-      }
-      return text;
-    }
-  };
-}
-
-// src/plugin/flow.ts
-import { createHash, randomUUID as randomUUID2 } from "node:crypto";
-import { readFile as readFile3, stat as stat2 } from "node:fs/promises";
-
-// src/shared/packet.ts
-var MAX_FILES = 32;
-var MAX_PACKET_BYTES = 256 * 1024;
-var MAX_SERIALIZED_BYTES = 384 * 1024;
-var MAX_NAME_CHARS = 200;
-var MAX_TITLE_CHARS = 200;
-var encoder = new TextEncoder;
-function byteLength(text) {
-  return encoder.encode(text).length;
-}
-function isValidFileName(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
-}
-function failure(error) {
-  return { ok: false, error };
-}
-function readTitle(input) {
-  if (input.title === undefined)
-    return "review";
-  if (typeof input.title !== "string")
-    return null;
-  const title = input.title.trim();
-  if (!title || title.length > MAX_TITLE_CHARS)
-    return null;
-  return title;
-}
-function readFiles(input) {
-  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
-    return `files must list 1..${MAX_FILES} entries`;
-  }
-  const files = [];
-  const seen = new Set;
-  for (const entry of input.files) {
-    if (!entry || typeof entry !== "object")
-      return "invalid file entry";
-    const file = entry;
-    if (!isValidFileName(file.name)) {
-      return `invalid file name: ${String(file.name)}`;
-    }
-    if (typeof file.content !== "string") {
-      return `invalid file content: ${file.name}`;
-    }
-    if (seen.has(file.name))
-      return `duplicate file name: ${file.name}`;
-    seen.add(file.name);
-    files.push({ name: file.name, content: file.content });
-  }
-  return files;
-}
-function serializedByteLength(value) {
-  return byteLength(JSON.stringify(value) ?? "");
-}
-function validatePacket(input) {
-  if (!input || typeof input !== "object")
-    return failure("packet must be an object");
-  const record = input;
-  const title = readTitle(record);
-  if (title === null)
-    return failure("title must be 1..200 characters");
-  const files = readFiles(record);
-  if (typeof files === "string")
-    return failure(files);
-  let totalBytes = 0;
-  for (const file of files) {
-    totalBytes += byteLength(file.content);
-  }
-  if (totalBytes > MAX_PACKET_BYTES)
-    return failure("packet exceeds 256 KiB");
-  const serializedBytes = serializedByteLength({ title, files });
-  if (serializedBytes > MAX_SERIALIZED_BYTES) {
-    return failure("packet exceeds 384 KiB after JSON encoding");
-  }
-  return { ok: true, packet: { title, files, totalBytes } };
-}
-
-// src/plugin/api/generated/nosta.ts
-var getApproveFlowUrl = (flowId) => {
-  return `/api/flow/${flowId}/approval`;
-};
-
-// src/plugin/gate/index.ts
-import { execFile } from "node:child_process";
+// src/transport.ts
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/util.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
   const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
@@ -690,7 +561,7 @@ function constantCatch(value) {
   return fn;
 }
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/core.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -808,7 +679,7 @@ function config(newConfig) {
     Object.assign(globalConfig, newConfig);
   return globalConfig;
 }
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/errors.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -923,7 +794,7 @@ function formatError(error, mapper = (issue) => issue.message) {
   return fieldErrors;
 }
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/parse.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -964,9 +835,9 @@ var _safeParse = (_Err) => (schema, value, _ctx) => {
   if (result instanceof Promise) {
     throw new $ZodAsyncError;
   }
-  return result.issues.length ? failure2(_Err, result.issues, ctx) : { success: true, data: result.value };
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
-function failure2(Err, issues, ctx) {
+function failure(Err, issues, ctx) {
   let error;
   return {
     success: false,
@@ -990,7 +861,7 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
   let result = schema._zod.run({ value, issues: [] }, ctx);
   if (result instanceof Promise)
     result = await result;
-  return result.issues.length ? failure2(_Err, result.issues, ctx) : { success: true, data: result.value };
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
 var COMPILE_INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
 var COMPILE_FALLBACK = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
@@ -1070,7 +941,7 @@ var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
 var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/regexes.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -1129,7 +1000,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/checks.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -1445,7 +1316,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/doc.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/doc.js
 class Doc {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -1487,14 +1358,14 @@ ${content.join(`
   }
 }
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/versions.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 6,
   patch: 7
 };
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/schemas.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -3147,7 +3018,7 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/memoizer.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/memoizer.js
 class $ZodCyclicError extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -3416,7 +3287,7 @@ function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
   return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/locales/en.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -3538,7 +3409,7 @@ function en_default() {
     localeError: error()
   };
 }
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/registries.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/registries.js
 var _a2;
 class $ZodRegistry {
   constructor() {
@@ -3585,7 +3456,7 @@ function registry() {
 }
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/api.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -4039,7 +3910,7 @@ function _check(fn, params) {
   ch._zod.check = fn;
   return ch;
 }
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/to-json-schema.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -4562,7 +4433,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/core/json-schema-processors.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === undefined || value > agg[key])
     agg[key] = value;
@@ -4740,6 +4611,12 @@ var numberProcessor = (schema, ctx, _json, params) => {
 var booleanProcessor = (_schema, _ctx, json, _params) => {
   json.type = "boolean";
 };
+var bigintProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "BigInt cannot be represented in JSON Schema");
+};
+var symbolProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Symbols cannot be represented in JSON Schema");
+};
 var nullProcessor = (_schema, ctx, json, _params) => {
   if (ctx.target === "openapi-3.0") {
     json.type = "string";
@@ -4749,10 +4626,20 @@ var nullProcessor = (_schema, ctx, json, _params) => {
     json.type = "null";
   }
 };
+var undefinedProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Undefined cannot be represented in JSON Schema");
+};
+var voidProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Void cannot be represented in JSON Schema");
+};
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
 };
+var anyProcessor = (_schema, _ctx, _json, _params) => {};
 var unknownProcessor = (_schema, _ctx, _json, _params) => {};
+var dateProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Date cannot be represented in JSON Schema");
+};
 var enumProcessor = (schema, _ctx, json, _params) => {
   const def = schema._zod.def;
   const values = getEnumValues(def.entries);
@@ -4805,11 +4692,53 @@ var literalProcessor = (schema, ctx, json, params) => {
     json.enum = vals;
   }
 };
+var nanProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "NaN cannot be represented in JSON Schema");
+};
+var templateLiteralProcessor = (schema, _ctx, json, _params) => {
+  const _json = json;
+  const pattern = schema._zod.pattern;
+  if (!pattern)
+    throw new Error("Pattern not found in template literal");
+  _json.type = "string";
+  _json.pattern = pattern.source;
+};
+var fileProcessor = (schema, _ctx, json, _params) => {
+  const _json = json;
+  _json.type = "string";
+  _json.format = "binary";
+  _json.contentEncoding = "binary";
+  const { minimum, maximum, mime } = aggregateChecks(schema);
+  if (minimum !== undefined)
+    _json.minLength = minimum;
+  if (maximum !== undefined)
+    _json.maxLength = maximum;
+  if (!mime)
+    return;
+  if (mime.length === 0)
+    _json.not = {};
+  else if (mime.length === 1)
+    _json.contentMediaType = mime[0];
+  else
+    _json.anyOf = mime.map((m) => ({ contentMediaType: m }));
+};
+var successProcessor = (_schema, _ctx, json, _params) => {
+  json.type = "boolean";
+};
 var customProcessor = (schema, ctx, json, params) => {
   handleUnrepresentable(schema, ctx, json, params, "Custom types cannot be represented in JSON Schema");
 };
+var functionProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Function types cannot be represented in JSON Schema");
+};
 var transformProcessor = (schema, ctx, json, params) => {
   handleUnrepresentable(schema, ctx, json, params, "Transforms cannot be represented in JSON Schema");
+};
+var mapProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Map cannot be represented in JSON Schema");
+};
+var setProcessor = (schema, ctx, json, params) => {
+  handleUnrepresentable(schema, ctx, json, params, "Set cannot be represented in JSON Schema");
 };
 var arrayProcessor = (schema, ctx, _json, params) => {
   const json = _json;
@@ -4903,6 +4832,70 @@ var intersectionProcessor = (schema, ctx, json, params) => {
   ];
   json.allOf = allOf;
   ctx.intersections.push(allOf);
+};
+var tupleProcessor = (schema, ctx, _json, params) => {
+  const json = _json;
+  const def = schema._zod.def;
+  json.type = "array";
+  const prefixPath = ctx.target === "draft-2020-12" ? "prefixItems" : "items";
+  const restPath = ctx.target === "draft-2020-12" ? "items" : ctx.target === "openapi-3.0" ? "items" : "additionalItems";
+  const prefixItems = def.items.map((x, i) => processSchema(x, ctx, {
+    ...params,
+    path: [...params.path, prefixPath, i]
+  }));
+  const rest = def.rest ? processSchema(def.rest, ctx, {
+    ...params,
+    path: [...params.path, restPath, ...ctx.target === "openapi-3.0" ? [def.items.length] : []]
+  }) : null;
+  let minItems = def.items.length;
+  while (minItems > 0) {
+    const item = def.items[minItems - 1];
+    const optional = ctx.io === "input" ? inputOptin(item) !== undefined : item._zod.optout === "optional";
+    if (!optional)
+      break;
+    minItems--;
+  }
+  const maxItems = def.items.length;
+  const isClosed = !def.rest;
+  if (ctx.target === "draft-2020-12") {
+    json.prefixItems = prefixItems;
+    if (isClosed) {
+      json.items = false;
+    } else if (rest) {
+      json.items = rest;
+    }
+    if (minItems > 0)
+      json.minItems = minItems;
+    if (isClosed)
+      json.maxItems = maxItems;
+  } else if (ctx.target === "openapi-3.0") {
+    json.items = {
+      anyOf: prefixItems
+    };
+    if (rest) {
+      json.items.anyOf.push(rest);
+    }
+    if (minItems > 0)
+      json.minItems = minItems;
+    if (isClosed)
+      json.maxItems = maxItems;
+  } else {
+    json.items = prefixItems;
+    if (isClosed) {
+      json.additionalItems = false;
+    } else if (rest) {
+      json.additionalItems = rest;
+    }
+    if (minItems > 0)
+      json.minItems = minItems;
+    if (isClosed)
+      json.maxItems = maxItems;
+  }
+  const { minimum, maximum } = aggregateChecks(schema);
+  if (typeof minimum === "number")
+    json.minItems = minimum;
+  if (typeof maximum === "number")
+    json.maxItems = maximum;
 };
 function stringifyKeyNames(bySchema, json, visited) {
   if (json.$ref) {
@@ -5090,13 +5083,100 @@ var readonlyProcessor = (schema, ctx, json, params) => {
   seen.ref = def.innerType;
   json.readOnly = true;
 };
+var promiseProcessor = (schema, ctx, _json, params) => {
+  const def = schema._zod.def;
+  processSchema(def.innerType, ctx, params);
+  const seen = ctx.seen.get(schema);
+  seen.ref = def.innerType;
+};
 var optionalProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/classic/errors.js
+var lazyProcessor = (schema, ctx, _json, params) => {
+  const innerType = schema._zod.innerType;
+  processSchema(innerType, ctx, params);
+  const seen = ctx.seen.get(schema);
+  seen.ref = innerType;
+};
+var allProcessors = {
+  string: stringProcessor,
+  number: numberProcessor,
+  boolean: booleanProcessor,
+  bigint: bigintProcessor,
+  symbol: symbolProcessor,
+  null: nullProcessor,
+  undefined: undefinedProcessor,
+  void: voidProcessor,
+  never: neverProcessor,
+  any: anyProcessor,
+  unknown: unknownProcessor,
+  date: dateProcessor,
+  enum: enumProcessor,
+  literal: literalProcessor,
+  nan: nanProcessor,
+  template_literal: templateLiteralProcessor,
+  file: fileProcessor,
+  success: successProcessor,
+  custom: customProcessor,
+  function: functionProcessor,
+  transform: transformProcessor,
+  map: mapProcessor,
+  set: setProcessor,
+  array: arrayProcessor,
+  object: objectProcessor,
+  union: unionProcessor,
+  intersection: intersectionProcessor,
+  tuple: tupleProcessor,
+  record: recordProcessor,
+  nullable: nullableProcessor,
+  nonoptional: nonoptionalProcessor,
+  default: defaultProcessor,
+  prefault: prefaultProcessor,
+  catch: catchProcessor,
+  pipe: pipeProcessor,
+  readonly: readonlyProcessor,
+  promise: promiseProcessor,
+  optional: optionalProcessor,
+  lazy: lazyProcessor
+};
+function toJSONSchema(input, params) {
+  if ("_idmap" in input) {
+    const registry = input;
+    const ctx = initializeContext({ ...params, processors: allProcessors });
+    const defs = {};
+    for (const entry of registry._idmap.entries()) {
+      const [_, schema] = entry;
+      processSchema(schema, ctx);
+    }
+    const schemas = {};
+    const external = {
+      registry,
+      uri: params?.uri,
+      defs
+    };
+    ctx.external = external;
+    for (const entry of registry._idmap.entries()) {
+      const [key, schema] = entry;
+      extractDefs(ctx, schema);
+      assignProp(schemas, key, finalize(ctx, schema));
+    }
+    if (Object.keys(defs).length > 0) {
+      const defsSegment = ctx.target === "draft-2020-12" ? "$defs" : "definitions";
+      schemas.__shared = {
+        [defsSegment]: defs
+      };
+    }
+    return { schemas };
+  }
+  const ctx = initializeContext({ ...params, processors: allProcessors });
+  processSchema(input, ctx);
+  extractDefs(ctx, input);
+  return finalize(ctx, input);
+}
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -5141,7 +5221,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefi
   Parent: Error
 });
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/classic/parse.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -5155,7 +5235,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// ../../../Users/melonapple/Projects/HQ/projects/nosta/node_modules/zod/v4/classic/schemas.js
+// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -6063,10 +6143,25 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// src/shared/schema/count.ts
+// ../../packages/shared/src/schema/primitives.ts
 var countSchema = number2().int().min(0);
+var positiveSchema = number2().int().min(1);
 
-// src/shared/schema/flow/status.ts
+// ../../packages/shared/src/review-report.ts
+var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
+var findingSchema = object({
+  file: string2(),
+  line: number2().int(),
+  evidence: string2(),
+  severity: findingSeveritySchema.optional(),
+  correction: string2().optional()
+});
+var reviewReportSchema = object({
+  findings: array(findingSchema),
+  verdict: _enum(["PASS", "FAIL"])
+});
+
+// ../../packages/shared/src/schema/flow/status.ts
 var flowStatusSchema = _enum([
   "queued",
   "running",
@@ -6092,7 +6187,7 @@ var stepStatusSchema = _enum([
   "rejected"
 ]);
 
-// src/shared/schema/flow/step/usage.ts
+// ../../packages/shared/src/schema/flow/step/usage.ts
 var MAX_RAW_BYTES = 64 * 1024;
 var usageSchema = object({
   inputTokens: countSchema,
@@ -6102,7 +6197,409 @@ var usageSchema = object({
 });
 var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
 
-// src/shared/schema/flow/step/event.ts
+// ../../packages/shared/src/schema/flow/step/record.ts
+var stepFileRefSchema = object({
+  name: string2(),
+  sha256: string2(),
+  bytes: countSchema
+});
+var stepBaseSchema = object({
+  id: string2().min(1),
+  flowId: string2().min(1),
+  attempt: positiveSchema.default(1),
+  name: string2().default(""),
+  startedAt: countSchema,
+  endedAt: countSchema.nullable(),
+  summary: string2().default(""),
+  claimToken: string2().nullable().optional()
+});
+var agentStepSchema = stepBaseSchema.extend({
+  kind: literal("agent"),
+  role: agentRoleSchema,
+  status: _enum(["queued", "running", "complete", "errored"]),
+  providerInstanceId: string2().nullable().optional(),
+  model: string2().nullable().default(null),
+  files: array(stepFileRefSchema).default([]),
+  verdict: _enum(["PASS", "FAIL"]).nullable().default(null),
+  findings: array(findingSchema).default([]),
+  output: string2().nullable().default(null),
+  usage: usageSchema.nullable().default(null)
+});
+var commandStepSchema = stepBaseSchema.extend({
+  kind: literal("command"),
+  status: _enum(["queued", "running", "complete", "errored"]),
+  command: string2().default(""),
+  exitCode: number2().int().nullable().default(null),
+  output: string2().nullable().default(null),
+  providerInstanceId: string2().nullable().optional(),
+  model: string2().nullable().optional(),
+  usage: usageSchema.nullable().optional()
+});
+var approvalStepSchema = stepBaseSchema.extend({
+  kind: literal("approval"),
+  status: _enum(["queued", "complete", "rejected"]),
+  decision: _enum(["approve", "reject"]).nullable().default(null),
+  actor: string2().nullable().default(null),
+  decisionId: string2().nullable().default(null)
+});
+var errorDetailAtomSchema = union([string2(), number2(), boolean2(), _null3()]);
+var errorDetailValueSchema = union([errorDetailAtomSchema, array(errorDetailAtomSchema)]);
+var callStepErrorSchema = object({
+  code: string2().min(1),
+  message: string2(),
+  retryable: boolean2().default(false),
+  details: record(string2(), errorDetailValueSchema).nullable().optional()
+});
+var callStepSchema = stepBaseSchema.extend({
+  kind: literal("call"),
+  status: _enum(["queued", "running", "complete", "errored"]),
+  call: string2().default(""),
+  callVersion: positiveSchema.nullable().default(null),
+  attempts: countSchema.default(1),
+  output: string2().nullable().default(null),
+  error: callStepErrorSchema.nullable().default(null)
+});
+var stepRecordSchema = discriminatedUnion("kind", [
+  agentStepSchema,
+  commandStepSchema,
+  approvalStepSchema,
+  callStepSchema
+]);
+function approvalDecisionForStatus(status) {
+  if (status === "complete")
+    return "approve";
+  if (status === "rejected")
+    return "reject";
+  return null;
+}
+
+// ../../packages/shared/src/runtime/hybrid.ts
+var MAX_STEP_ARTIFACTS = 64;
+var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
+var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var SHA256_HEX = /^[0-9a-f]{64}$/;
+var COMMIT_HEX = /^[0-9a-f]{40}$/;
+var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
+var SECRET_BASENAMES = new Set(["secrets", ".dev.vars", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]);
+function normalizeRelativePath(raw) {
+  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+}
+function isSafeRelativePath(raw) {
+  if (!raw || raw.includes("\x00"))
+    return false;
+  const slash = raw.replaceAll("\\", "/");
+  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
+    return false;
+  const cleaned = normalizeRelativePath(slash);
+  if (!cleaned || cleaned === ".")
+    return false;
+  const parts = cleaned.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+function isSafeMountPath(raw) {
+  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (cleaned === "" || cleaned === "." || cleaned === "./")
+    return true;
+  return isSafeRelativePath(cleaned);
+}
+function isSecretPath(raw) {
+  const cleaned = normalizeRelativePath(raw);
+  if (!cleaned)
+    return false;
+  const parts = cleaned.split("/");
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
+      return true;
+  }
+  const base = (parts[parts.length - 1] ?? "").toLowerCase();
+  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
+}
+var bundleRepoManifestSchema = object({
+  name: string2().regex(REPO_NAME),
+  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
+  commitSha: string2().regex(COMMIT_HEX).optional(),
+  branch: string2().min(1).max(200).optional(),
+  dirty: boolean2(),
+  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
+  patchApplied: boolean2().optional(),
+  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
+  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
+});
+var bundleManifestSchema = object({
+  version: literal(1),
+  workspace: string2().regex(WORKSPACE_NAME),
+  primaryRepo: string2().regex(REPO_NAME),
+  repos: array(bundleRepoManifestSchema).min(1).max(32)
+});
+var bundlePointerSchema = object({
+  workspace: string2().regex(WORKSPACE_NAME),
+  sha: string2().regex(SHA256_HEX),
+  commitSha: string2(),
+  bytes: number2().int().min(1),
+  createdAt: number2().int().min(0),
+  dirty: boolean2().optional(),
+  repoCount: number2().int().min(1).optional()
+});
+var stepArtifactSchema = object({
+  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
+  contentBase64: string2(),
+  bytes: number2().int().min(0),
+  sha256: string2().regex(SHA256_HEX)
+});
+var cloudStepRequestSchema = object({
+  workspace: string2().min(1).max(64),
+  workflowName: string2().min(1).max(64),
+  stepId: string2().min(1).max(64),
+  bundleSha: string2().regex(SHA256_HEX),
+  force: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  pullOutputs: boolean2().optional(),
+  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
+});
+var cloudStepReplySchema = stepRecordSchema.and(object({
+  values: record(string2(), string2()).optional(),
+  artifacts: array(stepArtifactSchema).optional()
+}));
+
+// ../../packages/shared/src/security.ts
+function isLoopbackHost(hostname) {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
+}
+
+// src/api/generated/nosta.ts
+var getApproveFlowUrl = (flowId) => {
+  return `/api/flow/${flowId}/approval`;
+};
+var getListFlowEventsUrl = (id) => {
+  return `/api/flow/${id}/events`;
+};
+var getRunCloudStepUrl = (id) => {
+  return `/api/flow/${id}/step`;
+};
+
+// src/transport.ts
+var flowIdReplySchema = object({ flow: object({ id: string2() }) });
+function validateBaseUrl(rawUrl) {
+  const normalized = rawUrl.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  return normalized;
+}
+async function sendText(cfg, req) {
+  const init = req.init ?? {};
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${cfg.token}`);
+  if (cfg.actor && !headers.has("x-nosta-actor"))
+    headers.set("x-nosta-actor", cfg.actor);
+  const method = (init.method ?? "GET").toUpperCase();
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    ...init,
+    headers,
+    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
+  });
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text;
+}
+async function sendJson(cfg, req) {
+  const headers = {
+    authorization: `Bearer ${cfg.token}`,
+    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
+    ...req.body !== undefined ? { "content-type": "application/json" } : {},
+    ...req.headers ?? {}
+  };
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    method: req.method,
+    headers,
+    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
+    signal: AbortSignal.timeout(cfg.timeoutMs)
+  });
+  if (req.allow404 && res.status === 404)
+    return null;
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : {};
+}
+function bundleHeaders(input) {
+  return {
+    "content-type": "application/gzip",
+    "x-bundle-sha256": input.sha256,
+    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
+    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
+    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
+  };
+}
+function createNostaTransport(config) {
+  const cfg = {
+    baseUrl: validateBaseUrl(config.baseUrl),
+    token: config.token,
+    actor: config.actor,
+    timeoutMs: config.timeoutMs ?? 120000,
+    fetch: config.fetch ?? fetch
+  };
+  return {
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    streamUrl(path) {
+      return `${cfg.baseUrl}${path}`;
+    },
+    request(path, init) {
+      return sendText(cfg, { path, init });
+    },
+    requestJson(req) {
+      return sendJson(cfg, req);
+    },
+    async getLatestBundle(workspace) {
+      const raw = await sendJson(cfg, { method: "GET", path: `/api/bundles/${encodeURIComponent(workspace)}/latest`, allow404: true });
+      return raw === null ? null : bundlePointerSchema.parse(raw);
+    },
+    async putBundle(input) {
+      const text = await sendText(cfg, {
+        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
+        init: { method: "PUT", headers: bundleHeaders(input), body: Buffer.from(input.bytes) }
+      });
+      return bundlePointerSchema.parse(JSON.parse(text));
+    },
+    async createLocalFlow(input) {
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "local", ...input } }));
+    },
+    async reportFlow(input) {
+      const { flowId, ...body } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: `/api/flow/${encodeURIComponent(flowId)}/report`, body }));
+    },
+    async runCloudStep(input) {
+      const { flowId, ...body } = input;
+      const raw = await sendJson(cfg, { method: "POST", path: getRunCloudStepUrl(encodeURIComponent(flowId)), body });
+      return cloudStepReplySchema.parse(raw);
+    },
+    async startYamlFlow(input) {
+      const { idempotencyKey, ...rest } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "yaml", ...rest }, headers: { "Idempotency-Key": idempotencyKey } }));
+    },
+    async getFlow(flowId) {
+      return await sendJson(cfg, { method: "GET", path: `/api/flow/${encodeURIComponent(flowId)}` });
+    },
+    listFlowEvents(flowId) {
+      return sendText(cfg, { path: getListFlowEventsUrl(encodeURIComponent(flowId)) });
+    },
+    approveFlow(input) {
+      const { flowId, ...rest } = input;
+      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID();
+      const body = { ...rest, decisionId };
+      return sendText(cfg, {
+        path: getApproveFlowUrl(encodeURIComponent(flowId)),
+        init: { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": decisionId }, body: JSON.stringify(body) }
+      });
+    }
+  };
+}
+function transportFromEnv(env = process.env) {
+  return createNostaTransport({
+    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
+    token: env.NOSTA_PLUGIN_TOKEN ?? "",
+    timeoutMs: 30000
+  });
+}
+
+// src/flow.ts
+import { createHash, randomUUID as randomUUID3 } from "node:crypto";
+import { readFile as readFile3, stat as stat2 } from "node:fs/promises";
+
+// ../../packages/shared/src/packet.ts
+var MAX_FILES = 32;
+var MAX_PACKET_BYTES = 256 * 1024;
+var MAX_SERIALIZED_BYTES = 384 * 1024;
+var MAX_NAME_CHARS = 200;
+var MAX_TITLE_CHARS = 200;
+var encoder = new TextEncoder;
+function byteLength(text) {
+  return encoder.encode(text).length;
+}
+function isValidFileName(name) {
+  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
+}
+function failure2(error) {
+  return { ok: false, error };
+}
+function readTitle(input) {
+  if (input.title === undefined)
+    return "review";
+  if (typeof input.title !== "string")
+    return null;
+  const title = input.title.trim();
+  if (!title || title.length > MAX_TITLE_CHARS)
+    return null;
+  return title;
+}
+function readFiles(input) {
+  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
+    return `files must list 1..${MAX_FILES} entries`;
+  }
+  const files = [];
+  const seen = new Set;
+  for (const entry of input.files) {
+    if (!entry || typeof entry !== "object")
+      return "invalid file entry";
+    const file = entry;
+    if (!isValidFileName(file.name)) {
+      return `invalid file name: ${String(file.name)}`;
+    }
+    if (typeof file.content !== "string") {
+      return `invalid file content: ${file.name}`;
+    }
+    if (seen.has(file.name))
+      return `duplicate file name: ${file.name}`;
+    seen.add(file.name);
+    files.push({ name: file.name, content: file.content });
+  }
+  return files;
+}
+function serializedByteLength(value) {
+  return byteLength(JSON.stringify(value) ?? "");
+}
+function validatePacket(input) {
+  if (!input || typeof input !== "object")
+    return failure2("packet must be an object");
+  const record = input;
+  const title = readTitle(record);
+  if (title === null)
+    return failure2("title must be 1..200 characters");
+  const files = readFiles(record);
+  if (typeof files === "string")
+    return failure2(files);
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += byteLength(file.content);
+  }
+  if (totalBytes > MAX_PACKET_BYTES)
+    return failure2("packet exceeds 256 KiB");
+  const serializedBytes = serializedByteLength({ title, files });
+  if (serializedBytes > MAX_SERIALIZED_BYTES) {
+    return failure2("packet exceeds 384 KiB after JSON encoding");
+  }
+  return { ok: true, packet: { title, files, totalBytes } };
+}
+
+// src/gate/index.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { basename as basename3 } from "node:path";
+
+// ../../packages/shared/src/schema/flow/step/event.ts
 var stepEventStatusSchema = _enum([...flowStatusSchema.options, "rejected"]);
 var stepEventSchema = object({
   seq: countSchema,
@@ -6117,7 +6614,349 @@ var stepEventSchema = object({
   usage: usageSchema.nullable()
 });
 
-// src/plugin/gate/stream.ts
+// src/gate/git.ts
+import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { basename as basename2, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+
+// src/gate/policy.ts
+import { basename } from "node:path";
+var workflowConfigSchema = object({
+  version: literal(1),
+  nodes: array(string2().min(1)).min(1),
+  approvalNodes: array(string2().min(1)).default(["go"]),
+  allowBeforeGo: array(string2().min(1)).default([]),
+  gateBeforeGo: array(string2().min(1)).default([]),
+  prGateAfter: array(string2().min(1)).default([])
+}).superRefine((data, ctx) => {
+  const nodeSet = new Set(data.nodes);
+  if (nodeSet.size !== data.nodes.length) {
+    ctx.addIssue({ code: "custom", path: ["nodes"], message: "nodes must not contain duplicates" });
+  }
+  for (const node of data.approvalNodes) {
+    if (!nodeSet.has(node)) {
+      ctx.addIssue({ code: "custom", path: ["approvalNodes"], message: `approvalNode "${node}" is not in nodes` });
+    }
+  }
+  for (const node of data.prGateAfter) {
+    if (!nodeSet.has(node)) {
+      ctx.addIssue({ code: "custom", path: ["prGateAfter"], message: `prGateAfter "${node}" is not in nodes` });
+    }
+  }
+});
+var PR_GATE_TOOLS = new Set(["pull_request_create", "mcp_t3-code_pull_request_create", "mcp__t3-code__pull_request_create"]);
+var WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file"]);
+var SHELL_TOOLS = new Set(["Bash", "run_command"]);
+var MUTATING_SHELL_CMDS = new Set(["tee", "rm", "mv", "cp", "touch", "truncate", "sed"]);
+function commandSegments(command) {
+  return command.split(/(?:&&|\|\||[;|\n])/).map((seg) => seg.trim().split(/\s+/).filter(Boolean)).filter((tokens) => tokens.length > 0);
+}
+function stripQuotes(token) {
+  return token.replace(/^['"]|['"]$/g, "");
+}
+function isGhPrMutate(command) {
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename(stripQuotes(tokens[0]));
+    if (cmd !== "gh")
+      continue;
+    const prIdx = tokens.indexOf("pr", 1);
+    const sub = prIdx !== -1 ? tokens[prIdx + 1] : undefined;
+    if (sub === "create" || sub === "ready")
+      return true;
+  }
+  return false;
+}
+function isGitCommit(command) {
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename(stripQuotes(tokens[0]));
+    if (cmd === "git" && tokens.slice(1).includes("commit"))
+      return true;
+  }
+  return false;
+}
+function shellMutatedPaths(command) {
+  const paths = [];
+  for (const match of command.matchAll(/(?:^|[\s0-9&])>>?\s*([^\s;|&]+)/g)) {
+    if (match[1])
+      paths.push(stripQuotes(match[1]));
+  }
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename(stripQuotes(tokens[0]));
+    if (!MUTATING_SHELL_CMDS.has(cmd))
+      continue;
+    if (cmd === "sed" && !tokens.some((t) => t === "-i" || t.startsWith("-i")))
+      continue;
+    for (const token of tokens.slice(1)) {
+      if (token.startsWith("-") || token.includes(">"))
+        continue;
+      paths.push(stripQuotes(token));
+    }
+  }
+  return paths;
+}
+function globCharPattern(normalized, index) {
+  const ch = normalized[index];
+  if (ch === "*") {
+    if (normalized[index + 1] !== "*")
+      return { chunk: "[^/]*", advance: 1 };
+    return normalized[index + 2] === "/" ? { chunk: "(?:.*/)?", advance: 3 } : { chunk: ".*", advance: 2 };
+  }
+  if (ch === "?")
+    return { chunk: "[^/]", advance: 1 };
+  if ("\\^$.|+()[]{}".includes(ch))
+    return { chunk: `\\${ch}`, advance: 1 };
+  return { chunk: ch, advance: 1 };
+}
+function globToRegExp(pattern) {
+  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
+  let out = "^";
+  for (let i = 0;i < normalized.length; ) {
+    const { chunk, advance } = globCharPattern(normalized, i);
+    out += chunk;
+    i += advance;
+  }
+  return new RegExp(`${out}$`);
+}
+function matchesAnyGlob(relativePath, patterns) {
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return patterns.some((pattern) => globToRegExp(pattern).test(normalized));
+}
+function mapEventStatus(status) {
+  if (status === "complete")
+    return "complete";
+  if (status === "running")
+    return "active";
+  if (status === "errored" || status === "terminated")
+    return "errored";
+  if (status === "rejected")
+    return "rejected";
+  return null;
+}
+function computeNextNode(config, nodes) {
+  for (const id of config.nodes) {
+    if (nodes[id]?.status !== "complete")
+      return id;
+  }
+  return null;
+}
+function advanceCurrentNode(binding, now) {
+  const next = computeNextNode(binding.config, binding.nodes);
+  binding.currentNode = next;
+  if (next && binding.nodes[next]?.status === "pending") {
+    binding.nodes[next].status = "active";
+    binding.nodes[next].updatedAt = now;
+  }
+  binding.updatedAt = now;
+}
+function describeNextAction(binding) {
+  const current = binding.currentNode;
+  if (!current)
+    return "All workflow nodes are complete.";
+  if (binding.config.approvalNodes.includes(current)) {
+    return `Request owner approval via nosta_flow_approve(node: "${current}") before editing gated product files.`;
+  }
+  return `Complete "${current}" and call nosta_flow_advance(node: "${current}", summary: "...").`;
+}
+function toStepReportStatus(status) {
+  if (status === "active")
+    return "running";
+  if (status === "complete" || status === "errored" || status === "rejected")
+    return status;
+  return "queued";
+}
+function toStepReport(binding, id) {
+  const state = binding.nodes[id];
+  const kind = binding.config.approvalNodes.includes(id) ? "approval" : "agent";
+  const status = toStepReportStatus(state?.status);
+  const parts = [state?.summary, state?.artifactUrl, state?.prUrl, state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined].filter((v) => typeof v === "string" && v.length > 0);
+  return {
+    id,
+    name: id,
+    kind,
+    status,
+    ...state?.summary ? { summary: state.summary } : {},
+    ...kind === "approval" && state?.approvedBy ? { actor: state.approvedBy } : {},
+    ...kind === "approval" ? { decision: approvalDecisionForStatus(status) } : {},
+    output: parts.join(" | ")
+  };
+}
+function buildCloudReport(binding, now) {
+  const steps = binding.config.nodes.map((id) => toStepReport(binding, id));
+  const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
+  const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
+  return { status, finishedAt: status === "running" ? null : now, steps };
+}
+function cloneBinding(binding) {
+  const nodes = {};
+  for (const [k, v] of Object.entries(binding.nodes))
+    nodes[k] = { ...v };
+  return { ...binding, nodes };
+}
+function checkGatedPath(input) {
+  const { binding, config, targetPath, toRelative } = input;
+  const rel = toRelative(targetPath);
+  if (rel !== null && matchesAnyGlob(rel, config.gateBeforeGo) && !matchesAnyGlob(rel, config.allowBeforeGo)) {
+    return {
+      decision: "deny",
+      reason: `Editing "${rel}" is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return null;
+}
+function evaluatePrAction(binding, config) {
+  const missing = config.prGateAfter.filter((id) => binding.nodes[id]?.status !== "complete");
+  if (missing.length > 0) {
+    return {
+      decision: "deny",
+      reason: `PR creation/ready is blocked until [${missing.join(", ")}] complete (flow ${binding.flowId}, current node: ${binding.currentNode ?? "complete"}).`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return { decision: "allow", reason: "prGateAfter nodes are complete", flowId: binding.flowId, currentNode: binding.currentNode };
+}
+function evaluatePreApproval(input) {
+  const { binding, config, tool, path, command, toRelative } = input;
+  if (WRITE_TOOLS.has(tool) && path) {
+    const blocked = checkGatedPath({ binding, config, targetPath: path, toRelative });
+    if (blocked)
+      return blocked;
+  }
+  if (!SHELL_TOOLS.has(tool) || command.length === 0)
+    return null;
+  if (isGitCommit(command)) {
+    return {
+      decision: "deny",
+      reason: `git commit is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  for (const target of shellMutatedPaths(command)) {
+    const blocked = checkGatedPath({ binding, config, targetPath: target, toRelative });
+    if (blocked)
+      return blocked;
+  }
+  return null;
+}
+function evaluatePolicy(input) {
+  const { binding, config, tool, command } = input;
+  if (PR_GATE_TOOLS.has(tool) || SHELL_TOOLS.has(tool) && isGhPrMutate(command)) {
+    return evaluatePrAction(binding, config);
+  }
+  const approvalsDone = config.approvalNodes.every((id) => binding.nodes[id]?.status === "complete");
+  if (!approvalsDone) {
+    const blocked = evaluatePreApproval(input);
+    if (blocked)
+      return blocked;
+  }
+  return { decision: "allow", reason: "action permitted by active workflow phase", flowId: binding.flowId, currentNode: binding.currentNode };
+}
+function evaluateStopDecision(input) {
+  const { binding, config, bypassActive } = input;
+  if (bypassActive) {
+    return { decision: "allow", reason: "temporary bypass active", flowId: binding.flowId, currentNode: binding.currentNode };
+  }
+  if (!binding.currentNode) {
+    return { decision: "allow", reason: "all workflow nodes complete", flowId: binding.flowId, currentNode: null };
+  }
+  if (config.approvalNodes.includes(binding.currentNode)) {
+    return { decision: "allow", reason: `waiting for owner approval on "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
+  }
+  const hasEvidence = binding.observed.some((ev) => ev.node === binding.currentNode);
+  if (!hasEvidence) {
+    return {
+      decision: "deny",
+      reason: `Active node "${binding.currentNode}" has no recorded evidence yet (flow ${binding.flowId}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return { decision: "allow", reason: `evidence recorded for active node "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
+}
+
+// src/gate/git.ts
+var execFileAsync = promisify(execFile);
+function resolveRealPath(targetPath) {
+  const abs = resolve(targetPath);
+  const tail = [];
+  let cursor = abs;
+  while (true) {
+    try {
+      const real = realpathSync(cursor);
+      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(cursor);
+      if (parent === cursor)
+        return abs;
+      tail.push(basename2(cursor));
+      cursor = parent;
+    }
+  }
+}
+function canonicalRepoRoot(repoRoot) {
+  return resolveRealPath(repoRoot);
+}
+function bindingKey(repoRoot, branch) {
+  return `${canonicalRepoRoot(repoRoot)}::${branch.trim()}`;
+}
+async function runGit(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 3000 });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+async function resolveRepoBranch(input) {
+  if (input.repoRoot && input.branch) {
+    return { repoRoot: canonicalRepoRoot(input.repoRoot), branch: input.branch.trim() };
+  }
+  const cwd = input.repoRoot ?? process.cwd();
+  const root = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!root)
+    throw new Error("could not resolve git repository context; pass { repoRoot, branch }");
+  const branch = input.branch?.trim() || await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]) || await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) || await runGit(cwd, ["rev-parse", "--short", "HEAD"]) || "HEAD";
+  return { repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root), branch };
+}
+async function loadWorkflowConfig(repoRoot) {
+  const filePath = join(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
+  let text;
+  try {
+    text = await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`invalid JSON in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const parsed = workflowConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`invalid .nosta/workflow.json: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  return parsed.data;
+}
+function toRepoRelativePath(repoRoot, targetPath) {
+  const root = canonicalRepoRoot(repoRoot);
+  const absTarget = isAbsolute(targetPath) ? resolve(targetPath) : resolve(root, targetPath);
+  const realTarget = resolveRealPath(absTarget);
+  const rel = relative(root, realTarget);
+  if (rel.startsWith("..") || isAbsolute(rel))
+    return null;
+  return rel.split(sep).join("/");
+}
+
+// src/gate/stream.ts
 function parseSseBlock(block) {
   let id = null;
   let event = "message";
@@ -6252,249 +7091,7 @@ function connectFlowStream(options) {
   };
 }
 
-// src/plugin/gate/index.ts
-var execFileAsync = promisify(execFile);
-var workflowConfigSchema = object({
-  version: literal(1),
-  nodes: array(string2().min(1)).min(1),
-  approvalNodes: array(string2().min(1)).default(["go"]),
-  allowBeforeGo: array(string2().min(1)).default([]),
-  gateBeforeGo: array(string2().min(1)).default([]),
-  prGateAfter: array(string2().min(1)).default([])
-}).superRefine((data, ctx) => {
-  const nodeSet = new Set(data.nodes);
-  if (nodeSet.size !== data.nodes.length) {
-    ctx.addIssue({ code: "custom", path: ["nodes"], message: "nodes must not contain duplicates" });
-  }
-  for (const node of data.approvalNodes) {
-    if (!nodeSet.has(node)) {
-      ctx.addIssue({ code: "custom", path: ["approvalNodes"], message: `approvalNode "${node}" is not in nodes` });
-    }
-  }
-  for (const node of data.prGateAfter) {
-    if (!nodeSet.has(node)) {
-      ctx.addIssue({ code: "custom", path: ["prGateAfter"], message: `prGateAfter "${node}" is not in nodes` });
-    }
-  }
-});
-var PR_GATE_TOOLS = new Set(["pull_request_create", "mcp_t3-code_pull_request_create", "mcp__t3-code__pull_request_create"]);
-var WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file"]);
-var SHELL_TOOLS = new Set(["Bash", "run_command"]);
-var MUTATING_SHELL_CMDS = new Set(["tee", "rm", "mv", "cp", "touch", "truncate", "sed"]);
-function resolveRealPath(targetPath) {
-  const abs = resolve(targetPath);
-  const tail = [];
-  let cursor = abs;
-  while (true) {
-    try {
-      const real = realpathSync(cursor);
-      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
-    } catch {
-      const parent = dirname(cursor);
-      if (parent === cursor)
-        return abs;
-      tail.push(basename(cursor));
-      cursor = parent;
-    }
-  }
-}
-function canonicalRepoRoot(repoRoot) {
-  return resolveRealPath(repoRoot);
-}
-function bindingKey(repoRoot, branch) {
-  return `${canonicalRepoRoot(repoRoot)}::${branch.trim()}`;
-}
-async function runGit(cwd, args) {
-  try {
-    const { stdout } = await execFileAsync("git", args, { cwd, timeout: 3000 });
-    const trimmed = stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
-async function resolveRepoBranch(input) {
-  if (input.repoRoot && input.branch) {
-    return { repoRoot: canonicalRepoRoot(input.repoRoot), branch: input.branch.trim() };
-  }
-  const cwd = input.repoRoot ?? process.cwd();
-  const root = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!root)
-    throw new Error("could not resolve git repository context; pass { repoRoot, branch }");
-  const branch = input.branch?.trim() || await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]) || await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) || await runGit(cwd, ["rev-parse", "--short", "HEAD"]) || "HEAD";
-  return { repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root), branch };
-}
-async function loadWorkflowConfig(repoRoot) {
-  const filePath = join(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
-  let text;
-  try {
-    text = await readFile(filePath, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw error;
-  }
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch (error) {
-    throw new Error(`invalid JSON in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const parsed = workflowConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`invalid .nosta/workflow.json: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
-  }
-  return parsed.data;
-}
-function toRepoRelativePath(repoRoot, targetPath) {
-  const root = canonicalRepoRoot(repoRoot);
-  const absTarget = isAbsolute(targetPath) ? resolve(targetPath) : resolve(root, targetPath);
-  const realTarget = resolveRealPath(absTarget);
-  const rel = relative(root, realTarget);
-  if (rel.startsWith("..") || isAbsolute(rel))
-    return null;
-  return rel.split(sep).join("/");
-}
-function commandSegments(command) {
-  return command.split(/(?:&&|\|\||[;|\n])/).map((seg) => seg.trim().split(/\s+/).filter(Boolean)).filter((tokens) => tokens.length > 0);
-}
-function stripQuotes(token) {
-  return token.replace(/^['"]|['"]$/g, "");
-}
-function isGhPrMutate(command) {
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename(stripQuotes(tokens[0]));
-    if (cmd !== "gh")
-      continue;
-    const prIdx = tokens.indexOf("pr", 1);
-    const sub = prIdx !== -1 ? tokens[prIdx + 1] : undefined;
-    if (sub === "create" || sub === "ready")
-      return true;
-  }
-  return false;
-}
-function isGitCommit(command) {
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename(stripQuotes(tokens[0]));
-    if (cmd === "git" && tokens.slice(1).includes("commit"))
-      return true;
-  }
-  return false;
-}
-function shellMutatedPaths(command) {
-  const paths = [];
-  for (const match of command.matchAll(/(?:^|[\s0-9&])>>?\s*([^\s;|&]+)/g)) {
-    if (match[1])
-      paths.push(stripQuotes(match[1]));
-  }
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename(stripQuotes(tokens[0]));
-    if (!MUTATING_SHELL_CMDS.has(cmd))
-      continue;
-    if (cmd === "sed" && !tokens.some((t) => t === "-i" || t.startsWith("-i")))
-      continue;
-    for (const token of tokens.slice(1)) {
-      if (token.startsWith("-") || token.includes(">"))
-        continue;
-      paths.push(stripQuotes(token));
-    }
-  }
-  return paths;
-}
-function globToRegExp(pattern) {
-  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
-  let out = "^";
-  for (let i = 0;i < normalized.length; i += 1) {
-    const ch = normalized[i];
-    if (ch === "*") {
-      if (normalized[i + 1] === "*") {
-        if (normalized[i + 2] === "/") {
-          out += "(?:.*/)?";
-          i += 2;
-        } else {
-          out += ".*";
-          i += 1;
-        }
-      } else {
-        out += "[^/]*";
-      }
-    } else if (ch === "?") {
-      out += "[^/]";
-    } else if ("\\^$.|+()[]{}".includes(ch)) {
-      out += `\\${ch}`;
-    } else {
-      out += ch;
-    }
-  }
-  return new RegExp(`${out}$`);
-}
-function matchesAnyGlob(relativePath, patterns) {
-  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
-  return patterns.some((pattern) => globToRegExp(pattern).test(normalized));
-}
-function mapEventStatus(status) {
-  if (status === "complete")
-    return "complete";
-  if (status === "running")
-    return "active";
-  if (status === "errored" || status === "terminated")
-    return "errored";
-  if (status === "rejected")
-    return "rejected";
-  return null;
-}
-function computeNextNode(config, nodes) {
-  for (const id of config.nodes) {
-    if (nodes[id]?.status !== "complete")
-      return id;
-  }
-  return null;
-}
-function advanceCurrentNode(binding, now) {
-  const next = computeNextNode(binding.config, binding.nodes);
-  binding.currentNode = next;
-  if (next && binding.nodes[next]?.status === "pending") {
-    binding.nodes[next].status = "active";
-    binding.nodes[next].updatedAt = now;
-  }
-  binding.updatedAt = now;
-}
-function describeNextAction(binding) {
-  const current = binding.currentNode;
-  if (!current)
-    return "All workflow nodes are complete.";
-  if (binding.config.approvalNodes.includes(current)) {
-    return `Request owner approval via nosta_flow_approve(node: "${current}") before editing gated product files.`;
-  }
-  return `Complete "${current}" and call nosta_flow_advance(node: "${current}", summary: "...").`;
-}
-function buildCloudReport(binding) {
-  const steps = binding.config.nodes.map((id) => {
-    const state = binding.nodes[id];
-    const kind = binding.config.approvalNodes.includes(id) ? "approval" : "agent";
-    let status = "queued";
-    if (state?.status === "active")
-      status = "running";
-    else if (state?.status === "complete")
-      status = "complete";
-    else if (state?.status === "errored")
-      status = "errored";
-    else if (state?.status === "rejected")
-      status = "rejected";
-    const parts = [state?.summary, state?.artifactUrl, state?.prUrl, state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined].filter((v) => typeof v === "string" && v.length > 0);
-    return { id, kind, status, output: parts.join(" | ") };
-  });
-  const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
-  const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
-  return { status, finishedAt: status === "running" ? null : Date.now(), steps };
-}
-function cloneBinding(binding) {
-  const nodes = {};
-  for (const [k, v] of Object.entries(binding.nodes))
-    nodes[k] = { ...v };
-  return { ...binding, nodes };
-}
-
+// src/gate/index.ts
 class WorkflowGate {
   bindings = new Map;
   bypasses = new Map;
@@ -6517,20 +7114,25 @@ class WorkflowGate {
     const config = await loadWorkflowConfig(repoRoot);
     if (!config)
       throw new Error(`no .nosta/workflow.json found in ${repoRoot}`);
-    const workspace = basename(repoRoot) || "workspace";
+    const workspace = basename3(repoRoot) || "workspace";
     const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
+    const body = {
+      mode: "local",
+      name,
+      workspace,
+      repo: workspace,
+      ...input.base ? { base: input.base } : {},
+      branch,
+      ticket: input.ticket ?? null,
+      ticketUrl: input.ticketUrl ?? null,
+      ...input.endState ? { endState: input.endState } : {},
+      ...input.spec ? { spec: input.spec } : {},
+      ...input.values ? { values: input.values } : {}
+    };
     const raw = await this.backend.request("/api/flow", {
       method: "POST",
-      headers: { "content-type": "application/json", "Idempotency-Key": randomUUID() },
-      body: JSON.stringify({
-        mode: "local",
-        name,
-        workspace,
-        repo: workspace,
-        base: branch,
-        ticket: input.ticket ?? null,
-        ticketUrl: input.ticketUrl ?? null
-      })
+      headers: { "content-type": "application/json", "Idempotency-Key": randomUUID2() },
+      body: JSON.stringify(body)
     });
     const parsed = JSON.parse(raw);
     const flowId = parsed.flow?.id;
@@ -6613,7 +7215,7 @@ class WorkflowGate {
       binding.bypassReason = reason;
       binding.updatedAt = now;
       binding.observed.push({
-        id: randomUUID(),
+        id: randomUUID2(),
         node: binding.currentNode,
         kind: "bypass",
         summary: `bypass enabled for ${minutes}m: ${reason}`,
@@ -6692,7 +7294,14 @@ class WorkflowGate {
         reason: `Workflow enforcement active for ${repoRoot} (${branch}), but no Flow is bound. Start one with nosta_flow_start.`
       };
     }
-    return this.evaluatePolicy({ binding, config, tool: input.tool, path: input.path, command: input.command ?? "" });
+    return evaluatePolicy({
+      binding,
+      config,
+      tool: input.tool,
+      path: input.path,
+      command: input.command ?? "",
+      toRelative: (target) => toRepoRelativePath(binding.repoRoot, target)
+    });
   }
   observe(input) {
     const binding = this.bindings.get(bindingKey(input.repoRoot, input.branch)) ?? null;
@@ -6700,7 +7309,7 @@ class WorkflowGate {
       return { recorded: false };
     const now = this.now();
     const event = {
-      id: randomUUID(),
+      id: randomUUID2(),
       node: binding.currentNode,
       kind: input.kind,
       summary: input.summary,
@@ -6718,81 +7327,16 @@ class WorkflowGate {
     const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
     if (!config || !binding)
       return { decision: "allow", reason: "no active enforced flow binding" };
-    if (this.activeBypass(repoRoot, branch)) {
-      return { decision: "allow", reason: "temporary bypass active", flowId: binding.flowId, currentNode: binding.currentNode };
-    }
-    if (!binding.currentNode)
-      return { decision: "allow", reason: "all workflow nodes complete", flowId: binding.flowId, currentNode: null };
-    if (config.approvalNodes.includes(binding.currentNode)) {
-      return { decision: "allow", reason: `waiting for owner approval on "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
-    }
-    const hasEvidence = binding.observed.some((ev) => ev.node === binding.currentNode);
-    if (!hasEvidence) {
-      return {
-        decision: "deny",
-        reason: `Active node "${binding.currentNode}" has no recorded evidence yet (flow ${binding.flowId}). ${describeNextAction(binding)}`,
-        flowId: binding.flowId,
-        currentNode: binding.currentNode
-      };
-    }
-    return { decision: "allow", reason: `evidence recorded for active node "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
+    return evaluateStopDecision({
+      binding,
+      config,
+      bypassActive: this.activeBypass(repoRoot, branch) !== null
+    });
   }
   close() {
     for (const handle of this.streams.values())
       handle.close();
     this.streams.clear();
-  }
-  evaluatePolicy(input) {
-    const { binding, config, tool, path, command } = input;
-    const isPrAction = PR_GATE_TOOLS.has(tool) || SHELL_TOOLS.has(tool) && isGhPrMutate(command);
-    if (isPrAction) {
-      const missing = config.prGateAfter.filter((id) => binding.nodes[id]?.status !== "complete");
-      if (missing.length > 0) {
-        return {
-          decision: "deny",
-          reason: `PR creation/ready is blocked until [${missing.join(", ")}] complete (flow ${binding.flowId}, current node: ${binding.currentNode ?? "complete"}).`,
-          flowId: binding.flowId,
-          currentNode: binding.currentNode
-        };
-      }
-      return { decision: "allow", reason: "prGateAfter nodes are complete", flowId: binding.flowId, currentNode: binding.currentNode };
-    }
-    const approvalsDone = config.approvalNodes.every((id) => binding.nodes[id]?.status === "complete");
-    if (!approvalsDone) {
-      if (WRITE_TOOLS.has(tool) && path) {
-        const blocked = this.checkGatedPath(binding, config, path);
-        if (blocked)
-          return blocked;
-      }
-      if (SHELL_TOOLS.has(tool) && command.length > 0) {
-        if (isGitCommit(command)) {
-          return {
-            decision: "deny",
-            reason: `git commit is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
-            flowId: binding.flowId,
-            currentNode: binding.currentNode
-          };
-        }
-        for (const target of shellMutatedPaths(command)) {
-          const blocked = this.checkGatedPath(binding, config, target);
-          if (blocked)
-            return blocked;
-        }
-      }
-    }
-    return { decision: "allow", reason: "action permitted by active workflow phase", flowId: binding.flowId, currentNode: binding.currentNode };
-  }
-  checkGatedPath(binding, config, targetPath) {
-    const rel = toRepoRelativePath(binding.repoRoot, targetPath);
-    if (rel !== null && matchesAnyGlob(rel, config.gateBeforeGo) && !matchesAnyGlob(rel, config.allowBeforeGo)) {
-      return {
-        decision: "deny",
-        reason: `Editing "${rel}" is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
-        flowId: binding.flowId,
-        currentNode: binding.currentNode
-      };
-    }
-    return null;
   }
   getByFlowId(flowId) {
     const key = this.flowIndex.get(flowId);
@@ -6844,30 +7388,33 @@ class WorkflowGate {
     }
     this.bindings.set(key, binding);
     this.flowIndex.set(input.flowId, key);
-    if (this.enableStream && this.backend.streamUrl) {
-      const streamUrl = this.backend.streamUrl(`/api/flow/${encodeURIComponent(input.flowId)}/stream`);
-      const handle = connectFlowStream({
-        url: streamUrl,
-        token: this.backend.token ?? "",
-        fetchImpl: this.fetchImpl,
-        baseDelayMs: this.streamBackoff?.baseDelayMs,
-        maxDelayMs: this.streamBackoff?.maxDelayMs,
-        onEvent: (frame) => this.applyStreamFrame(input.flowId, frame),
-        onError: (error) => {
-          console.error(JSON.stringify({
-            level: "error",
-            component: "nosta-gate",
-            event: "sse_stream_error",
-            flowId: input.flowId,
-            streamUrl,
-            lastEventSeq: this.getByFlowId(input.flowId)?.lastEventSeq ?? 0,
-            error: error instanceof Error ? error.message : String(error)
-          }));
-        }
-      });
-      this.streams.set(input.flowId, handle);
-    }
+    this.startBindingStream(input.flowId);
     return binding;
+  }
+  startBindingStream(flowId) {
+    if (!this.enableStream || !this.backend.streamUrl)
+      return;
+    const streamUrl = this.backend.streamUrl(`/api/flow/${encodeURIComponent(flowId)}/stream`);
+    const handle = connectFlowStream({
+      url: streamUrl,
+      token: this.backend.token ?? "",
+      fetchImpl: this.fetchImpl,
+      baseDelayMs: this.streamBackoff?.baseDelayMs,
+      maxDelayMs: this.streamBackoff?.maxDelayMs,
+      onEvent: (frame) => this.applyStreamFrame(flowId, frame),
+      onError: (error) => {
+        console.error(JSON.stringify({
+          level: "error",
+          component: "nosta-gate",
+          event: "sse_stream_error",
+          flowId,
+          streamUrl,
+          lastEventSeq: this.getByFlowId(flowId)?.lastEventSeq ?? 0,
+          error: error instanceof Error ? error.message : String(error)
+        }));
+      }
+    });
+    this.streams.set(flowId, handle);
   }
   applyStreamFrame(flowId, frame) {
     const binding = this.getByFlowId(flowId);
@@ -6901,8 +7448,9 @@ class WorkflowGate {
   async persistAndCommit(binding, mutate) {
     const key = bindingKey(binding.repoRoot, binding.branch);
     const draft = cloneBinding(binding);
-    mutate(draft, this.now());
-    const report = buildCloudReport(draft);
+    const now = this.now();
+    mutate(draft, now);
+    const report = buildCloudReport(draft, now);
     await this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}/report`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6922,7 +7470,7 @@ class WorkflowGate {
     return nextBinding;
   }
   flushReportAsync(binding) {
-    const report = buildCloudReport(binding);
+    const report = buildCloudReport(binding, this.now());
     this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}/report`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -6950,183 +7498,9 @@ class WorkflowGate {
   }
 }
 
-// src/plugin/packet.ts
+// src/packet.ts
 import { readFile as readFile2, realpath, stat } from "node:fs/promises";
-import { basename as basename2, relative as relative2, sep as sep2 } from "node:path";
-
-// src/shared/schema/positive.ts
-var positiveSchema = number2().int().min(1);
-
-// src/shared/review-report.ts
-var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
-var findingSchema = object({
-  file: string2(),
-  line: number2().int(),
-  evidence: string2(),
-  severity: findingSeveritySchema.optional(),
-  correction: string2().optional()
-});
-var reviewReportSchema = object({
-  findings: array(findingSchema),
-  verdict: _enum(["PASS", "FAIL"])
-});
-
-// src/shared/schema/flow/step/record.ts
-var stepFileRefSchema = object({
-  name: string2(),
-  sha256: string2(),
-  bytes: countSchema
-});
-var stepBaseSchema = object({
-  id: string2().min(1),
-  flowId: string2().min(1),
-  attempt: positiveSchema.default(1),
-  name: string2().default(""),
-  startedAt: countSchema,
-  endedAt: countSchema.nullable(),
-  summary: string2().default(""),
-  claimToken: string2().nullable().optional()
-});
-var agentStepSchema = stepBaseSchema.extend({
-  kind: literal("agent"),
-  role: agentRoleSchema,
-  status: _enum(["queued", "running", "complete", "errored"]),
-  model: string2().nullable().default(null),
-  files: array(stepFileRefSchema).default([]),
-  verdict: _enum(["PASS", "FAIL"]).nullable().default(null),
-  findings: array(findingSchema).default([]),
-  output: string2().nullable().default(null),
-  usage: usageSchema.nullable().default(null)
-});
-var commandStepSchema = stepBaseSchema.extend({
-  kind: literal("command"),
-  status: _enum(["queued", "running", "complete", "errored"]),
-  command: string2().default(""),
-  exitCode: number2().int().nullable().default(null),
-  output: string2().nullable().default(null)
-});
-var approvalStepSchema = stepBaseSchema.extend({
-  kind: literal("approval"),
-  status: _enum(["queued", "complete", "rejected"]),
-  decision: _enum(["approve", "reject"]).nullable().default(null),
-  actor: string2().nullable().default(null),
-  decisionId: string2().nullable().default(null)
-});
-var errorDetailAtomSchema = union([string2(), number2(), boolean2(), _null3()]);
-var errorDetailValueSchema = union([errorDetailAtomSchema, array(errorDetailAtomSchema)]);
-var callStepErrorSchema = object({
-  code: string2().min(1),
-  message: string2(),
-  retryable: boolean2().default(false),
-  details: record(string2(), errorDetailValueSchema).nullable().optional()
-});
-var callStepSchema = stepBaseSchema.extend({
-  kind: literal("call"),
-  status: _enum(["queued", "running", "complete", "errored"]),
-  call: string2().default(""),
-  callVersion: positiveSchema.nullable().default(null),
-  attempts: countSchema.default(1),
-  output: string2().nullable().default(null),
-  error: callStepErrorSchema.nullable().default(null)
-});
-var stepRecordSchema = discriminatedUnion("kind", [
-  agentStepSchema,
-  commandStepSchema,
-  approvalStepSchema,
-  callStepSchema
-]);
-
-// src/shared/hybrid.ts
-var MAX_STEP_ARTIFACTS = 64;
-var MAX_STEP_ARTIFACT_BYTES = 4 * 1024 * 1024;
-var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-var SHA256_HEX = /^[0-9a-f]{64}$/;
-var COMMIT_HEX = /^[0-9a-f]{40}$/;
-var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
-var SECRET_BASENAMES = new Set(["secrets", ".dev.vars", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]);
-function normalizeRelativePath(raw) {
-  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
-}
-function isSafeRelativePath(raw) {
-  if (!raw || raw.includes("\x00"))
-    return false;
-  const slash = raw.replaceAll("\\", "/");
-  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
-    return false;
-  const cleaned = normalizeRelativePath(slash);
-  if (!cleaned || cleaned === ".")
-    return false;
-  const parts = cleaned.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-function isSafeMountPath(raw) {
-  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
-  if (cleaned === "" || cleaned === "." || cleaned === "./")
-    return true;
-  return isSafeRelativePath(cleaned);
-}
-function isSecretPath(raw) {
-  const cleaned = normalizeRelativePath(raw);
-  if (!cleaned)
-    return false;
-  const parts = cleaned.split("/");
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
-      return true;
-  }
-  const base = (parts[parts.length - 1] ?? "").toLowerCase();
-  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
-}
-var bundleRepoManifestSchema = object({
-  name: string2().regex(REPO_NAME),
-  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
-  commitSha: string2().regex(COMMIT_HEX).optional(),
-  branch: string2().min(1).max(200).optional(),
-  dirty: boolean2(),
-  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
-  patchApplied: boolean2().optional(),
-  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
-  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
-});
-var bundleManifestSchema = object({
-  version: literal(1),
-  workspace: string2().regex(WORKSPACE_NAME),
-  primaryRepo: string2().regex(REPO_NAME),
-  repos: array(bundleRepoManifestSchema).min(1).max(32)
-});
-var bundlePointerSchema = object({
-  workspace: string2().regex(WORKSPACE_NAME),
-  sha: string2().regex(SHA256_HEX),
-  commitSha: string2(),
-  bytes: number2().int().min(1),
-  createdAt: number2().int().min(0),
-  dirty: boolean2().optional(),
-  repoCount: number2().int().min(1).optional()
-});
-var stepArtifactSchema = object({
-  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
-  contentBase64: string2(),
-  bytes: number2().int().min(0),
-  sha256: string2().regex(SHA256_HEX)
-});
-var cloudStepRequestSchema = object({
-  workspace: string2().min(1).max(64),
-  workflowName: string2().min(1).max(64),
-  stepId: string2().min(1).max(64),
-  bundleSha: string2().regex(SHA256_HEX),
-  force: boolean2().optional(),
-  values: record(string2(), string2()).optional(),
-  pullOutputs: boolean2().optional(),
-  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
-});
-var cloudStepReplySchema = stepRecordSchema.and(object({
-  values: record(string2(), string2()).optional(),
-  artifacts: array(stepArtifactSchema).optional()
-}));
-
-// src/plugin/packet.ts
+import { basename as basename4, relative as relative2, sep as sep2 } from "node:path";
 async function assertReadableWorkspaceFile(filePath, rootDir = process.env.NOSTA_WORKSPACE_ROOT || process.cwd()) {
   const [resolvedRoot, resolvedFile] = await Promise.all([realpath(rootDir), realpath(filePath)]);
   const rel = relative2(resolvedRoot, resolvedFile);
@@ -7165,7 +7539,7 @@ async function buildPacket(args) {
   const files = [];
   for (const path of safePaths) {
     files.push({
-      name: basename2(path),
+      name: basename4(path),
       content: await readFile2(path, "utf8")
     });
   }
@@ -7175,133 +7549,187 @@ async function buildPacket(args) {
   return result.packet;
 }
 
-// src/plugin/flow.ts
+// src/flow.ts
+function trimmed(value) {
+  if (typeof value !== "string")
+    return;
+  const clean = value.trim();
+  return clean.length > 0 ? clean : undefined;
+}
+var flowStartInputSchema = object({
+  mode: _enum(["spec", "review", "local"]).optional().describe("Optional explicit flow mode."),
+  path: string2().optional().describe("Absolute path of a local spec file (spec mode)."),
+  baseSha: string2().optional().describe("40-hex Git SHA from the caller's checkout (spec mode)."),
+  ticketUrl: string2().optional().describe("HTTPS URL of the ticket this flow runs for."),
+  paths: array(string2()).optional().describe("Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."),
+  title: string2().optional().describe("Optional flow title (review or local mode)."),
+  repoRoot: string2().optional().describe("Git repository root containing .nosta/workflow.json (local mode)."),
+  branch: string2().optional().describe("Git branch name to bind (local mode; defaults to current branch)."),
+  base: string2().optional().describe("Optional base branch name (local mode)."),
+  ticket: string2().optional().describe("Optional ticket key/identifier (local mode)."),
+  endState: string2().optional().describe("Optional target end state summary (local mode)."),
+  spec: string2().optional().describe("Optional inline spec markdown text (local mode)."),
+  values: record(string2(), string2()).optional().describe("Optional string key/value metadata map (local mode).")
+}).superRefine((data, ctx) => {
+  const hasSpec = data.path !== undefined;
+  const hasReview = data.paths !== undefined;
+  const isLocal = data.mode === "local" || !hasSpec && !hasReview && (data.repoRoot !== undefined || data.branch !== undefined);
+  if (hasSpec && hasReview) {
+    ctx.addIssue({ code: "custom", message: "provide either { path, baseSha, ticketUrl } or { paths }, not both" });
+    return;
+  }
+  if (data.mode !== "local" && hasSpec) {
+    if (!data.path)
+      ctx.addIssue({ code: "custom", path: ["path"], message: "path must be a string" });
+    if (!data.baseSha)
+      ctx.addIssue({ code: "custom", path: ["baseSha"], message: "baseSha must be a string" });
+    if (!data.ticketUrl)
+      ctx.addIssue({ code: "custom", path: ["ticketUrl"], message: "ticketUrl must be a string" });
+    return;
+  }
+  if (!isLocal && !hasSpec && !hasReview) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide { path, baseSha, ticketUrl } for a spec flow, { paths } for a review flow, or { mode: 'local', repoRoot, branch } for a local ticket flow"
+    });
+  }
+});
+var flowStatusInputSchema = object({
+  flowId: string2().optional().describe("ID from nosta_flow_start."),
+  repoRoot: string2().optional().describe("Git repository root to look up a bound local Ticket Flow."),
+  branch: string2().optional().describe("Git branch to look up a bound local Ticket Flow.")
+});
+var flowLogInputSchema = object({
+  flowId: string2().min(1).describe("ID from nosta_flow_start.")
+});
+var flowAdvanceInputSchema = object({
+  node: string2().min(1).describe("Name of the active non-approval node to complete."),
+  summary: string2().min(1).describe("Evidence summary for this node."),
+  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
+  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
+  branch: string2().optional().describe("Git branch name (optional if flowId is provided)."),
+  artifactUrl: string2().optional().describe("Optional artifact/spec/diff URL."),
+  prUrl: string2().optional().describe("Optional PR URL.")
+});
+var flowApproveInputSchema = object({
+  flowId: string2().optional().describe("Flow ID waiting at its approval gate."),
+  decision: _enum(["approve", "reject"]).optional(),
+  version: number2().int().min(1).optional().describe("Flow version the caller read (cloud merge gate)."),
+  attempt: number2().int().min(1).optional().describe("Flow attempt the caller read (cloud merge gate)."),
+  decisionId: string2().optional().describe("Optional caller-supplied idempotency key for this decision."),
+  node: string2().optional().describe("Approval node name for a local Ticket Flow (e.g. 'go')."),
+  repoRoot: string2().optional().describe("Git repository root (local approval node)."),
+  branch: string2().optional().describe("Git branch name (local approval node)."),
+  approvedBy: string2().optional().describe("Optional approver identifier."),
+  summary: string2().optional().describe("Optional approval note.")
+}).superRefine((data, ctx) => {
+  const node = trimmed(data.node);
+  const hasCloudGateArgs = data.version !== undefined || data.attempt !== undefined;
+  if (node && hasCloudGateArgs) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide either { node } for a local approval node or { flowId, decision, version, attempt } for a cloud merge gate, not both"
+    });
+    return;
+  }
+  if (!node) {
+    if (!data.flowId)
+      ctx.addIssue({ code: "custom", path: ["flowId"], message: "flowId must be a string" });
+    if (!data.decision)
+      ctx.addIssue({ code: "custom", path: ["decision"], message: "decision must be approve or reject" });
+    if (data.version === undefined)
+      ctx.addIssue({ code: "custom", path: ["version"], message: "version must be a positive integer" });
+    if (data.attempt === undefined)
+      ctx.addIssue({ code: "custom", path: ["attempt"], message: "attempt must be a positive integer" });
+  }
+});
+var flowBypassInputSchema = object({
+  reason: string2().min(1).describe("Mandatory explanation for the temporary workflow bypass."),
+  durationMinutes: number2().int().min(1).optional().describe("Bypass duration in minutes (default 30, max 240)."),
+  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
+  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
+  branch: string2().optional().describe("Git branch name (optional if flowId is provided).")
+});
+function stripSafeIntMax(node) {
+  if (Array.isArray(node))
+    return node.map(stripSafeIntMax);
+  if (!node || typeof node !== "object")
+    return node;
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "maximum" && value === Number.MAX_SAFE_INTEGER)
+      continue;
+    out[key] = stripSafeIntMax(value);
+  }
+  return out;
+}
+function toMcpInputSchema(schema) {
+  const raw = toJSONSchema(schema, { target: "draft-07" });
+  const cleaned = stripSafeIntMax(raw);
+  delete cleaned.$schema;
+  if (cleaned.additionalProperties === false)
+    delete cleaned.additionalProperties;
+  return cleaned;
+}
 var FLOW_TOOLS = [
   {
     name: "nosta_flow_start",
     description: "Start one Nosta flow. Pass { path, baseSha, ticketUrl } for a spec flow, { paths, title? } for a 1-step review flow, or { mode: 'local', repoRoot?, branch?, title?, ticket?, ticketUrl? } to start a local workflow-enforced Ticket Flow.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        mode: { type: "string", enum: ["spec", "review", "local"], description: "Optional explicit flow mode." },
-        path: { type: "string", description: "Absolute path of a local spec file (spec mode)." },
-        baseSha: { type: "string", description: "40-hex Git SHA from the caller's checkout (spec mode)." },
-        ticketUrl: { type: "string", description: "HTTPS URL of the ticket this flow runs for." },
-        paths: {
-          type: "array",
-          items: { type: "string" },
-          description: "Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."
-        },
-        title: { type: "string", description: "Optional flow title (review or local mode)." },
-        repoRoot: { type: "string", description: "Git repository root containing .nosta/workflow.json (local mode)." },
-        branch: { type: "string", description: "Git branch name to bind (local mode; defaults to current branch)." },
-        ticket: { type: "string", description: "Optional ticket key/identifier (local mode)." }
-      }
-    }
+    inputSchema: toMcpInputSchema(flowStartInputSchema)
   },
   {
     name: "nosta_flow_status",
     description: "Get one flow with its direct steps, child flow records, and local gate binding status.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        flowId: { type: "string", description: "ID from nosta_flow_start." },
-        repoRoot: { type: "string", description: "Git repository root to look up a bound local Ticket Flow." },
-        branch: { type: "string", description: "Git branch to look up a bound local Ticket Flow." }
-      }
-    }
+    inputSchema: toMcpInputSchema(flowStatusInputSchema)
   },
   {
     name: "nosta_flow_log",
     description: "Get one flow's ordered step events.",
-    inputSchema: {
-      type: "object",
-      properties: { flowId: { type: "string", description: "ID from nosta_flow_start." } },
-      required: ["flowId"]
-    }
+    inputSchema: toMcpInputSchema(flowLogInputSchema)
   },
   {
     name: "nosta_flow_advance",
     description: "Mark the current non-approval node of a bound local Ticket Flow complete with evidence and report progress to Nosta. Rejects approval nodes and out-of-order jumps.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        node: { type: "string", description: "Name of the active non-approval node to complete." },
-        summary: { type: "string", description: "Evidence summary for this node." },
-        flowId: { type: "string", description: "Bound flow ID (optional if repoRoot/branch is provided)." },
-        repoRoot: { type: "string", description: "Git repository root (optional if flowId is provided)." },
-        branch: { type: "string", description: "Git branch name (optional if flowId is provided)." },
-        artifactUrl: { type: "string", description: "Optional artifact/spec/diff URL." },
-        prUrl: { type: "string", description: "Optional PR URL." }
-      },
-      required: ["node", "summary"]
-    }
+    inputSchema: toMcpInputSchema(flowAdvanceInputSchema)
   },
   {
     name: "nosta_flow_approve",
     description: "Approve or reject a cloud flow merge gate ({ flowId, decision, version, attempt }) or record owner approval for an approval node in a bound local Ticket Flow ({ node, decision?, flowId?, repoRoot?, branch?, summary? }).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        flowId: { type: "string", description: "Flow ID waiting at its approval gate." },
-        decision: { type: "string", enum: ["approve", "reject"] },
-        version: { type: "integer", description: "Flow version the caller read (cloud merge gate)." },
-        attempt: { type: "integer", description: "Flow attempt the caller read (cloud merge gate)." },
-        decisionId: { type: "string", description: "Optional caller-supplied idempotency key for this decision." },
-        node: { type: "string", description: "Approval node name for a local Ticket Flow (e.g. 'go')." },
-        repoRoot: { type: "string", description: "Git repository root (local approval node)." },
-        branch: { type: "string", description: "Git branch name (local approval node)." },
-        approvedBy: { type: "string", description: "Optional approver identifier." },
-        summary: { type: "string", description: "Optional approval note." }
-      }
-    }
+    inputSchema: toMcpInputSchema(flowApproveInputSchema)
   },
   {
     name: "nosta_flow_bypass",
     description: "Temporarily unlock gated writes for a (repoRoot, branch) for a bounded duration with a mandatory reason. Always requires explicit owner confirmation.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        reason: { type: "string", description: "Mandatory explanation for the temporary workflow bypass." },
-        durationMinutes: { type: "integer", description: "Bypass duration in minutes (default 30, max 240)." },
-        flowId: { type: "string", description: "Bound flow ID (optional if repoRoot/branch is provided)." },
-        repoRoot: { type: "string", description: "Git repository root (optional if flowId is provided)." },
-        branch: { type: "string", description: "Git branch name (optional if flowId is provided)." }
-      },
-      required: ["reason"]
-    }
+    inputSchema: toMcpInputSchema(flowBypassInputSchema)
   }
 ];
+function formatZodError(error) {
+  return error.issues.map((issue) => {
+    const path = issue.path.join(".");
+    return path && !issue.message.startsWith(path) ? `${path}: ${issue.message}` : issue.message;
+  }).join("; ");
+}
+function parseToolArgs(schema, args) {
+  const parsed = schema.safeParse(args);
+  if (!parsed.success)
+    throw new Error(formatZodError(parsed.error));
+  return parsed.data;
+}
 async function callFlowTool(input) {
   const gate = input.gate ?? new WorkflowGate({ backend: input.backend, enableStream: false });
-  const ctx = { args: input.args, backend: input.backend, gate };
   if (input.name === "nosta_flow_start")
-    return startFlow(ctx);
+    return startFlow({ args: parseToolArgs(flowStartInputSchema, input.args), backend: input.backend, gate });
   if (input.name === "nosta_flow_status")
-    return statusFlow(ctx);
+    return statusFlow({ args: parseToolArgs(flowStatusInputSchema, input.args), backend: input.backend, gate });
   if (input.name === "nosta_flow_log")
-    return readLog(input.args, input.backend);
+    return readLog(parseToolArgs(flowLogInputSchema, input.args), input.backend);
   if (input.name === "nosta_flow_advance")
-    return advanceLocal(input.args, gate);
+    return advanceLocal(parseToolArgs(flowAdvanceInputSchema, input.args), gate);
   if (input.name === "nosta_flow_approve")
-    return approveFlow(ctx);
+    return approveFlow({ args: parseToolArgs(flowApproveInputSchema, input.args), backend: input.backend, gate });
   if (input.name === "nosta_flow_bypass")
-    return bypassLocal(input.args, gate);
+    return bypassLocal(parseToolArgs(flowBypassInputSchema, input.args), gate);
   return null;
-}
-function text(value, name) {
-  if (typeof value !== "string" || value.length === 0)
-    throw new Error(`${name} must be a string`);
-  return value;
-}
-function optionalText(value) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-function positiveInt(value, name) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return value;
 }
 function enrichFlowReply(raw, baseUrl) {
   let parsed;
@@ -7313,34 +7741,33 @@ function enrichFlowReply(raw, baseUrl) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
     return raw;
-  const record = parsed;
-  const flowObj = record.flow && typeof record.flow === "object" ? record.flow : null;
-  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record.id === "string" ? record.id : null;
+  const record2 = parsed;
+  const flowObj = record2.flow && typeof record2.flow === "object" ? record2.flow : null;
+  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record2.id === "string" ? record2.id : null;
   if (!flowId)
     return raw;
   return JSON.stringify({
-    ...record,
+    ...record2,
     flowUrl: `${baseUrl}/flows/${encodeURIComponent(flowId)}`
   });
 }
 async function startReviewFlow(args, backend) {
-  const packet = await buildPacket(args);
+  const packet = await buildPacket({ paths: args.paths, title: args.title });
   const raw = await backend.request("/api/flow", {
     method: "POST",
-    headers: { "content-type": "application/json", "Idempotency-Key": randomUUID2() },
+    headers: { "content-type": "application/json", "Idempotency-Key": randomUUID3() },
     body: JSON.stringify({ mode: "review", title: packet.title, files: packet.files })
   });
   return enrichFlowReply(raw, backend.baseUrl);
 }
 async function startSpecFlow(args, backend) {
-  const path = text(args.path, "path");
-  const baseSha = text(args.baseSha, "baseSha");
-  const ticketUrl = text(args.ticketUrl, "ticketUrl");
-  const safePath = await assertReadableWorkspaceFile(path);
+  const safePath = await assertReadableWorkspaceFile(args.path);
   if ((await stat2(safePath)).size > MAX_PACKET_BYTES) {
     throw new Error("spec exceeds 256 KiB");
   }
   const spec = await readFile3(safePath, "utf8");
+  const baseSha = args.baseSha;
+  const ticketUrl = args.ticketUrl;
   const key = createHash("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
   const raw = await backend.request("/api/flow", {
     method: "POST",
@@ -7354,78 +7781,68 @@ async function startFlow(input) {
   const hasSpec = args.path !== undefined;
   const hasReview = args.paths !== undefined;
   const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined);
-  if (hasSpec && hasReview)
-    throw new Error("provide either { path, baseSha, ticketUrl } or { paths }, not both");
   if (isLocal) {
     const raw = JSON.stringify(await gate.start({
-      repoRoot: optionalText(args.repoRoot),
-      branch: optionalText(args.branch),
-      title: optionalText(args.title),
-      ticket: optionalText(args.ticket),
-      ticketUrl: optionalText(args.ticketUrl)
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch),
+      base: trimmed(args.base),
+      title: trimmed(args.title),
+      ticket: trimmed(args.ticket),
+      ticketUrl: trimmed(args.ticketUrl),
+      endState: trimmed(args.endState),
+      spec: trimmed(args.spec),
+      values: args.values
     }));
     return enrichFlowReply(raw, backend.baseUrl);
   }
   if (hasReview)
     return startReviewFlow(args, backend);
-  if (hasSpec)
-    return startSpecFlow(args, backend);
-  throw new Error("provide { path, baseSha, ticketUrl } for a spec flow, { paths } for a review flow, or { mode: 'local', repoRoot, branch } for a local ticket flow");
+  return startSpecFlow(args, backend);
 }
 function readLog(args, backend) {
-  const id = text(args.flowId, "flowId");
-  return backend.request(`/api/flow/${encodeURIComponent(id)}/events`);
+  return backend.request(getListFlowEventsUrl(encodeURIComponent(args.flowId)));
 }
 async function statusFlow(input) {
   const raw = JSON.stringify(await input.gate.status({
-    flowId: optionalText(input.args.flowId),
-    repoRoot: optionalText(input.args.repoRoot),
-    branch: optionalText(input.args.branch)
+    flowId: trimmed(input.args.flowId),
+    repoRoot: trimmed(input.args.repoRoot),
+    branch: trimmed(input.args.branch)
   }));
   return enrichFlowReply(raw, input.backend.baseUrl);
 }
 async function advanceLocal(args, gate) {
   return JSON.stringify(await gate.advance({
-    node: text(args.node, "node"),
-    summary: text(args.summary, "summary"),
-    flowId: optionalText(args.flowId),
-    repoRoot: optionalText(args.repoRoot),
-    branch: optionalText(args.branch),
-    artifactUrl: optionalText(args.artifactUrl),
-    prUrl: optionalText(args.prUrl)
+    node: args.node,
+    summary: args.summary,
+    flowId: trimmed(args.flowId),
+    repoRoot: trimmed(args.repoRoot),
+    branch: trimmed(args.branch),
+    artifactUrl: trimmed(args.artifactUrl),
+    prUrl: trimmed(args.prUrl)
   }));
 }
 async function approveFlow(input) {
   const { args, backend, gate } = input;
-  const node = optionalText(args.node);
-  const hasCloudGateArgs = args.version !== undefined || args.attempt !== undefined;
-  if (node && hasCloudGateArgs) {
-    throw new Error("provide either { node } for a local approval node or { flowId, decision, version, attempt } for a cloud merge gate, not both");
-  }
+  const node = trimmed(args.node);
   if (node) {
-    const rawDecision = args.decision;
-    if (rawDecision !== undefined && rawDecision !== "approve" && rawDecision !== "reject") {
-      throw new Error("decision must be approve or reject");
-    }
     return JSON.stringify(await gate.approve({
       node,
-      decision: rawDecision ?? "approve",
-      flowId: optionalText(args.flowId),
-      repoRoot: optionalText(args.repoRoot),
-      branch: optionalText(args.branch),
-      approvedBy: optionalText(args.approvedBy),
-      summary: optionalText(args.summary)
+      decision: args.decision ?? "approve",
+      flowId: trimmed(args.flowId),
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch),
+      approvedBy: trimmed(args.approvedBy),
+      summary: trimmed(args.summary)
     }));
   }
-  const flowId = text(args.flowId, "flowId");
-  const decision = args.decision;
-  if (decision !== "approve" && decision !== "reject")
-    throw new Error("decision must be approve or reject");
-  const version = positiveInt(args.version, "version");
-  const attempt = positiveInt(args.attempt, "attempt");
-  const decisionId = typeof args.decisionId === "string" && args.decisionId.length > 0 ? args.decisionId : randomUUID2();
-  const body = { decision, version, attempt, decisionId };
-  const raw = await backend.request(getApproveFlowUrl(encodeURIComponent(flowId)), {
+  const decisionId = args.decisionId && args.decisionId.length > 0 ? args.decisionId : randomUUID3();
+  const body = {
+    decision: args.decision,
+    version: args.version,
+    attempt: args.attempt,
+    decisionId
+  };
+  const raw = await backend.request(getApproveFlowUrl(encodeURIComponent(args.flowId)), {
     method: "POST",
     headers: { "content-type": "application/json", "Idempotency-Key": decisionId },
     body: JSON.stringify(body)
@@ -7433,17 +7850,16 @@ async function approveFlow(input) {
   return enrichFlowReply(raw, backend.baseUrl);
 }
 async function bypassLocal(args, gate) {
-  const durationMinutes = args.durationMinutes !== undefined ? positiveInt(args.durationMinutes, "durationMinutes") : undefined;
   return JSON.stringify(await gate.bypass({
-    reason: text(args.reason, "reason"),
-    durationMinutes,
-    flowId: optionalText(args.flowId),
-    repoRoot: optionalText(args.repoRoot),
-    branch: optionalText(args.branch)
+    reason: args.reason,
+    durationMinutes: args.durationMinutes,
+    flowId: trimmed(args.flowId),
+    repoRoot: trimmed(args.repoRoot),
+    branch: trimmed(args.branch)
   }));
 }
 
-// src/plugin/gate/ipc.ts
+// src/gate/ipc.ts
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, mkdir, readFile as readFile4, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -7628,7 +8044,7 @@ async function handleRequest(input) {
   }
 }
 
-// src/plugin/prompts.ts
+// src/prompts.ts
 var PROMPTS = [
   {
     name: "start_flow",
@@ -7772,8 +8188,8 @@ function getPrompt(input) {
   };
 }
 
-// src/plugin/server.ts
-var backend = backendFromEnv();
+// src/server.ts
+var backend = transportFromEnv();
 var gate = new WorkflowGate({ backend });
 var TOOLS = [...FLOW_TOOLS];
 async function callTool(name, args) {
@@ -7879,5 +8295,5 @@ function startServer() {
 }
 if (false) {}
 
-// src/plugin/bin.ts
+// src/bin.ts
 startServer();
