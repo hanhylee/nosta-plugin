@@ -21,7 +21,13 @@ Leave `NOSTA_BACKEND_URL` unset if you are running a local `celld` backend (`htt
 
 ### 3. Install
 
-**Claude Code (MCP + skills + hooks):**
+**One-command installer (OpenCode, Codex, Cursor, Windsurf, Claude Code):**
+
+```bash
+npx -y @nostadev/mcp install opencode   # or: codex, cursor, windsurf, claude (--project for workspace-local)
+```
+
+**Claude Code native plugin (MCP + skills + hooks):**
 
 ```bash
 /plugin install nosta --marketplace hanhylee/nosta-plugin

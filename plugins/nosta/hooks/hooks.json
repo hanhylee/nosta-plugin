@@ -13,7 +13,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": ".*nosta_flow_approve$",
+        "matcher": ".*nosta_flow_(approve|bypass)$",
         "hooks": [
           {
             "type": "command",

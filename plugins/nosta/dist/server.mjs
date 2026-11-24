@@ -1,5 +1,333 @@
 #!/usr/bin/env node
 
+// src/install/index.ts
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { cp as cp2, mkdir as mkdir2, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join as join3, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/install/targets.ts
+import { join } from "node:path";
+var DEFAULT_PACKAGE_NAME = "@nostadev/mcp";
+var HARNESSES = ["opencode", "codex", "cursor", "windsurf", "claude"];
+function isHarness(value) {
+  return HARNESSES.includes(value);
+}
+function resolveTarget(input) {
+  const { harness, scope, cwd, homeDir } = input;
+  if (harness === "opencode") {
+    const base = scope === "global" ? join(homeDir, ".config", "opencode") : join(cwd, ".opencode");
+    return {
+      harness,
+      scope,
+      configPath: scope === "global" ? join(base, "opencode.json") : join(cwd, "opencode.json"),
+      configFormat: "opencode-json",
+      skillsDir: join(base, "skills"),
+      pluginPath: join(base, "plugins", "nosta-approve-guard.ts")
+    };
+  }
+  if (harness === "codex") {
+    const configRoot = scope === "global" ? join(homeDir, ".codex") : join(cwd, ".codex");
+    const skillsDir = scope === "global" ? join(homeDir, ".codex", "skills") : join(cwd, ".agents", "skills");
+    return {
+      harness,
+      scope,
+      configPath: join(configRoot, "config.toml"),
+      configFormat: "codex-toml",
+      skillsDir,
+      pluginPath: null
+    };
+  }
+  if (harness === "cursor") {
+    const base = scope === "global" ? join(homeDir, ".cursor") : join(cwd, ".cursor");
+    return {
+      harness,
+      scope,
+      configPath: join(base, "mcp.json"),
+      configFormat: "mcp-servers-json",
+      skillsDir: join(base, "skills"),
+      pluginPath: null
+    };
+  }
+  if (harness === "windsurf") {
+    const base = scope === "global" ? join(homeDir, ".codeium", "windsurf") : join(cwd, ".windsurf");
+    return {
+      harness,
+      scope,
+      configPath: join(base, scope === "global" ? "mcp_config.json" : "mcp.json"),
+      configFormat: "mcp-servers-json",
+      skillsDir: join(base, "skills"),
+      pluginPath: null
+    };
+  }
+  const claudeSkills = scope === "global" ? join(homeDir, ".claude", "skills") : join(cwd, ".claude", "skills");
+  return {
+    harness,
+    scope,
+    configPath: scope === "global" ? join(homeDir, ".claude.json") : join(cwd, ".mcp.json"),
+    configFormat: "mcp-servers-json",
+    skillsDir: claudeSkills,
+    pluginPath: null
+  };
+}
+
+// src/install/writers.ts
+import { cp, mkdir, readdir } from "node:fs/promises";
+import { join as join2 } from "node:path";
+function parseJsonObject(text) {
+  const trimmed = text.trim();
+  if (!trimmed)
+    return {};
+  const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("existing config must be a JSON object");
+  }
+  return parsed;
+}
+function asObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...value };
+  }
+  return {};
+}
+function mergeOpenCodeJson(input) {
+  const root = parseJsonObject(input.existingText);
+  if (typeof root.$schema !== "string") {
+    root.$schema = "https://opencode.ai/config.json";
+  }
+  const mcp = asObject(root.mcp);
+  const existingNosta = asObject(mcp.nosta);
+  mcp.nosta = {
+    ...existingNosta,
+    type: "local",
+    command: ["npx", "-y", input.packageName],
+    enabled: true
+  };
+  root.mcp = mcp;
+  const permission = asObject(root.permission);
+  permission.nosta_nosta_flow_approve = "ask";
+  permission.nosta_nosta_flow_bypass = "ask";
+  root.permission = permission;
+  return `${JSON.stringify(root, null, 2)}
+`;
+}
+function mergeMcpServersJson(input) {
+  const root = parseJsonObject(input.existingText);
+  const mcpServers = asObject(root.mcpServers);
+  const existingNosta = asObject(mcpServers.nosta);
+  mcpServers.nosta = {
+    ...existingNosta,
+    command: "npx",
+    args: ["-y", input.packageName]
+  };
+  root.mcpServers = mcpServers;
+  return `${JSON.stringify(root, null, 2)}
+`;
+}
+function mergeCodexToml(input) {
+  const managedLines = [
+    "[mcp_servers.nosta]",
+    'command = "npx"',
+    `args = ["-y", ${JSON.stringify(input.packageName)}]`,
+    "enabled = true"
+  ];
+  const managedKeyRe = /^\s*(?:command|args|enabled)\s*=/;
+  const lines = input.existingText.length > 0 ? input.existingText.replace(/\r\n/g, `
+`).split(`
+`) : [];
+  const headerRe = /^\s*\[mcp_servers\.nosta\]\s*(?:#.*)?$/;
+  const anyTableRe = /^\s*\[/;
+  const startIdx = lines.findIndex((line) => headerRe.test(line));
+  if (startIdx >= 0) {
+    let endIdx = startIdx + 1;
+    while (endIdx < lines.length && !anyTableRe.test(lines[endIdx] ?? "")) {
+      endIdx += 1;
+    }
+    const preserved = lines.slice(startIdx + 1, endIdx).filter((line) => line.trim().length > 0 && !managedKeyRe.test(line));
+    const block = [...managedLines, ...preserved].join(`
+`);
+    const before = lines.slice(0, startIdx);
+    const after = lines.slice(endIdx);
+    const replaced = [...before, block, ...after.length > 0 ? ["", ...after] : []].join(`
+`).replace(/\n{3,}/g, `
+
+`);
+    return `${replaced.trimEnd()}
+`;
+  }
+  const block = managedLines.join(`
+`);
+  const trimmed = input.existingText.trimEnd();
+  return trimmed.length > 0 ? `${trimmed}
+
+${block}
+` : `${block}
+`;
+}
+function mergeHarnessConfig(input) {
+  if (input.format === "opencode-json") {
+    return mergeOpenCodeJson({ existingText: input.existingText, packageName: input.packageName });
+  }
+  if (input.format === "codex-toml") {
+    return mergeCodexToml({ existingText: input.existingText, packageName: input.packageName });
+  }
+  return mergeMcpServersJson({ existingText: input.existingText, packageName: input.packageName });
+}
+async function copySkills(input) {
+  const entries = await readdir(input.sourceDir, { withFileTypes: true });
+  const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  if (!input.dryRun) {
+    await mkdir(input.targetDir, { recursive: true });
+    for (const name of names) {
+      await cp(join2(input.sourceDir, name), join2(input.targetDir, name), { recursive: true, force: true });
+    }
+  }
+  return names;
+}
+
+// src/install/index.ts
+function usageText() {
+  return [
+    "Usage: nosta-mcp install <harness> [--global | --project] [--dry-run]",
+    `Harnesses: ${HARNESSES.join(", ")}`,
+    "Run with no arguments to start the Nosta stdio MCP server."
+  ].join(`
+`);
+}
+function resolveAssetsDir(baseDir) {
+  const candidates = [resolve(baseDir), resolve(baseDir, ".."), resolve(baseDir, "../..")];
+  for (const dir of candidates) {
+    if (existsSync(join3(dir, "skills")))
+      return dir;
+  }
+  throw new Error(`could not locate bundled skills directory from ${baseDir}`);
+}
+function resolveDefaultPackageName(assetsDir) {
+  const envName = process.env.NOSTA_MCP_PACKAGE?.trim();
+  if (envName)
+    return envName;
+  const pkgPath = join3(assetsDir, "package.json");
+  if (existsSync(pkgPath)) {
+    const parsed = JSON.parse(readFileSync(pkgPath, "utf8"));
+    if (typeof parsed.name === "string" && parsed.name.trim() && parsed.private !== true) {
+      return parsed.name.trim();
+    }
+  }
+  return DEFAULT_PACKAGE_NAME;
+}
+function scanInstallFlags(args) {
+  let harnessArg = null;
+  let scope = "global";
+  let dryRun = false;
+  let packageName = null;
+  for (let i = 0;i < args.length; i += 1) {
+    const token = args[i] ?? "";
+    if (token === "--project" || token === "-p")
+      scope = "project";
+    else if (token === "--global" || token === "-g")
+      scope = "global";
+    else if (token === "--dry-run")
+      dryRun = true;
+    else if (token === "--package") {
+      const next = args[i + 1];
+      if (!next)
+        throw new Error("missing value for --package");
+      packageName = next;
+      i += 1;
+    } else if (token.startsWith("-"))
+      throw new Error(`unknown option: ${token}
+${usageText()}`);
+    else if (!harnessArg)
+      harnessArg = token.toLowerCase();
+    else
+      throw new Error(`unexpected argument: ${token}
+${usageText()}`);
+  }
+  return { harnessArg, scope, dryRun, packageName };
+}
+function parseInstallArgs(input) {
+  const { harnessArg, scope, dryRun, packageName } = scanInstallFlags(input.argv);
+  if (!harnessArg || !isHarness(harnessArg)) {
+    throw new Error(`unsupported or missing harness: ${harnessArg ?? "(none)"}
+${usageText()}`);
+  }
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const assetsDir = input.assetsDir ? resolve(input.assetsDir) : resolveAssetsDir(scriptDir);
+  return {
+    harness: harnessArg,
+    scope,
+    cwd: resolve(input.cwd ?? process.cwd()),
+    homeDir: resolve(input.homeDir ?? homedir()),
+    assetsDir,
+    packageName: packageName ?? resolveDefaultPackageName(assetsDir),
+    dryRun
+  };
+}
+async function runInstall(options) {
+  const target = resolveTarget({
+    harness: options.harness,
+    scope: options.scope,
+    cwd: options.cwd,
+    homeDir: options.homeDir
+  });
+  const existingText = existsSync(target.configPath) ? await readFile(target.configPath, "utf8") : "";
+  const nextConfig = mergeHarnessConfig({
+    format: target.configFormat,
+    existingText,
+    packageName: options.packageName
+  });
+  if (!options.dryRun) {
+    await mkdir2(dirname(target.configPath), { recursive: true });
+    const tmpPath = `${target.configPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+    await writeFile(tmpPath, nextConfig, "utf8");
+    await rename(tmpPath, target.configPath);
+  }
+  const skillsCopied = await copySkills({
+    sourceDir: join3(options.assetsDir, "skills"),
+    targetDir: target.skillsDir,
+    dryRun: options.dryRun
+  });
+  let installedPluginPath = null;
+  if (target.pluginPath) {
+    const sourceGuard = join3(options.assetsDir, "hooks", "opencode-approve-guard.ts");
+    if (!existsSync(sourceGuard)) {
+      throw new Error(`bundled OpenCode approval guard missing: ${sourceGuard}`);
+    }
+    if (!options.dryRun) {
+      await mkdir2(dirname(target.pluginPath), { recursive: true });
+      await cp2(sourceGuard, target.pluginPath, { force: true });
+    }
+    installedPluginPath = target.pluginPath;
+  }
+  return {
+    harness: target.harness,
+    scope: target.scope,
+    configPath: target.configPath,
+    skillsDir: target.skillsDir,
+    skillsCopied,
+    pluginPath: installedPluginPath,
+    dryRun: options.dryRun
+  };
+}
+function formatInstallSummary(result) {
+  const verb = result.dryRun ? "Would install" : "Installed";
+  const lines = [
+    `${verb} Nosta for ${result.harness} (${result.scope}):`,
+    `  config: ${result.configPath}`,
+    `  skills: ${result.skillsDir} (${result.skillsCopied.length} skills)`
+  ];
+  if (result.pluginPath) {
+    lines.push(`  guard:  ${result.pluginPath}`);
+  }
+  lines.push("");
+  lines.push("Next: export NOSTA_BACKEND_URL=https://app.nosta.dev and NOSTA_PLUGIN_TOKEN=<your-token>");
+  return `${lines.join(`
+`)}
+`;
+}
+
 // src/server.ts
 import { createInterface } from "node:readline";
 
@@ -6518,7 +6846,7 @@ function transportFromEnv(env = process.env) {
 
 // src/flow.ts
 import { createHash, randomUUID as randomUUID3 } from "node:crypto";
-import { readFile as readFile3, stat as stat2 } from "node:fs/promises";
+import { readFile as readFile4, stat as stat2 } from "node:fs/promises";
 
 // ../../packages/shared/src/packet.ts
 var MAX_FILES = 32;
@@ -6617,8 +6945,8 @@ var stepEventSchema = object({
 // src/gate/git.ts
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { basename as basename2, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { readFile as readFile2 } from "node:fs/promises";
+import { basename as basename2, dirname as dirname2, isAbsolute, join as join4, relative, resolve as resolve2, sep } from "node:path";
 import { promisify } from "node:util";
 
 // src/gate/policy.ts
@@ -6770,7 +7098,14 @@ function toStepReport(binding, id) {
   const state = binding.nodes[id];
   const kind = binding.config.approvalNodes.includes(id) ? "approval" : "agent";
   const status = toStepReportStatus(state?.status);
-  const parts = [state?.summary, state?.artifactUrl, state?.prUrl, state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined].filter((v) => typeof v === "string" && v.length > 0);
+  const parts = [
+    state?.summary,
+    state?.artifactUrl,
+    state?.prUrl,
+    state?.commitSha ? `commit:${state.commitSha}` : undefined,
+    state?.proof ? `proof:${state.proof}` : undefined,
+    state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined
+  ].filter((v) => typeof v === "string" && v.length > 0);
   return {
     id,
     name: id,
@@ -6779,6 +7114,7 @@ function toStepReport(binding, id) {
     ...state?.summary ? { summary: state.summary } : {},
     ...kind === "approval" && state?.approvedBy ? { actor: state.approvedBy } : {},
     ...kind === "approval" ? { decision: approvalDecisionForStatus(status) } : {},
+    ...state?.usage ? { usage: state.usage } : {},
     output: parts.join(" | ")
   };
 }
@@ -6786,13 +7122,14 @@ function buildCloudReport(binding, now) {
   const steps = binding.config.nodes.map((id) => toStepReport(binding, id));
   const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
   const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
-  return { status, finishedAt: status === "running" ? null : now, steps };
+  const values = binding.values && Object.keys(binding.values).length > 0 ? binding.values : undefined;
+  return { status, finishedAt: status === "running" ? null : now, steps, ...values ? { values } : {} };
 }
 function cloneBinding(binding) {
   const nodes = {};
   for (const [k, v] of Object.entries(binding.nodes))
     nodes[k] = { ...v };
-  return { ...binding, nodes };
+  return { ...binding, nodes, ...binding.values ? { values: { ...binding.values } } : {} };
 }
 function checkGatedPath(input) {
   const { binding, config, targetPath, toRelative } = input;
@@ -6882,15 +7219,15 @@ function evaluateStopDecision(input) {
 // src/gate/git.ts
 var execFileAsync = promisify(execFile);
 function resolveRealPath(targetPath) {
-  const abs = resolve(targetPath);
+  const abs = resolve2(targetPath);
   const tail = [];
   let cursor = abs;
   while (true) {
     try {
       const real = realpathSync(cursor);
-      return tail.length > 0 ? join(real, ...tail.reverse()) : real;
+      return tail.length > 0 ? join4(real, ...tail.reverse()) : real;
     } catch {
-      const parent = dirname(cursor);
+      const parent = dirname2(cursor);
       if (parent === cursor)
         return abs;
       tail.push(basename2(cursor));
@@ -6925,10 +7262,10 @@ async function resolveRepoBranch(input) {
   return { repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root), branch };
 }
 async function loadWorkflowConfig(repoRoot) {
-  const filePath = join(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
+  const filePath = join4(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
   let text;
   try {
-    text = await readFile(filePath, "utf8");
+    text = await readFile2(filePath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -6948,7 +7285,7 @@ async function loadWorkflowConfig(repoRoot) {
 }
 function toRepoRelativePath(repoRoot, targetPath) {
   const root = canonicalRepoRoot(repoRoot);
-  const absTarget = isAbsolute(targetPath) ? resolve(targetPath) : resolve(root, targetPath);
+  const absTarget = isAbsolute(targetPath) ? resolve2(targetPath) : resolve2(root, targetPath);
   const realTarget = resolveRealPath(absTarget);
   const rel = relative(root, realTarget);
   if (rel.startsWith("..") || isAbsolute(rel))
@@ -7092,6 +7429,21 @@ function connectFlowStream(options) {
 }
 
 // src/gate/index.ts
+var hydratedFlowResponseSchema = object({
+  flow: object({
+    id: string2().min(1),
+    mode: string2().optional(),
+    workspace: string2().nullable().optional(),
+    branch: string2().nullable().optional(),
+    values: record(string2(), string2()).optional(),
+    steps: array(object({
+      id: string2().min(1),
+      status: string2().optional(),
+      summary: string2().optional()
+    })).optional()
+  })
+});
+
 class WorkflowGate {
   bindings = new Map;
   bypasses = new Map;
@@ -7118,6 +7470,7 @@ class WorkflowGate {
     const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
     const body = {
       mode: "local",
+      ...input.parentId ? { parentId: input.parentId } : {},
       name,
       workspace,
       repo: workspace,
@@ -7169,6 +7522,19 @@ class WorkflowGate {
         state.artifactUrl = input.artifactUrl;
       if (input.prUrl)
         state.prUrl = input.prUrl;
+      if (input.commitSha)
+        state.commitSha = input.commitSha;
+      if (input.proof)
+        state.proof = input.proof;
+      if (input.usage)
+        state.usage = input.usage;
+      if (input.values || input.commitSha) {
+        draft.values = {
+          ...draft.values ?? {},
+          ...input.values ?? {},
+          ...input.commitSha ? { commitSha: input.commitSha } : {}
+        };
+      }
       state.updatedAt = now;
       advanceCurrentNode(draft, now);
     });
@@ -7354,10 +7720,60 @@ class WorkflowGate {
     return resolveRepoBranch(input);
   }
   async resolveBinding(input) {
+    if (input.flowId) {
+      const byId = this.getByFlowId(input.flowId);
+      if (byId)
+        return byId;
+      return this.rehydrateByFlowId({ flowId: input.flowId, repoRoot: input.repoRoot, branch: input.branch });
+    }
     const { repoRoot, branch } = await this.resolveTarget(input);
     const binding = this.bindings.get(bindingKey(repoRoot, branch));
     if (!binding)
       throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
+    return binding;
+  }
+  async rehydrateByFlowId(input) {
+    const raw = await this.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}`);
+    const parsed = hydratedFlowResponseSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      throw new Error(`invalid flow response while rehydrating "${input.flowId}"`);
+    }
+    const flow = parsed.data.flow;
+    if (flow.mode !== "local") {
+      throw new Error(`cannot bind flow "${input.flowId}": expected mode "local", got "${flow.mode ?? "unknown"}"`);
+    }
+    const requestedBranch = input.branch?.trim();
+    if (requestedBranch && flow.branch && requestedBranch !== flow.branch) {
+      throw new Error(`flow "${flow.id}" is bound to branch "${flow.branch}", not "${requestedBranch}"`);
+    }
+    const { repoRoot, branch } = await resolveRepoBranch({ repoRoot: input.repoRoot, branch: requestedBranch || flow.branch || undefined });
+    const repoName = basename3(repoRoot);
+    if (flow.workspace && repoName !== flow.workspace) {
+      throw new Error(`flow "${flow.id}" belongs to workspace "${flow.workspace}", not "${repoName}"`);
+    }
+    const config = await loadWorkflowConfig(repoRoot);
+    if (!config)
+      throw new Error(`no .nosta/workflow.json found in ${repoRoot}`);
+    const binding = this.attachBinding({ repoRoot, branch, flowId: flow.id, config });
+    return this.applyHydratedFlow(binding, flow);
+  }
+  applyHydratedFlow(binding, flow) {
+    const now = this.now();
+    if (flow.values && Object.keys(flow.values).length > 0) {
+      binding.values = { ...flow.values };
+    }
+    for (const step of flow.steps ?? []) {
+      const nodeState = Object.hasOwn(binding.nodes, step.id) ? binding.nodes[step.id] : undefined;
+      if (nodeState) {
+        const mapped = step.status ? mapEventStatus(step.status) : null;
+        if (mapped)
+          nodeState.status = mapped;
+        if (step.summary)
+          nodeState.summary = step.summary;
+        nodeState.updatedAt = now;
+      }
+    }
+    advanceCurrentNode(binding, now);
     return binding;
   }
   attachBinding(input) {
@@ -7463,6 +7879,7 @@ class WorkflowGate {
     const nextBinding = {
       ...current,
       nodes: draft.nodes,
+      ...draft.values ? { values: draft.values } : {},
       currentNode: draft.currentNode,
       updatedAt: draft.updatedAt
     };
@@ -7499,7 +7916,7 @@ class WorkflowGate {
 }
 
 // src/packet.ts
-import { readFile as readFile2, realpath, stat } from "node:fs/promises";
+import { readFile as readFile3, realpath, stat } from "node:fs/promises";
 import { basename as basename4, relative as relative2, sep as sep2 } from "node:path";
 async function assertReadableWorkspaceFile(filePath, rootDir = process.env.NOSTA_WORKSPACE_ROOT || process.cwd()) {
   const [resolvedRoot, resolvedFile] = await Promise.all([realpath(rootDir), realpath(filePath)]);
@@ -7540,7 +7957,7 @@ async function buildPacket(args) {
   for (const path of safePaths) {
     files.push({
       name: basename4(path),
-      content: await readFile2(path, "utf8")
+      content: await readFile3(path, "utf8")
     });
   }
   const result = validatePacket({ title: args.title, files });
@@ -7563,6 +7980,7 @@ var flowStartInputSchema = object({
   ticketUrl: string2().optional().describe("HTTPS URL of the ticket this flow runs for."),
   paths: array(string2()).optional().describe("Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."),
   title: string2().optional().describe("Optional flow title (review or local mode)."),
+  parentId: string2().optional().describe("Optional parent flow ID to attach this local flow to."),
   repoRoot: string2().optional().describe("Git repository root containing .nosta/workflow.json (local mode)."),
   branch: string2().optional().describe("Git branch name to bind (local mode; defaults to current branch)."),
   base: string2().optional().describe("Optional base branch name (local mode)."),
@@ -7609,7 +8027,11 @@ var flowAdvanceInputSchema = object({
   repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
   branch: string2().optional().describe("Git branch name (optional if flowId is provided)."),
   artifactUrl: string2().optional().describe("Optional artifact/spec/diff URL."),
-  prUrl: string2().optional().describe("Optional PR URL.")
+  prUrl: string2().optional().describe("Optional PR URL."),
+  commitSha: string2().optional().describe("Optional Git commit SHA produced by this node."),
+  proof: string2().optional().describe("Optional verification proof summary or command result."),
+  usage: usageSchema.optional().describe("Optional token usage recorded for this node."),
+  values: record(string2(), string2()).optional().describe("Optional metadata merged onto flow values.")
 });
 var flowApproveInputSchema = object({
   flowId: string2().optional().describe("Flow ID waiting at its approval gate."),
@@ -7765,7 +8187,7 @@ async function startSpecFlow(args, backend) {
   if ((await stat2(safePath)).size > MAX_PACKET_BYTES) {
     throw new Error("spec exceeds 256 KiB");
   }
-  const spec = await readFile3(safePath, "utf8");
+  const spec = await readFile4(safePath, "utf8");
   const baseSha = args.baseSha;
   const ticketUrl = args.ticketUrl;
   const key = createHash("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
@@ -7783,6 +8205,7 @@ async function startFlow(input) {
   const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined);
   if (isLocal) {
     const raw = JSON.stringify(await gate.start({
+      parentId: trimmed(args.parentId),
       repoRoot: trimmed(args.repoRoot),
       branch: trimmed(args.branch),
       base: trimmed(args.base),
@@ -7818,7 +8241,11 @@ async function advanceLocal(args, gate) {
     repoRoot: trimmed(args.repoRoot),
     branch: trimmed(args.branch),
     artifactUrl: trimmed(args.artifactUrl),
-    prUrl: trimmed(args.prUrl)
+    prUrl: trimmed(args.prUrl),
+    commitSha: trimmed(args.commitSha),
+    proof: trimmed(args.proof),
+    usage: args.usage,
+    values: args.values
   }));
 }
 async function approveFlow(input) {
@@ -7860,13 +8287,13 @@ async function bypassLocal(args, gate) {
 }
 
 // src/gate/ipc.ts
-import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir, readFile as readFile4, rename, rm, writeFile } from "node:fs/promises";
+import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
+import { chmod, lstat, mkdir as mkdir3, readFile as readFile5, rename as rename2, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
-import { join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { join as join5 } from "node:path";
 function defaultGateDir(env = process.env) {
-  return env.NOSTA_GATE_DIR || join2(homedir(), ".nosta", "gate");
+  return env.NOSTA_GATE_DIR || join5(homedir2(), ".nosta", "gate");
 }
 function constantTimeTokenMatch(given, expected) {
   const a = Buffer.from(given, "utf8");
@@ -7923,7 +8350,7 @@ function requiredString(value, field) {
   return value;
 }
 async function prepareGateDir(gateDir) {
-  await mkdir(gateDir, { recursive: true, mode: 448 });
+  await mkdir3(gateDir, { recursive: true, mode: 448 });
   const dirStat = await lstat(gateDir);
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
     throw new Error(`gateDir "${gateDir}" must be a real directory, not a symlink`);
@@ -7938,9 +8365,9 @@ async function prepareGateDir(gateDir) {
 async function startGateIpcServer(options) {
   const gateDir = options.gateDir ?? defaultGateDir();
   const pid = options.pid ?? process.pid;
-  const token = randomBytes(32).toString("hex");
-  const socketPath = join2(gateDir, `${pid}.sock`);
-  const discoveryPath = join2(gateDir, "current.json");
+  const token = randomBytes2(32).toString("hex");
+  const socketPath = join5(gateDir, `${pid}.sock`);
+  const discoveryPath = join5(gateDir, "current.json");
   const startedAt = new Date().toISOString();
   await prepareGateDir(gateDir);
   await rm(socketPath, { force: true });
@@ -7958,13 +8385,13 @@ async function startGateIpcServer(options) {
     return;
   });
   const session = { pid, socketPath, token, startedAt };
-  const tmpPath = join2(gateDir, `current.${pid}.tmp`);
-  await writeFile(tmpPath, `${JSON.stringify(session, null, 2)}
+  const tmpPath = join5(gateDir, `current.${pid}.tmp`);
+  await writeFile2(tmpPath, `${JSON.stringify(session, null, 2)}
 `, { encoding: "utf8", mode: 384 });
   await chmod(tmpPath, 384).catch(() => {
     return;
   });
-  await rename(tmpPath, discoveryPath);
+  await rename2(tmpPath, discoveryPath);
   let closed = false;
   const close = async () => {
     if (closed)
@@ -7975,7 +8402,7 @@ async function startGateIpcServer(options) {
       return;
     });
     try {
-      const raw = await readFile4(discoveryPath, "utf8");
+      const raw = await readFile5(discoveryPath, "utf8");
       const current = JSON.parse(raw);
       if (current.pid === pid && current.token === token) {
         await rm(discoveryPath, { force: true });
@@ -8296,4 +8723,30 @@ function startServer() {
 if (false) {}
 
 // src/bin.ts
-startServer();
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    startServer();
+    return;
+  }
+  const command = args[0];
+  if (command === "--help" || command === "-h") {
+    process.stdout.write(`${usageText()}
+`);
+    return;
+  }
+  if (command === "install") {
+    const options = parseInstallArgs({ argv: args.slice(1) });
+    const result = await runInstall(options);
+    process.stdout.write(formatInstallSummary(result));
+    return;
+  }
+  throw new Error(`unknown command: ${command}
+${usageText()}`);
+}
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`Error: ${message}
+`);
+  process.exit(1);
+});
