@@ -8651,11 +8651,7 @@ async function syncEvidence(input) {
   }
   return { refs, uploaded };
 }
-async function computeDiff(input) {
-  const mergeBase = await runGit(input.repoRoot, ["merge-base", input.base, input.head]) ?? input.base;
-  const numstat = await runGit(input.repoRoot, ["diff", "--numstat", `${mergeBase}..${input.head}`]) ?? "";
-  const rawDiff = await runGit(input.repoRoot, ["diff", `${mergeBase}..${input.head}`]) ?? "";
-  const headSha = await runGit(input.repoRoot, ["rev-parse", input.head]) ?? input.head;
+function parseNumstat(numstat) {
   const files = [];
   const migrations = [];
   let additions = 0;
@@ -8677,22 +8673,28 @@ async function computeDiff(input) {
     if (Number.isFinite(del))
       deletions += del;
   }
-  const { text: diff, truncated: diffTruncated } = truncateDiff(rawDiff);
-  return {
-    summary: {
-      base: input.base,
-      head: headSha,
-      ticket: null,
-      name: null,
-      files: files.slice(0, 500),
-      migrations: migrations.slice(0, 200),
-      additions,
-      deletions,
-      sha256: sha256Of(`${mergeBase}:${headSha}:${numstat}`)
-    },
-    diff,
-    diffTruncated
+  return { files: files.slice(0, 500), migrations: migrations.slice(0, 200), additions, deletions };
+}
+async function computeDiff(input) {
+  const mergeBase = await runGit(input.repoRoot, ["merge-base", input.base, input.head]) ?? input.base;
+  const numstat = await runGit(input.repoRoot, ["diff", "--numstat", `${mergeBase}..${input.head}`]) ?? "";
+  const headSha = await runGit(input.repoRoot, ["rev-parse", input.head]) ?? input.head;
+  const sha256 = sha256Of(`${mergeBase}:${headSha}:${numstat}`);
+  const stats = parseNumstat(numstat);
+  const summary = {
+    base: input.base,
+    head: headSha,
+    ticket: null,
+    name: null,
+    ...stats,
+    sha256
   };
+  if (input.uploadedDiffSha256 && sha256 === input.uploadedDiffSha256) {
+    return { summary, uploadDiff: false, diff: null, diffTruncated: false };
+  }
+  const rawDiff = await runGit(input.repoRoot, ["diff", `${mergeBase}..${input.head}`]) ?? "";
+  const { text: diff, truncated: diffTruncated } = truncateDiff(rawDiff);
+  return { summary, uploadDiff: true, diff, diffTruncated };
 }
 function buildSteps(args, now) {
   const steps = [];
@@ -8752,7 +8754,7 @@ async function resolveComputedDiff(input) {
   const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
   const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
   const head = diffOpts.head ?? "HEAD";
-  return computeDiff({ repoRoot, base, head });
+  return computeDiff({ repoRoot, base, head, uploadedDiffSha256: input.existing.diffUploadedSha256 });
 }
 async function attachPublishedArtifact(input) {
   const now = input.now ?? Date.now();
@@ -8810,6 +8812,7 @@ async function syncFlow(input) {
   const evOut = input.args.evidence ? await syncEvidence({ state: existing, evidence: input.args.evidence, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
   const computedDiff = await resolveComputedDiff({ args: input.args, existing, repoRoot: resolved.repoRoot });
   const diffSummary = computedDiff ? computedDiff.summary : existing.diffSummary;
+  const diffSummaryChanged = Boolean(computedDiff && (computedDiff.uploadDiff || JSON.stringify(computedDiff.summary) !== JSON.stringify(existing.diffSummary)));
   const ship = mergeShip(existing.ship, input.args.ship);
   const steps = buildSteps(input.args, now);
   const status = input.args.status ?? "running";
@@ -8823,7 +8826,8 @@ async function syncFlow(input) {
       steps,
       ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
       ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
-      ...computedDiff ? { diffSummary: computedDiff.summary, diff: computedDiff.diff, diffTruncated: computedDiff.diffTruncated } : {},
+      ...computedDiff && diffSummaryChanged ? { diffSummary: computedDiff.summary } : {},
+      ...computedDiff?.uploadDiff ? { diff: computedDiff.diff, diffTruncated: computedDiff.diffTruncated } : {},
       ...input.args.tabs !== undefined ? { tabs: input.args.tabs } : {},
       ...input.args.ship ? { ship } : {},
       ...input.args.pr ? { pr: input.args.pr } : {},
@@ -8833,12 +8837,14 @@ async function syncFlow(input) {
       ...resolved.branch ? { branch: resolved.branch } : {}
     })
   });
+  const diffUploadedSha256 = computedDiff?.uploadDiff ? computedDiff.summary.sha256 : existing.diffUploadedSha256;
   await saveLocalFlow({
     ...existing,
     ...resolved.repoRoot ? { repoRoot: resolved.repoRoot } : {},
     ...resolved.branch ? { branch: resolved.branch } : {},
     ...input.args.base ? { base: input.args.base } : {},
     ...tabs !== undefined ? { tabs } : {},
+    ...diffUploadedSha256 !== undefined ? { diffUploadedSha256 } : {},
     ticket,
     docs: mergeRefs(existing.docs, docOut.refs),
     evidence: mergeRefs(existing.evidence, evOut.refs),
@@ -8850,6 +8856,7 @@ async function syncFlow(input) {
     flowId: resolved.flowId,
     uploadedDocs: docOut.uploaded,
     uploadedEvidence: evOut.uploaded,
+    uploadedDiff: Boolean(computedDiff?.uploadDiff),
     stepsReported: steps.length,
     diffSummary,
     ...tabs !== undefined ? { tabs } : {},
@@ -10802,7 +10809,7 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.5.0" }
+        serverInfo: { name: "nosta", version: "0.5.1" }
       });
     } else if (method === "ping") {
       sendResult(id, {});
