@@ -20,7 +20,8 @@ description: Prepare a finished flow for human ship approval — simulate branch
 ### 2. Prepare the ship summary
 1. Verify every node is closed, tests/lint/typecheck pass on the tip, and no high-severity review findings remain open.
 2. Draft the PR title and body using `writing-pr-descriptions`, including real non-test evidence (command output, trace, or screenshot) and any schema/data changes.
-3. Open the ship-ready chat reply with the clickable flow page link (`flowUrl` returned by `nosta_flow_status` / `nosta_flow_start`) and, when a local film exists for the ship gate, embed it directly in chat (`![film](/abs/path/to/film.mp4)`); upload live evidence media (`PUT /api/media/:ticket/:name`) and the cumulative diff (`POST /api/diffs`) linked to the flow so they render inline on the Flow page's **Ship** tab rather than passing binary evidence through the MCP API. Follow with the full diff summary, PR draft, and evidence, then stop and wait for an explicit "ship" before opening ready pull requests.
+3. Sync final ship artifacts to the bound flow via `nosta_flow_sync` (`evidence`, `checks`, `review`, `diff: true`, and `ship: { risk, deployOrder, notes }`) so all 4 **Ship** subtabs (Summary, Evidence, Gates, Reviews) populate directly on the Flow page with `sha256`-deduped blob uploads. Open the ship-ready chat reply with the clickable flow page link (`flowUrl` returned by `nosta_flow_sync` / `nosta_flow_status`) and, when a local film exists for the ship gate, embed it directly in chat (`![film](/abs/path/to/film.mp4)`). Follow with the full diff summary, PR draft, and evidence, then stop and wait for an explicit "ship" before opening ready pull requests.
+4. After opening the PR on explicit ship, call `nosta_flow_sync` with `pr: { url, number, base }` so the PR link attaches to the Flow record.
 
 ### 3. Open ready PRs on explicit ship
 1. Only after the owner says "ship", open the pull request(s) as ready (`gh pr create` or `gh pr ready`).

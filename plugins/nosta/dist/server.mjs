@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// src/bin.ts
+import { readFile as readFile8 } from "node:fs/promises";
+
 // src/install/index.ts
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -331,8 +334,9 @@ function formatInstallSummary(result) {
 // src/server.ts
 import { createInterface } from "node:readline";
 
-// src/transport.ts
-import { randomUUID } from "node:crypto";
+// src/artifacts/index.ts
+import { mkdir as mkdir4, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
 
 // ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6474,20 +6478,171 @@ function superRefine(fn, params) {
 // ../../packages/shared/src/schema/primitives.ts
 var countSchema = number2().int().min(0);
 var positiveSchema = number2().int().min(1);
+function listOf(key, item) {
+  const shape = { [key]: array(item) };
+  return object(shape);
+}
 
-// ../../packages/shared/src/review-report.ts
-var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
-var findingSchema = object({
-  file: string2(),
-  line: number2().int(),
-  evidence: string2(),
-  severity: findingSeveritySchema.optional(),
-  correction: string2().optional()
+// ../../packages/shared/src/storage/pages.ts
+var MAX_PAGE_BYTES = 1500000;
+var MAX_PAGE_TITLE = 200;
+var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
+var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
+var MEDIA_CONTENT_TYPES = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8"
+};
+function mediaContentType(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0)
+    return null;
+  return MEDIA_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null;
+}
+function isDocumentKey(value) {
+  const parts = value.split("/");
+  const ticket = parts[0] ?? "";
+  const name = parts[1] ?? "";
+  return parts.length === 2 && PAGE_TICKET.test(ticket) && PAGE_NAME.test(name);
+}
+var pageRowSchema = object({
+  ticket: string2().regex(PAGE_TICKET),
+  name: string2().regex(PAGE_NAME),
+  title: string2().min(1),
+  stepId: string2(),
+  bytes: number2(),
+  created: string2().min(1),
+  kind: _enum(["html", "diff", "media"]).optional(),
+  storage: _enum(["cloud", "local"]).optional(),
+  localPath: string2().min(1).max(1000).optional(),
+  localHost: string2().min(1).max(200).optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  linkedTo: array(string2().refine(isDocumentKey)).optional()
 });
-var reviewReportSchema = object({
-  findings: array(findingSchema),
-  verdict: _enum(["PASS", "FAIL"])
+var localMediaInputSchema = object({
+  localPath: string2().trim().min(1).max(1000),
+  bytes: number2().int().min(0),
+  title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
+  stepId: string2().trim().max(128).optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  localHost: string2().trim().min(1).max(200).optional()
 });
+var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
+  nextCursor: string2().nullable().optional()
+});
+
+// src/flow.ts
+import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
+import { readFile as readFile6, stat as stat2 } from "node:fs/promises";
+
+// ../../packages/shared/src/packet.ts
+var MAX_FILES = 32;
+var MAX_PACKET_BYTES = 256 * 1024;
+var MAX_SERIALIZED_BYTES = 384 * 1024;
+var MAX_NAME_CHARS = 200;
+var MAX_TITLE_CHARS = 200;
+var encoder = new TextEncoder;
+function byteLength(text) {
+  return encoder.encode(text).length;
+}
+function isValidFileName(name) {
+  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
+}
+function failure2(error) {
+  return { ok: false, error };
+}
+function readTitle(input) {
+  if (input.title === undefined)
+    return "review";
+  if (typeof input.title !== "string")
+    return null;
+  const title = input.title.trim();
+  if (!title || title.length > MAX_TITLE_CHARS)
+    return null;
+  return title;
+}
+function readFiles(input) {
+  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
+    return `files must list 1..${MAX_FILES} entries`;
+  }
+  const files = [];
+  const seen = new Set;
+  for (const entry of input.files) {
+    if (!entry || typeof entry !== "object")
+      return "invalid file entry";
+    const file = entry;
+    if (!isValidFileName(file.name)) {
+      return `invalid file name: ${String(file.name)}`;
+    }
+    if (typeof file.content !== "string") {
+      return `invalid file content: ${file.name}`;
+    }
+    if (seen.has(file.name))
+      return `duplicate file name: ${file.name}`;
+    seen.add(file.name);
+    files.push({ name: file.name, content: file.content });
+  }
+  return files;
+}
+function serializedByteLength(value) {
+  return byteLength(JSON.stringify(value) ?? "");
+}
+function validatePacket(input) {
+  if (!input || typeof input !== "object")
+    return failure2("packet must be an object");
+  const record = input;
+  const title = readTitle(record);
+  if (title === null)
+    return failure2("title must be 1..200 characters");
+  const files = readFiles(record);
+  if (typeof files === "string")
+    return failure2(files);
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += byteLength(file.content);
+  }
+  if (totalBytes > MAX_PACKET_BYTES)
+    return failure2("packet exceeds 256 KiB");
+  const serializedBytes = serializedByteLength({ title, files });
+  if (serializedBytes > MAX_SERIALIZED_BYTES) {
+    return failure2("packet exceeds 384 KiB after JSON encoding");
+  }
+  return { ok: true, packet: { title, files, totalBytes } };
+}
+
+// ../../packages/shared/src/schema/flow/step/usage.ts
+var MAX_RAW_BYTES = 64 * 1024;
+var usageSchema = object({
+  inputTokens: countSchema,
+  outputTokens: countSchema,
+  cachedInputTokens: countSchema.optional(),
+  reasoningTokens: countSchema.optional()
+});
+var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
+
+// src/api/generated/nosta.ts
+var getApproveFlowUrl = (flowId) => {
+  return `/api/flow/${flowId}/approval`;
+};
+var getListFlowEventsUrl = (id) => {
+  return `/api/flow/${id}/events`;
+};
+var getRunCloudStepUrl = (id) => {
+  return `/api/flow/${id}/step`;
+};
+
+// src/gate/index.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { basename as basename3 } from "node:path";
 
 // ../../packages/shared/src/schema/flow/status.ts
 var flowStatusSchema = _enum([
@@ -6515,15 +6670,149 @@ var stepStatusSchema = _enum([
   "rejected"
 ]);
 
-// ../../packages/shared/src/schema/flow/step/usage.ts
-var MAX_RAW_BYTES = 64 * 1024;
-var usageSchema = object({
-  inputTokens: countSchema,
-  outputTokens: countSchema,
-  cachedInputTokens: countSchema.optional(),
-  reasoningTokens: countSchema.optional()
+// ../../packages/shared/src/schema/flow/step/event.ts
+var stepEventStatusSchema = _enum([...flowStatusSchema.options, "rejected"]);
+var stepEventSchema = object({
+  seq: countSchema,
+  at: countSchema,
+  flowId: string2(),
+  childFlowId: string2().nullable(),
+  stepId: string2().nullable(),
+  kind: stepKindSchema,
+  status: stepEventStatusSchema,
+  sourceVersion: countSchema.default(1),
+  summary: string2(),
+  usage: usageSchema.nullable()
 });
-var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
+
+// src/store.ts
+import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { mkdir as mkdir3, readFile as readFile2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { join as join4, resolve as resolve2 } from "node:path";
+function canonicalRoot(repoRoot) {
+  const abs = resolve2(repoRoot);
+  try {
+    return realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function branchIndexKey(repoRoot, branch) {
+  return `${canonicalRoot(repoRoot)}::${branch.trim()}`;
+}
+function flowsDir(stateDir) {
+  const root = stateDir ?? process.env.NOSTA_STATE_DIR ?? join4(homedir2(), ".nosta");
+  return join4(root, "flows");
+}
+function safeFlowFile(flowId) {
+  return `${flowId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
+}
+async function readJsonFile(filePath) {
+  try {
+    const raw = await readFile2(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+async function writeJsonAtomic(filePath, value) {
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile2(tmp, `${JSON.stringify(value, null, 2)}
+`, "utf8");
+  await rename2(tmp, filePath);
+}
+async function readFlowIndex(stateDir) {
+  const loaded = await readJsonFile(join4(flowsDir(stateDir), "index.json"));
+  return {
+    byBranch: loaded?.byBranch ? { ...loaded.byBranch } : {},
+    byTicket: loaded?.byTicket ? { ...loaded.byTicket } : {}
+  };
+}
+async function readLocalFlow(flowId, stateDir) {
+  const loaded = await readJsonFile(join4(flowsDir(stateDir), safeFlowFile(flowId)));
+  if (!loaded || typeof loaded.flowId !== "string")
+    return null;
+  return {
+    ...loaded,
+    docs: Array.isArray(loaded.docs) ? loaded.docs : [],
+    evidence: Array.isArray(loaded.evidence) ? loaded.evidence : [],
+    diffSummary: loaded.diffSummary ?? null,
+    ship: loaded.ship ?? null
+  };
+}
+async function resolveIndexedFlowId(input) {
+  const index = await readFlowIndex(input.stateDir);
+  if (input.repoRoot && input.branch) {
+    const hit = index.byBranch[branchIndexKey(input.repoRoot, input.branch)];
+    if (hit)
+      return hit;
+  }
+  if (input.ticket) {
+    const hit = index.byTicket[input.ticket.trim()];
+    if (hit)
+      return hit;
+  }
+  return null;
+}
+async function saveLocalFlow(state, stateDir) {
+  const dir = flowsDir(stateDir);
+  await mkdir3(dir, { recursive: true });
+  const normalized = {
+    ...state,
+    ...state.repoRoot ? { repoRoot: canonicalRoot(state.repoRoot) } : {}
+  };
+  await writeJsonAtomic(join4(dir, safeFlowFile(normalized.flowId)), normalized);
+  const index = await readFlowIndex(stateDir);
+  if (normalized.repoRoot && normalized.branch) {
+    index.byBranch[branchIndexKey(normalized.repoRoot, normalized.branch)] = normalized.flowId;
+  }
+  if (normalized.ticket) {
+    index.byTicket[normalized.ticket.trim()] = normalized.flowId;
+  }
+  await writeJsonAtomic(join4(dir, "index.json"), index);
+  return normalized;
+}
+function emptyLocalFlow(input) {
+  return {
+    flowId: input.flowId,
+    ...input.repoRoot ? { repoRoot: canonicalRoot(input.repoRoot) } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.base ? { base: input.base } : {},
+    ...input.ticket ? { ticket: input.ticket } : {},
+    ...input.title ? { title: input.title } : {},
+    docs: [],
+    evidence: [],
+    diffSummary: null,
+    ship: null,
+    updatedAt: input.now ?? Date.now()
+  };
+}
+
+// src/gate/git.ts
+import { execFile } from "node:child_process";
+import { realpathSync as realpathSync2 } from "node:fs";
+import { readFile as readFile3 } from "node:fs/promises";
+import { basename as basename2, dirname as dirname2, isAbsolute, join as join5, relative, resolve as resolve3, sep } from "node:path";
+import { promisify } from "node:util";
+
+// src/gate/policy.ts
+import { basename } from "node:path";
+
+// ../../packages/shared/src/review-report.ts
+var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
+var findingSchema = object({
+  file: string2(),
+  line: number2().int(),
+  evidence: string2(),
+  severity: findingSeveritySchema.optional(),
+  correction: string2().optional()
+});
+var reviewReportSchema = object({
+  findings: array(findingSchema),
+  verdict: _enum(["PASS", "FAIL"])
+});
 
 // ../../packages/shared/src/schema/flow/step/record.ts
 var stepFileRefSchema = object({
@@ -6601,356 +6890,7 @@ function approvalDecisionForStatus(status) {
   return null;
 }
 
-// ../../packages/shared/src/runtime/hybrid.ts
-var MAX_STEP_ARTIFACTS = 64;
-var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
-var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-var SHA256_HEX = /^[0-9a-f]{64}$/;
-var COMMIT_HEX = /^[0-9a-f]{40}$/;
-var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
-var SECRET_BASENAMES = new Set(["secrets", ".dev.vars", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]);
-function normalizeRelativePath(raw) {
-  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
-}
-function isSafeRelativePath(raw) {
-  if (!raw || raw.includes("\x00"))
-    return false;
-  const slash = raw.replaceAll("\\", "/");
-  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
-    return false;
-  const cleaned = normalizeRelativePath(slash);
-  if (!cleaned || cleaned === ".")
-    return false;
-  const parts = cleaned.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-function isSafeMountPath(raw) {
-  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
-  if (cleaned === "" || cleaned === "." || cleaned === "./")
-    return true;
-  return isSafeRelativePath(cleaned);
-}
-function isSecretPath(raw) {
-  const cleaned = normalizeRelativePath(raw);
-  if (!cleaned)
-    return false;
-  const parts = cleaned.split("/");
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
-      return true;
-  }
-  const base = (parts[parts.length - 1] ?? "").toLowerCase();
-  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
-}
-var bundleRepoManifestSchema = object({
-  name: string2().regex(REPO_NAME),
-  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
-  commitSha: string2().regex(COMMIT_HEX).optional(),
-  branch: string2().min(1).max(200).optional(),
-  dirty: boolean2(),
-  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
-  patchApplied: boolean2().optional(),
-  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
-  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
-});
-var bundleManifestSchema = object({
-  version: literal(1),
-  workspace: string2().regex(WORKSPACE_NAME),
-  primaryRepo: string2().regex(REPO_NAME),
-  repos: array(bundleRepoManifestSchema).min(1).max(32)
-});
-var bundlePointerSchema = object({
-  workspace: string2().regex(WORKSPACE_NAME),
-  sha: string2().regex(SHA256_HEX),
-  commitSha: string2(),
-  bytes: number2().int().min(1),
-  createdAt: number2().int().min(0),
-  dirty: boolean2().optional(),
-  repoCount: number2().int().min(1).optional()
-});
-var stepArtifactSchema = object({
-  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
-  contentBase64: string2(),
-  bytes: number2().int().min(0),
-  sha256: string2().regex(SHA256_HEX)
-});
-var cloudStepRequestSchema = object({
-  workspace: string2().min(1).max(64),
-  workflowName: string2().min(1).max(64),
-  stepId: string2().min(1).max(64),
-  bundleSha: string2().regex(SHA256_HEX),
-  force: boolean2().optional(),
-  values: record(string2(), string2()).optional(),
-  pullOutputs: boolean2().optional(),
-  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
-});
-var cloudStepReplySchema = stepRecordSchema.and(object({
-  values: record(string2(), string2()).optional(),
-  artifacts: array(stepArtifactSchema).optional()
-}));
-
-// ../../packages/shared/src/security.ts
-function isLoopbackHost(hostname) {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
-  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
-}
-
-// src/api/generated/nosta.ts
-var getApproveFlowUrl = (flowId) => {
-  return `/api/flow/${flowId}/approval`;
-};
-var getListFlowEventsUrl = (id) => {
-  return `/api/flow/${id}/events`;
-};
-var getRunCloudStepUrl = (id) => {
-  return `/api/flow/${id}/step`;
-};
-
-// src/transport.ts
-var flowIdReplySchema = object({ flow: object({ id: string2() }) });
-function validateBaseUrl(rawUrl) {
-  const normalized = rawUrl.replace(/\/+$/, "");
-  let parsed;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  return normalized;
-}
-async function sendText(cfg, req) {
-  const init = req.init ?? {};
-  const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${cfg.token}`);
-  if (cfg.actor && !headers.has("x-nosta-actor"))
-    headers.set("x-nosta-actor", cfg.actor);
-  const method = (init.method ?? "GET").toUpperCase();
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    ...init,
-    headers,
-    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
-  });
-  const text = await res.text();
-  if (!res.ok)
-    throw new Error(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
-  return text;
-}
-async function sendJson(cfg, req) {
-  const headers = {
-    authorization: `Bearer ${cfg.token}`,
-    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
-    ...req.body !== undefined ? { "content-type": "application/json" } : {},
-    ...req.headers ?? {}
-  };
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    method: req.method,
-    headers,
-    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
-    signal: AbortSignal.timeout(cfg.timeoutMs)
-  });
-  if (req.allow404 && res.status === 404)
-    return null;
-  const text = await res.text();
-  if (!res.ok)
-    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
-}
-function bundleHeaders(input) {
-  return {
-    "content-type": "application/gzip",
-    "x-bundle-sha256": input.sha256,
-    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
-    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
-    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
-  };
-}
-function createNostaTransport(config) {
-  const cfg = {
-    baseUrl: validateBaseUrl(config.baseUrl),
-    token: config.token,
-    actor: config.actor,
-    timeoutMs: config.timeoutMs ?? 120000,
-    fetch: config.fetch ?? fetch
-  };
-  return {
-    baseUrl: cfg.baseUrl,
-    token: cfg.token,
-    streamUrl(path) {
-      return `${cfg.baseUrl}${path}`;
-    },
-    request(path, init) {
-      return sendText(cfg, { path, init });
-    },
-    requestJson(req) {
-      return sendJson(cfg, req);
-    },
-    async getLatestBundle(workspace) {
-      const raw = await sendJson(cfg, { method: "GET", path: `/api/bundles/${encodeURIComponent(workspace)}/latest`, allow404: true });
-      return raw === null ? null : bundlePointerSchema.parse(raw);
-    },
-    async putBundle(input) {
-      const text = await sendText(cfg, {
-        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
-        init: { method: "PUT", headers: bundleHeaders(input), body: Buffer.from(input.bytes) }
-      });
-      return bundlePointerSchema.parse(JSON.parse(text));
-    },
-    async createLocalFlow(input) {
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "local", ...input } }));
-    },
-    async reportFlow(input) {
-      const { flowId, ...body } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: `/api/flow/${encodeURIComponent(flowId)}/report`, body }));
-    },
-    async runCloudStep(input) {
-      const { flowId, ...body } = input;
-      const raw = await sendJson(cfg, { method: "POST", path: getRunCloudStepUrl(encodeURIComponent(flowId)), body });
-      return cloudStepReplySchema.parse(raw);
-    },
-    async startYamlFlow(input) {
-      const { idempotencyKey, ...rest } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "yaml", ...rest }, headers: { "Idempotency-Key": idempotencyKey } }));
-    },
-    async getFlow(flowId) {
-      return await sendJson(cfg, { method: "GET", path: `/api/flow/${encodeURIComponent(flowId)}` });
-    },
-    listFlowEvents(flowId) {
-      return sendText(cfg, { path: getListFlowEventsUrl(encodeURIComponent(flowId)) });
-    },
-    approveFlow(input) {
-      const { flowId, ...rest } = input;
-      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID();
-      const body = { ...rest, decisionId };
-      return sendText(cfg, {
-        path: getApproveFlowUrl(encodeURIComponent(flowId)),
-        init: { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": decisionId }, body: JSON.stringify(body) }
-      });
-    }
-  };
-}
-function transportFromEnv(env = process.env) {
-  return createNostaTransport({
-    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
-    token: env.NOSTA_PLUGIN_TOKEN ?? "",
-    timeoutMs: 30000
-  });
-}
-
-// src/flow.ts
-import { createHash, randomUUID as randomUUID3 } from "node:crypto";
-import { readFile as readFile4, stat as stat2 } from "node:fs/promises";
-
-// ../../packages/shared/src/packet.ts
-var MAX_FILES = 32;
-var MAX_PACKET_BYTES = 256 * 1024;
-var MAX_SERIALIZED_BYTES = 384 * 1024;
-var MAX_NAME_CHARS = 200;
-var MAX_TITLE_CHARS = 200;
-var encoder = new TextEncoder;
-function byteLength(text) {
-  return encoder.encode(text).length;
-}
-function isValidFileName(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
-}
-function failure2(error) {
-  return { ok: false, error };
-}
-function readTitle(input) {
-  if (input.title === undefined)
-    return "review";
-  if (typeof input.title !== "string")
-    return null;
-  const title = input.title.trim();
-  if (!title || title.length > MAX_TITLE_CHARS)
-    return null;
-  return title;
-}
-function readFiles(input) {
-  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
-    return `files must list 1..${MAX_FILES} entries`;
-  }
-  const files = [];
-  const seen = new Set;
-  for (const entry of input.files) {
-    if (!entry || typeof entry !== "object")
-      return "invalid file entry";
-    const file = entry;
-    if (!isValidFileName(file.name)) {
-      return `invalid file name: ${String(file.name)}`;
-    }
-    if (typeof file.content !== "string") {
-      return `invalid file content: ${file.name}`;
-    }
-    if (seen.has(file.name))
-      return `duplicate file name: ${file.name}`;
-    seen.add(file.name);
-    files.push({ name: file.name, content: file.content });
-  }
-  return files;
-}
-function serializedByteLength(value) {
-  return byteLength(JSON.stringify(value) ?? "");
-}
-function validatePacket(input) {
-  if (!input || typeof input !== "object")
-    return failure2("packet must be an object");
-  const record = input;
-  const title = readTitle(record);
-  if (title === null)
-    return failure2("title must be 1..200 characters");
-  const files = readFiles(record);
-  if (typeof files === "string")
-    return failure2(files);
-  let totalBytes = 0;
-  for (const file of files) {
-    totalBytes += byteLength(file.content);
-  }
-  if (totalBytes > MAX_PACKET_BYTES)
-    return failure2("packet exceeds 256 KiB");
-  const serializedBytes = serializedByteLength({ title, files });
-  if (serializedBytes > MAX_SERIALIZED_BYTES) {
-    return failure2("packet exceeds 384 KiB after JSON encoding");
-  }
-  return { ok: true, packet: { title, files, totalBytes } };
-}
-
-// src/gate/index.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { basename as basename3 } from "node:path";
-
-// ../../packages/shared/src/schema/flow/step/event.ts
-var stepEventStatusSchema = _enum([...flowStatusSchema.options, "rejected"]);
-var stepEventSchema = object({
-  seq: countSchema,
-  at: countSchema,
-  flowId: string2(),
-  childFlowId: string2().nullable(),
-  stepId: string2().nullable(),
-  kind: stepKindSchema,
-  status: stepEventStatusSchema,
-  sourceVersion: countSchema.default(1),
-  summary: string2(),
-  usage: usageSchema.nullable()
-});
-
-// src/gate/git.ts
-import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { readFile as readFile2 } from "node:fs/promises";
-import { basename as basename2, dirname as dirname2, isAbsolute, join as join4, relative, resolve as resolve2, sep } from "node:path";
-import { promisify } from "node:util";
-
 // src/gate/policy.ts
-import { basename } from "node:path";
 var workflowConfigSchema = object({
   version: literal(1),
   nodes: array(string2().min(1)).min(1),
@@ -7219,13 +7159,13 @@ function evaluateStopDecision(input) {
 // src/gate/git.ts
 var execFileAsync = promisify(execFile);
 function resolveRealPath(targetPath) {
-  const abs = resolve2(targetPath);
+  const abs = resolve3(targetPath);
   const tail = [];
   let cursor = abs;
   while (true) {
     try {
-      const real = realpathSync(cursor);
-      return tail.length > 0 ? join4(real, ...tail.reverse()) : real;
+      const real = realpathSync2(cursor);
+      return tail.length > 0 ? join5(real, ...tail.reverse()) : real;
     } catch {
       const parent = dirname2(cursor);
       if (parent === cursor)
@@ -7262,10 +7202,10 @@ async function resolveRepoBranch(input) {
   return { repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root), branch };
 }
 async function loadWorkflowConfig(repoRoot) {
-  const filePath = join4(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
+  const filePath = join5(canonicalRepoRoot(repoRoot), ".nosta", "workflow.json");
   let text;
   try {
-    text = await readFile2(filePath, "utf8");
+    text = await readFile3(filePath, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -7285,7 +7225,7 @@ async function loadWorkflowConfig(repoRoot) {
 }
 function toRepoRelativePath(repoRoot, targetPath) {
   const root = canonicalRepoRoot(repoRoot);
-  const absTarget = isAbsolute(targetPath) ? resolve2(targetPath) : resolve2(root, targetPath);
+  const absTarget = isAbsolute(targetPath) ? resolve3(targetPath) : resolve3(root, targetPath);
   const realTarget = resolveRealPath(absTarget);
   const rel = relative(root, realTarget);
   if (rel.startsWith("..") || isAbsolute(rel))
@@ -7492,6 +7432,16 @@ class WorkflowGate {
     if (!flowId)
       throw new Error("backend did not return flow.id");
     const binding = this.attachBinding({ repoRoot, branch, flowId, config });
+    const existing = await readLocalFlow(flowId);
+    await saveLocalFlow(existing ?? emptyLocalFlow({
+      flowId,
+      repoRoot,
+      branch,
+      base: input.base,
+      ticket: input.ticket,
+      title: name,
+      now: this.now()
+    }));
     return { flow: parsed.flow, binding, nextAction: describeNextAction(binding) };
   }
   async status(input) {
@@ -7594,7 +7544,7 @@ class WorkflowGate {
   async context(input) {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
-    const binding = this.bindings.get(bindingKey(repoRoot, branch)) ?? null;
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
     const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
     if (!config) {
       return {
@@ -7641,7 +7591,7 @@ class WorkflowGate {
   async check(input) {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
-    const binding = this.bindings.get(bindingKey(repoRoot, branch)) ?? null;
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
     const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
     if (!config)
       return { decision: "allow", reason: "repo is not workflow-enforced" };
@@ -7689,7 +7639,7 @@ class WorkflowGate {
   async stop(input) {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
-    const binding = this.bindings.get(bindingKey(repoRoot, branch)) ?? null;
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
     const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
     if (!config || !binding)
       return { decision: "allow", reason: "no active enforced flow binding" };
@@ -7719,6 +7669,19 @@ class WorkflowGate {
     }
     return resolveRepoBranch(input);
   }
+  async lookupOrRehydrate(repoRoot, branch) {
+    const existing = this.bindings.get(bindingKey(repoRoot, branch));
+    if (existing)
+      return existing;
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (!indexedFlowId)
+      return null;
+    try {
+      return await this.rehydrateByFlowId({ flowId: indexedFlowId, repoRoot, branch });
+    } catch {
+      return null;
+    }
+  }
   async resolveBinding(input) {
     if (input.flowId) {
       const byId = this.getByFlowId(input.flowId);
@@ -7728,9 +7691,12 @@ class WorkflowGate {
     }
     const { repoRoot, branch } = await this.resolveTarget(input);
     const binding = this.bindings.get(bindingKey(repoRoot, branch));
-    if (!binding)
-      throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
-    return binding;
+    if (binding)
+      return binding;
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (indexedFlowId)
+      return this.rehydrateByFlowId({ flowId: indexedFlowId, repoRoot, branch });
+    throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
   }
   async rehydrateByFlowId(input) {
     const raw = await this.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}`);
@@ -7755,7 +7721,11 @@ class WorkflowGate {
     if (!config)
       throw new Error(`no .nosta/workflow.json found in ${repoRoot}`);
     const binding = this.attachBinding({ repoRoot, branch, flowId: flow.id, config });
-    return this.applyHydratedFlow(binding, flow);
+    const hydrated = this.applyHydratedFlow(binding, flow);
+    if (!await readLocalFlow(flow.id)) {
+      await saveLocalFlow(emptyLocalFlow({ flowId: flow.id, repoRoot, branch, now: this.now() }));
+    }
+    return hydrated;
   }
   applyHydratedFlow(binding, flow) {
     const now = this.now();
@@ -7916,8 +7886,100 @@ class WorkflowGate {
 }
 
 // src/packet.ts
-import { readFile as readFile3, realpath, stat } from "node:fs/promises";
+import { readFile as readFile4, realpath, stat } from "node:fs/promises";
 import { basename as basename4, relative as relative2, sep as sep2 } from "node:path";
+
+// ../../packages/shared/src/runtime/hybrid.ts
+var MAX_STEP_ARTIFACTS = 64;
+var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
+var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var SHA256_HEX = /^[0-9a-f]{64}$/;
+var COMMIT_HEX = /^[0-9a-f]{40}$/;
+var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
+var SECRET_BASENAMES = new Set(["secrets", ".dev.vars", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]);
+function normalizeRelativePath(raw) {
+  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+}
+function isSafeRelativePath(raw) {
+  if (!raw || raw.includes("\x00"))
+    return false;
+  const slash = raw.replaceAll("\\", "/");
+  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
+    return false;
+  const cleaned = normalizeRelativePath(slash);
+  if (!cleaned || cleaned === ".")
+    return false;
+  const parts = cleaned.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+function isSafeMountPath(raw) {
+  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (cleaned === "" || cleaned === "." || cleaned === "./")
+    return true;
+  return isSafeRelativePath(cleaned);
+}
+function isSecretPath(raw) {
+  const cleaned = normalizeRelativePath(raw);
+  if (!cleaned)
+    return false;
+  const parts = cleaned.split("/");
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
+      return true;
+  }
+  const base = (parts[parts.length - 1] ?? "").toLowerCase();
+  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
+}
+var bundleRepoManifestSchema = object({
+  name: string2().regex(REPO_NAME),
+  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
+  commitSha: string2().regex(COMMIT_HEX).optional(),
+  branch: string2().min(1).max(200).optional(),
+  dirty: boolean2(),
+  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
+  patchApplied: boolean2().optional(),
+  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
+  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
+});
+var bundleManifestSchema = object({
+  version: literal(1),
+  workspace: string2().regex(WORKSPACE_NAME),
+  primaryRepo: string2().regex(REPO_NAME),
+  repos: array(bundleRepoManifestSchema).min(1).max(32)
+});
+var bundlePointerSchema = object({
+  workspace: string2().regex(WORKSPACE_NAME),
+  sha: string2().regex(SHA256_HEX),
+  commitSha: string2(),
+  bytes: number2().int().min(1),
+  createdAt: number2().int().min(0),
+  dirty: boolean2().optional(),
+  repoCount: number2().int().min(1).optional()
+});
+var stepArtifactSchema = object({
+  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
+  contentBase64: string2(),
+  bytes: number2().int().min(0),
+  sha256: string2().regex(SHA256_HEX)
+});
+var cloudStepRequestSchema = object({
+  workspace: string2().min(1).max(64),
+  workflowName: string2().min(1).max(64),
+  stepId: string2().min(1).max(64),
+  bundleSha: string2().regex(SHA256_HEX),
+  force: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  pullOutputs: boolean2().optional(),
+  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
+});
+var cloudStepReplySchema = stepRecordSchema.and(object({
+  values: record(string2(), string2()).optional(),
+  artifacts: array(stepArtifactSchema).optional()
+}));
+
+// src/packet.ts
 async function assertReadableWorkspaceFile(filePath, rootDir = process.env.NOSTA_WORKSPACE_ROOT || process.cwd()) {
   const [resolvedRoot, resolvedFile] = await Promise.all([realpath(rootDir), realpath(filePath)]);
   const rel = relative2(resolvedRoot, resolvedFile);
@@ -7957,13 +8019,745 @@ async function buildPacket(args) {
   for (const path of safePaths) {
     files.push({
       name: basename4(path),
-      content: await readFile3(path, "utf8")
+      content: await readFile4(path, "utf8")
     });
   }
   const result = validatePacket({ title: args.title, files });
   if (!result.ok)
     throw new Error(result.error);
   return result.packet;
+}
+
+// src/sync.ts
+import { createHash } from "node:crypto";
+import { readFile as readFile5 } from "node:fs/promises";
+import { basename as basename5 } from "node:path";
+
+// ../../packages/shared/src/lifecycle.ts
+var LIFECYCLE_STATES = ["idle", "queued", "running"];
+var LIFECYCLE_OUTCOMES = ["complete", "blocked", "errored", "terminated"];
+var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
+var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
+var BLOCK_REASONS = [
+  "spec_failed",
+  "implement_failed",
+  "checks_failed",
+  "standing_findings",
+  "usage_cap",
+  "merge_rejected",
+  "approval_timeout",
+  "merge_ready_timeout",
+  "checks_after_rebase"
+];
+
+// ../../packages/shared/src/schema/label.ts
+var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+var MAX_FLOW_LABELS = 200;
+var labelColorSchema = _enum(["slate", "blue", "green", "amber", "red", "violet"]);
+var labelSchema = object({
+  name: string2().regex(LABEL_NAME),
+  color: labelColorSchema
+});
+var labelListSchema = object({ labels: array(labelSchema) });
+var flowLabelsInputSchema = object({ labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS) });
+
+// ../../packages/shared/src/schema/flow.ts
+var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
+var prioritySchema = _enum(FLOW_PRIORITIES);
+var flowNameSchema = string2().trim().min(1).max(80);
+var flowDueSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
+var updateFlowInputSchema = object({
+  name: flowNameSchema.nullable().optional(),
+  due: flowDueSchema.nullable().optional(),
+  priority: prioritySchema.nullable().optional(),
+  labels: flowLabelsInputSchema.shape.labels.optional()
+});
+
+// ../../packages/shared/src/schema/runtime/provider.ts
+var CLI_DRIVERS = ["claude", "antigravity", "codex"];
+var CLOUD_SESSION_DRIVERS = ["anthropic-routine", "webhook", "gemini-interactions"];
+var PROVIDER_DRIVERS = ["pi", ...CLI_DRIVERS, ...CLOUD_SESSION_DRIVERS];
+var AUTH_MODES = ["api-key", "oauth-file"];
+var STEP_RUNTIMES = ["durable", "vm", "cloud_session", "local"];
+var providerDriverSchema = _enum(PROVIDER_DRIVERS);
+var authModeSchema = _enum(AUTH_MODES);
+var stepRuntimeSchema = _enum(STEP_RUNTIMES);
+var ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+var providerInstanceInputSchema = object({
+  label: string2().min(1).max(120).optional(),
+  provider: providerDriverSchema,
+  authKind: authModeSchema.default("api-key"),
+  secretName: string2().min(1).max(200).optional(),
+  baseUrl: string2().url().max(500).optional(),
+  env: record(string2().regex(ENV_KEY), string2().max(500)).default({}),
+  defaultModel: string2().min(1).max(120).optional(),
+  routineId: string2().min(1).max(120).optional(),
+  fallbackInstanceId: string2().regex(ID_PATTERN).optional(),
+  enabled: boolean2().default(true)
+});
+var providerInstanceSchema = providerInstanceInputSchema.extend({
+  id: string2().regex(ID_PATTERN),
+  updatedAt: number2().int().min(0)
+});
+var scopePolicySchema = object({
+  scopeId: string2().min(1).max(200),
+  allowOperatorFallback: boolean2(),
+  updatedAt: number2().int().min(0)
+});
+var instanceCooldownSchema = object({
+  instanceId: string2().regex(ID_PATTERN),
+  until: number2().int().min(0),
+  reason: string2().max(300)
+});
+var providerCooldownStatusSchema = object({
+  until: number2().int().min(0),
+  reason: string2().max(300)
+});
+var providerWithStatusSchema = providerInstanceSchema.extend({
+  cooldown: providerCooldownStatusSchema.nullable()
+});
+var providerListResponseSchema = object({
+  providers: array(providerWithStatusSchema)
+});
+
+// ../../packages/shared/src/schema/flow/config.ts
+var childConfigSchema = object({
+  tools: array(string2()),
+  secrets: array(string2()),
+  hosts: array(string2()),
+  mcpServers: array(string2()),
+  runtime: stepRuntimeSchema.optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+var flowConfigSchema = object({
+  mergeApproval: _enum(["human", "auto"]),
+  checks: array(string2()),
+  usageCap: number2().int().positive().nullable(),
+  children: record(string2(), childConfigSchema).default({}),
+  scopeId: string2().min(1).max(200).optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+
+// ../../packages/shared/src/schema/flow/slice.ts
+var flowTargetSchema = object({
+  repo: string2(),
+  base: string2(),
+  landed: array(string2()),
+  ticket: string2().nullable().optional(),
+  ticketUrl: string2().nullable().optional()
+});
+var proofRowSchema = object({
+  file: string2(),
+  name: string2(),
+  command: string2()
+});
+var flowSpecNodeSchema = object({
+  id: string2(),
+  behavior: string2(),
+  files: array(string2()),
+  estimate: string2(),
+  hazards: string2(),
+  blockedBy: array(string2()),
+  proof: array(proofRowSchema),
+  config: childConfigSchema
+});
+var flowSliceSchema = object({
+  target: flowTargetSchema,
+  config: flowConfigSchema,
+  spec: flowSpecNodeSchema
+});
+
+// ../../packages/shared/src/schema/flow/record.ts
+var pullRequestSchema = object({
+  url: string2(),
+  number: positiveSchema,
+  base: string2()
+});
+var flowDocSlotSchema = _enum(["alignment", "spec", "doc"]);
+var flowDocRefSchema = object({
+  id: string2().min(1).max(160),
+  ticket: string2().min(1).max(100),
+  name: string2().min(1).max(200),
+  title: string2().min(1).max(200),
+  slot: flowDocSlotSchema.default("doc"),
+  stepId: string2().max(128).nullable().default(null),
+  sha256: string2().max(128).nullable().default(null),
+  bytes: countSchema.default(0),
+  createdAt: countSchema
+});
+var flowEvidenceRefSchema = object({
+  id: string2().min(1).max(160),
+  ticket: string2().min(1).max(100),
+  name: string2().min(1).max(200),
+  title: string2().min(1).max(200),
+  kind: _enum(["media", "html"]).default("media"),
+  contentType: string2().max(128).nullable().default(null),
+  stepId: string2().max(128).nullable().default(null),
+  sha256: string2().max(128).nullable().default(null),
+  bytes: countSchema.default(0),
+  createdAt: countSchema
+});
+var flowDiffSummarySchema = object({
+  base: string2().max(200),
+  head: string2().max(200),
+  ticket: string2().max(100).nullable().default(null),
+  name: string2().max(200).nullable().default(null),
+  files: array(string2().max(500)).max(500).default([]),
+  migrations: array(string2().max(500)).max(200).default([]),
+  additions: countSchema.default(0),
+  deletions: countSchema.default(0),
+  sha256: string2().max(128).nullable().default(null)
+});
+var flowShipMetaSchema = object({
+  risk: string2().max(4000).nullable().default(null),
+  deployOrder: string2().max(4000).nullable().default(null),
+  notes: array(string2().max(1000)).max(50).default([])
+});
+var flowModeSchema = _enum(["spec", "review", "local", "yaml"]);
+var flowRecordSchema = object({
+  id: string2(),
+  mode: flowModeSchema.default("spec"),
+  parentId: string2().nullable().default(null),
+  rootFlowId: string2(),
+  attempt: positiveSchema.default(1),
+  childFlowIds: array(string2()).default([]),
+  blockedBy: array(string2()).default([]),
+  flowHash: string2().nullable().default(null),
+  idempotencyKey: string2().nullable().default(null),
+  target: flowTargetSchema.nullable().default(null),
+  workspace: string2().nullable().default(null),
+  definitionName: string2().nullable().default(null),
+  bundleSha: string2().nullable().default(null),
+  scheduleId: string2().nullable().default(null),
+  scheduleCron: string2().nullable().default(null),
+  values: record(string2(), string2()).default({}),
+  docs: array(flowDocRefSchema).default([]),
+  evidence: array(flowEvidenceRefSchema).default([]),
+  diffSummary: flowDiffSummarySchema.nullable().default(null),
+  ship: flowShipMetaSchema.nullable().default(null),
+  endState: string2().nullable().default(null),
+  baseSha: string2().nullable().default(null),
+  config: flowConfigSchema.nullable().default(null),
+  slice: flowSliceSchema.nullable().default(null),
+  steps: array(stepRecordSchema).default([]),
+  labels: flowLabelsInputSchema.shape.labels.default([]),
+  name: string2().max(80).nullable().default(null),
+  due: flowDueSchema.nullable().default(null),
+  priority: prioritySchema.nullable().default(null),
+  spec: string2().nullable().default(null),
+  branch: string2().nullable().default(null),
+  sandboxId: string2().nullable().default(null),
+  pr: pullRequestSchema.nullable().default(null),
+  mergeSha: string2().nullable().default(null),
+  diff: string2().nullable().default(null),
+  diffTruncated: boolean2().default(false),
+  reason: _enum(BLOCK_REASONS).nullable().default(null),
+  round: countSchema.default(0),
+  phase: flowPhaseSchema.default("queued"),
+  version: positiveSchema,
+  state: lifecycleStateSchema,
+  outcome: lifecycleOutcomeSchema.nullable(),
+  status: flowStatusSchema,
+  clearedAt: countSchema.nullable().default(null),
+  createdAt: countSchema,
+  updatedAt: countSchema
+});
+
+// src/transport.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// ../../packages/shared/src/security.ts
+function isLoopbackHost(hostname) {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
+}
+
+// src/transport.ts
+var flowIdReplySchema = object({ flow: object({ id: string2() }) });
+function validateBaseUrl(rawUrl) {
+  const normalized = rawUrl.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  return normalized;
+}
+async function sendText(cfg, req) {
+  const init = req.init ?? {};
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${cfg.token}`);
+  if (cfg.actor && !headers.has("x-nosta-actor"))
+    headers.set("x-nosta-actor", cfg.actor);
+  const method = (init.method ?? "GET").toUpperCase();
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    ...init,
+    headers,
+    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
+  });
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text;
+}
+async function sendJson(cfg, req) {
+  const headers = {
+    authorization: `Bearer ${cfg.token}`,
+    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
+    ...req.body !== undefined ? { "content-type": "application/json" } : {},
+    ...req.headers ?? {}
+  };
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    method: req.method,
+    headers,
+    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
+    signal: AbortSignal.timeout(cfg.timeoutMs)
+  });
+  if (req.allow404 && res.status === 404)
+    return null;
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : {};
+}
+function bundleHeaders(input) {
+  return {
+    "content-type": "application/gzip",
+    "x-bundle-sha256": input.sha256,
+    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
+    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
+    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
+  };
+}
+function createNostaTransport(config) {
+  const cfg = {
+    baseUrl: validateBaseUrl(config.baseUrl),
+    token: config.token,
+    actor: config.actor,
+    timeoutMs: config.timeoutMs ?? 120000,
+    fetch: config.fetch ?? fetch
+  };
+  return {
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    streamUrl(path) {
+      return `${cfg.baseUrl}${path}`;
+    },
+    request(path, init) {
+      return sendText(cfg, { path, init });
+    },
+    requestJson(req) {
+      return sendJson(cfg, req);
+    },
+    async getLatestBundle(workspace) {
+      const raw = await sendJson(cfg, { method: "GET", path: `/api/bundles/${encodeURIComponent(workspace)}/latest`, allow404: true });
+      return raw === null ? null : bundlePointerSchema.parse(raw);
+    },
+    async putBundle(input) {
+      const text = await sendText(cfg, {
+        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
+        init: { method: "PUT", headers: bundleHeaders(input), body: Buffer.from(input.bytes) }
+      });
+      return bundlePointerSchema.parse(JSON.parse(text));
+    },
+    async createLocalFlow(input) {
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "local", ...input } }));
+    },
+    async reportFlow(input) {
+      const { flowId, ...body } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: `/api/flow/${encodeURIComponent(flowId)}/report`, body }));
+    },
+    async runCloudStep(input) {
+      const { flowId, ...body } = input;
+      const raw = await sendJson(cfg, { method: "POST", path: getRunCloudStepUrl(encodeURIComponent(flowId)), body });
+      return cloudStepReplySchema.parse(raw);
+    },
+    async startYamlFlow(input) {
+      const { idempotencyKey, ...rest } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "yaml", ...rest }, headers: { "Idempotency-Key": idempotencyKey } }));
+    },
+    async getFlow(flowId) {
+      return await sendJson(cfg, { method: "GET", path: `/api/flow/${encodeURIComponent(flowId)}` });
+    },
+    listFlowEvents(flowId) {
+      return sendText(cfg, { path: getListFlowEventsUrl(encodeURIComponent(flowId)) });
+    },
+    approveFlow(input) {
+      const { flowId, ...rest } = input;
+      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID3();
+      const body = { ...rest, decisionId };
+      return sendText(cfg, {
+        path: getApproveFlowUrl(encodeURIComponent(flowId)),
+        init: { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": decisionId }, body: JSON.stringify(body) }
+      });
+    }
+  };
+}
+function publishPage(backend, page) {
+  const body = {
+    ticket: page.ticket,
+    name: page.name,
+    title: page.title,
+    stepId: page.stepId ?? "",
+    html: page.html,
+    ...page.flowId ? { flowId: page.flowId } : {},
+    ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
+  };
+  return backend.request("/api/pages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+function transportFromEnv(env = process.env) {
+  return createNostaTransport({
+    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
+    token: env.NOSTA_PLUGIN_TOKEN ?? "",
+    timeoutMs: 30000
+  });
+}
+
+// src/sync.ts
+var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
+var syncDocInputSchema = object({
+  id: string2().min(1).max(160),
+  title: string2().min(1).max(200),
+  slot: flowDocSlotSchema.optional(),
+  name: string2().min(1).max(200).optional(),
+  sourcePath: string2().min(1).optional(),
+  html: string2().min(1).optional(),
+  stepId: string2().max(128).optional()
+});
+var syncEvidenceInputSchema = object({
+  id: string2().min(1).max(160),
+  title: string2().min(1).max(200),
+  name: string2().min(1).max(200).optional(),
+  sourcePath: string2().min(1),
+  stepId: string2().max(128).optional()
+});
+var syncCheckInputSchema = object({
+  id: string2().min(1).max(100).optional(),
+  command: string2().min(1).max(1000),
+  exitCode: number2().int(),
+  durationMs: number2().int().min(0).optional(),
+  summary: string2().max(500).optional(),
+  output: string2().optional()
+});
+var syncReviewInputSchema = object({
+  id: string2().min(1).max(100).optional(),
+  name: string2().min(1).max(160).optional(),
+  model: string2().min(1).max(120).optional(),
+  verdict: _enum(["PASS", "FAIL"]),
+  findings: array(findingSchema).max(100).optional(),
+  durationMs: number2().int().min(0).optional(),
+  summary: string2().max(500).optional(),
+  output: string2().optional(),
+  usage: usageSchema.optional()
+});
+var syncDiffOptionSchema = union([
+  boolean2(),
+  object({
+    base: string2().min(1).max(200).optional(),
+    head: string2().min(1).max(200).optional()
+  })
+]);
+var flowSyncInputSchema = object({
+  flowId: string2().min(1).optional().describe("Existing Flow ID to sync. Resolved from repoRoot/branch or ticket if omitted."),
+  repoRoot: string2().optional().describe("Git repository root for resolving the bound Flow or computing git diff."),
+  branch: string2().optional().describe("Git branch name for resolving the bound Flow."),
+  base: string2().optional().describe("Base branch/ref for git diff (defaults to main)."),
+  ticket: string2().optional().describe("Ticket identifier for artifact storage and index lookup."),
+  status: _enum(["running", "complete", "errored"]).optional().describe("Flow report status (default running)."),
+  docs: array(syncDocInputSchema).max(64).optional().describe("HTML documents to upload (by sha256) and attach to flow.docs."),
+  evidence: array(syncEvidenceInputSchema).max(64).optional().describe("Media or HTML evidence files to upload and attach to flow.evidence."),
+  checks: array(syncCheckInputSchema).max(64).optional().describe("Timed command gate runs recorded as kind=command steps."),
+  review: syncReviewInputSchema.optional().describe("Review run recorded as kind=agent, role=review step."),
+  diff: syncDiffOptionSchema.optional().describe("Compute git diff summary (files, migrations, +/- counts) in repoRoot."),
+  pr: object({ url: string2().url(), number: number2().int().positive(), base: string2().min(1) }).optional(),
+  ship: flowShipMetaSchema.partial().optional().describe("Optional ship risk, deployOrder, and notes."),
+  values: record(string2(), string2()).optional().describe("Optional string metadata merged into flow.values."),
+  endState: string2().optional(),
+  spec: string2().optional()
+});
+function sha256Of(data) {
+  return createHash("sha256").update(data).digest("hex");
+}
+function slugOf(raw, fallback) {
+  const clean = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (clean || fallback).slice(0, 180);
+}
+function stepIdFor(prefix, seed) {
+  const slug = slugOf(seed.toLowerCase(), prefix).slice(0, 48);
+  const digest = sha256Of(seed).slice(0, 8);
+  return `${prefix}-${slug}-${digest}`.slice(0, 100);
+}
+function upsertById(list, item) {
+  const next = [...list];
+  const idx = next.findIndex((entry) => entry.id === item.id);
+  if (idx === -1)
+    next.push(item);
+  else
+    next[idx] = item;
+  return next;
+}
+async function resolveTargetFlowId(input) {
+  let repoRoot = input.args.repoRoot;
+  let branch = input.args.branch;
+  if (!repoRoot || !branch) {
+    try {
+      const resolved = await resolveRepoBranch({ repoRoot, branch });
+      repoRoot = resolved.repoRoot;
+      branch = resolved.branch;
+    } catch {}
+  }
+  const flowId = input.args.flowId ?? await resolveIndexedFlowId({ repoRoot, branch, ticket: input.args.ticket, stateDir: input.stateDir });
+  if (!flowId) {
+    throw new Error("no flow bound for this repo/branch or ticket; pass flowId or start a flow with nosta_flow_start");
+  }
+  return { flowId, repoRoot, branch };
+}
+async function syncDocs(input) {
+  let uploaded = 0;
+  const refs = [];
+  for (const doc of input.docs) {
+    const html = doc.html ?? (doc.sourcePath ? await readFile5(await assertReadableWorkspaceFile(doc.sourcePath, input.state.repoRoot), "utf8") : "");
+    if (!html)
+      throw new Error(`doc "${doc.id}" requires either html or sourcePath`);
+    const bytes = new TextEncoder().encode(html).byteLength;
+    const sha256 = sha256Of(html);
+    const name = slugOf(doc.name ?? doc.id, "doc");
+    const existing = input.state.docs.find((entry) => entry.id === doc.id);
+    if (!existing || existing.sha256 !== sha256 || existing.title !== doc.title || existing.name !== name || existing.ticket !== input.ticket) {
+      await publishPage(input.backend, {
+        ticket: input.ticket,
+        name,
+        title: doc.title,
+        stepId: doc.stepId ?? "",
+        html,
+        flowId: input.state.flowId
+      });
+      uploaded += 1;
+    }
+    refs.push({
+      id: doc.id,
+      ticket: input.ticket,
+      name,
+      title: doc.title,
+      slot: doc.slot ?? "doc",
+      stepId: doc.stepId ?? null,
+      sha256,
+      bytes,
+      createdAt: input.now
+    });
+  }
+  return { refs, uploaded };
+}
+async function syncEvidence(input) {
+  let uploaded = 0;
+  const refs = [];
+  for (const item of input.evidence) {
+    const safePath = await assertReadableWorkspaceFile(item.sourcePath, input.state.repoRoot);
+    const raw = await readFile5(safePath);
+    const name = slugOf(item.name ?? basename5(safePath), "evidence.txt");
+    const isHtml = name.toLowerCase().endsWith(".html") || name.toLowerCase().endsWith(".htm");
+    const contentType = isHtml ? "text/html; charset=utf-8" : mediaContentType(name);
+    if (!contentType)
+      throw new Error(`unsupported evidence file extension: ${name}`);
+    const sha256 = sha256Of(raw);
+    const existing = input.state.evidence.find((entry) => entry.id === item.id);
+    if (!existing || existing.sha256 !== sha256 || existing.title !== item.title || existing.name !== name || existing.ticket !== input.ticket) {
+      if (isHtml) {
+        await publishPage(input.backend, {
+          ticket: input.ticket,
+          name,
+          title: item.title,
+          stepId: item.stepId ?? "",
+          html: raw.toString("utf8"),
+          flowId: input.state.flowId
+        });
+      } else {
+        const qs = new URLSearchParams({ title: item.title, flowId: input.state.flowId });
+        if (item.stepId)
+          qs.set("stepId", item.stepId);
+        await input.backend.request(`/api/media/${encodeURIComponent(input.ticket)}/${encodeURIComponent(name)}?${qs.toString()}`, {
+          method: "PUT",
+          headers: { "content-type": contentType },
+          body: new Uint8Array(raw)
+        });
+      }
+      uploaded += 1;
+    }
+    refs.push({
+      id: item.id,
+      ticket: input.ticket,
+      name,
+      title: item.title,
+      kind: isHtml ? "html" : "media",
+      contentType,
+      stepId: item.stepId ?? null,
+      sha256,
+      bytes: raw.byteLength,
+      createdAt: input.now
+    });
+  }
+  return { refs, uploaded };
+}
+async function computeDiffSummary(input) {
+  const mergeBase = await runGit(input.repoRoot, ["merge-base", input.base, input.head]) ?? input.base;
+  const numstat = await runGit(input.repoRoot, ["diff", "--numstat", `${mergeBase}..${input.head}`]) ?? "";
+  const headSha = await runGit(input.repoRoot, ["rev-parse", input.head]) ?? input.head;
+  const files = [];
+  const migrations = [];
+  let additions = 0;
+  let deletions = 0;
+  for (const line of numstat.split(/\r?\n/)) {
+    if (!line.trim())
+      continue;
+    const [rawAdd, rawDel, ...rest] = line.split("\t");
+    const file = rest.join("\t").trim();
+    if (!file)
+      continue;
+    files.push(file);
+    if (DATA_CHANGE_PATH.test(file))
+      migrations.push(file);
+    const add = Number(rawAdd);
+    const del = Number(rawDel);
+    if (Number.isFinite(add))
+      additions += add;
+    if (Number.isFinite(del))
+      deletions += del;
+  }
+  return {
+    base: input.base,
+    head: headSha,
+    ticket: null,
+    name: null,
+    files: files.slice(0, 500),
+    migrations: migrations.slice(0, 200),
+    additions,
+    deletions,
+    sha256: sha256Of(`${mergeBase}:${headSha}:${numstat}`)
+  };
+}
+function buildSteps(args, now) {
+  const steps = [];
+  for (const check of args.checks ?? []) {
+    steps.push({
+      id: check.id ?? stepIdFor("gate", check.command),
+      name: check.command.slice(0, 160),
+      kind: "command",
+      status: check.exitCode === 0 ? "complete" : "errored",
+      command: check.command,
+      exitCode: check.exitCode,
+      durationMs: check.durationMs ?? null,
+      summary: check.summary ?? `${check.exitCode === 0 ? "PASS" : `exit ${check.exitCode}`}`,
+      output: check.output ?? ""
+    });
+  }
+  if (args.review) {
+    const rev = args.review;
+    steps.push({
+      id: rev.id ?? stepIdFor("review", `${rev.name ?? "review"}-${rev.model ?? "agent"}-${now}`),
+      name: rev.name ?? "Code review",
+      kind: "agent",
+      role: "review",
+      status: "complete",
+      model: rev.model ?? null,
+      verdict: rev.verdict,
+      findings: rev.findings ?? [],
+      durationMs: rev.durationMs ?? null,
+      summary: rev.summary ?? `${rev.verdict} (${rev.findings?.length ?? 0} findings)`,
+      output: rev.output ?? "",
+      ...rev.usage ? { usage: rev.usage } : {}
+    });
+  }
+  return steps;
+}
+function mergeShip(existing, incoming) {
+  if (!incoming)
+    return existing;
+  return {
+    risk: incoming.risk ?? existing?.risk ?? null,
+    deployOrder: incoming.deployOrder ?? existing?.deployOrder ?? null,
+    notes: [...new Set([...existing?.notes ?? [], ...incoming.notes ?? []])]
+  };
+}
+function mergeRefs(existing, incoming) {
+  let out = existing;
+  for (const ref of incoming)
+    out = upsertById(out, ref);
+  return out;
+}
+async function resolveDiffSummary(input) {
+  if (!input.args.diff)
+    return input.existing.diffSummary;
+  const repoRoot = input.repoRoot ?? input.existing.repoRoot;
+  if (!repoRoot)
+    throw new Error("diff sync requires a git repository (pass repoRoot)");
+  const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
+  const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
+  const head = diffOpts.head ?? "HEAD";
+  return computeDiffSummary({ repoRoot, base, head, ticket: input.ticket });
+}
+async function syncFlow(input) {
+  const now = (input.now ?? Date.now)();
+  const resolved = await resolveTargetFlowId({ args: input.args, stateDir: input.stateDir });
+  const existing = await readLocalFlow(resolved.flowId, input.stateDir) ?? emptyLocalFlow({ flowId: resolved.flowId, repoRoot: resolved.repoRoot, branch: resolved.branch, base: input.args.base, ticket: input.args.ticket, now });
+  const ticket = input.args.ticket ?? existing.ticket ?? resolved.flowId;
+  const docOut = input.args.docs ? await syncDocs({ state: existing, docs: input.args.docs, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
+  const evOut = input.args.evidence ? await syncEvidence({ state: existing, evidence: input.args.evidence, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
+  const diffSummary = await resolveDiffSummary({ args: input.args, existing, repoRoot: resolved.repoRoot, ticket });
+  const ship = mergeShip(existing.ship, input.args.ship);
+  const steps = buildSteps(input.args, now);
+  const status = input.args.status ?? "running";
+  await input.backend.request(`/api/flow/${encodeURIComponent(resolved.flowId)}/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      status,
+      finishedAt: status === "running" ? null : now,
+      steps,
+      ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
+      ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
+      ...input.args.diff ? { diffSummary } : {},
+      ...input.args.ship ? { ship } : {},
+      ...input.args.pr ? { pr: input.args.pr } : {},
+      ...input.args.values ? { values: input.args.values } : {},
+      ...input.args.endState !== undefined ? { endState: input.args.endState } : {},
+      ...input.args.spec !== undefined ? { spec: input.args.spec } : {},
+      ...resolved.branch ? { branch: resolved.branch } : {}
+    })
+  });
+  await saveLocalFlow({
+    ...existing,
+    ...resolved.repoRoot ? { repoRoot: resolved.repoRoot } : {},
+    ...resolved.branch ? { branch: resolved.branch } : {},
+    ...input.args.base ? { base: input.args.base } : {},
+    ticket,
+    docs: mergeRefs(existing.docs, docOut.refs),
+    evidence: mergeRefs(existing.evidence, evOut.refs),
+    diffSummary,
+    ship,
+    updatedAt: now
+  }, input.stateDir);
+  return {
+    flowId: resolved.flowId,
+    uploadedDocs: docOut.uploaded,
+    uploadedEvidence: evOut.uploaded,
+    stepsReported: steps.length,
+    diffSummary,
+    flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(resolved.flowId)}`
+  };
 }
 
 // src/flow.ts
@@ -8081,6 +8875,8 @@ function stripSafeIntMax(node) {
   for (const [key, value] of Object.entries(node)) {
     if (key === "maximum" && value === Number.MAX_SAFE_INTEGER)
       continue;
+    if (key === "minimum" && value === Number.MIN_SAFE_INTEGER)
+      continue;
     out[key] = stripSafeIntMax(value);
   }
   return out;
@@ -8123,6 +8919,11 @@ var FLOW_TOOLS = [
     name: "nosta_flow_bypass",
     description: "Temporarily unlock gated writes for a (repoRoot, branch) for a bounded duration with a mandatory reason. Always requires explicit owner confirmation.",
     inputSchema: toMcpInputSchema(flowBypassInputSchema)
+  },
+  {
+    name: "nosta_flow_sync",
+    description: "Sync local docs, evidence files, command checks, review verdicts, git diff summary, PR link, and ship metadata into the bound Flow object (~/.nosta/flows/) and cloud Flow DO in one idempotent call.",
+    inputSchema: toMcpInputSchema(flowSyncInputSchema)
   }
 ];
 function formatZodError(error) {
@@ -8151,6 +8952,10 @@ async function callFlowTool(input) {
     return approveFlow({ args: parseToolArgs(flowApproveInputSchema, input.args), backend: input.backend, gate });
   if (input.name === "nosta_flow_bypass")
     return bypassLocal(parseToolArgs(flowBypassInputSchema, input.args), gate);
+  if (input.name === "nosta_flow_sync") {
+    const result = await syncFlow({ args: parseToolArgs(flowSyncInputSchema, input.args), backend: input.backend });
+    return JSON.stringify(result);
+  }
   return null;
 }
 function enrichFlowReply(raw, baseUrl) {
@@ -8173,12 +8978,24 @@ function enrichFlowReply(raw, baseUrl) {
     flowUrl: `${baseUrl}/flows/${encodeURIComponent(flowId)}`
   });
 }
+async function resolveReviewParentId(args) {
+  const explicit = trimmed(args.parentId);
+  if (explicit)
+    return explicit;
+  try {
+    const { repoRoot, branch } = await resolveRepoBranch({ repoRoot: trimmed(args.repoRoot), branch: trimmed(args.branch) });
+    return await resolveIndexedFlowId({ repoRoot, branch, ticket: trimmed(args.ticket) }) ?? undefined;
+  } catch {
+    return trimmed(args.ticket) ? await resolveIndexedFlowId({ ticket: trimmed(args.ticket) }) ?? undefined : undefined;
+  }
+}
 async function startReviewFlow(args, backend) {
   const packet = await buildPacket({ paths: args.paths, title: args.title });
+  const parentId = await resolveReviewParentId(args);
   const raw = await backend.request("/api/flow", {
     method: "POST",
-    headers: { "content-type": "application/json", "Idempotency-Key": randomUUID3() },
-    body: JSON.stringify({ mode: "review", title: packet.title, files: packet.files })
+    headers: { "content-type": "application/json", "Idempotency-Key": randomUUID4() },
+    body: JSON.stringify({ mode: "review", title: packet.title, files: packet.files, ...parentId ? { parentId } : {} })
   });
   return enrichFlowReply(raw, backend.baseUrl);
 }
@@ -8187,10 +9004,10 @@ async function startSpecFlow(args, backend) {
   if ((await stat2(safePath)).size > MAX_PACKET_BYTES) {
     throw new Error("spec exceeds 256 KiB");
   }
-  const spec = await readFile4(safePath, "utf8");
+  const spec = await readFile6(safePath, "utf8");
   const baseSha = args.baseSha;
   const ticketUrl = args.ticketUrl;
-  const key = createHash("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
+  const key = createHash2("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
   const raw = await backend.request("/api/flow", {
     method: "POST",
     headers: { "content-type": "application/json", "Idempotency-Key": key },
@@ -8262,7 +9079,7 @@ async function approveFlow(input) {
       summary: trimmed(args.summary)
     }));
   }
-  const decisionId = args.decisionId && args.decisionId.length > 0 ? args.decisionId : randomUUID3();
+  const decisionId = args.decisionId && args.decisionId.length > 0 ? args.decisionId : randomUUID4();
   const body = {
     decision: args.decision,
     version: args.version,
@@ -8286,14 +9103,1200 @@ async function bypassLocal(args, gate) {
   }));
 }
 
+// src/artifacts/guides.ts
+var ARTIFACT_GUIDE_MODULES = ["spec", "diagram", "diagnostics", "chart", "interactive"];
+var CORE_GUIDE = `# Nosta Artifact Design System (Core)
+
+You are authoring fragments for \`nosta_artifact_publish\`. The host shell automatically wraps your tabs with Nosta's warm editorial CSS, Fontsource fonts (Newsreader + Inter + JetBrains Mono via cdn.jsdelivr.net), dark/light auto-theme + toggle, and tab-hash persistence.
+
+## Hard Rules
+- Pass **inner HTML fragments only** per tab. Never include \`<!doctype>\`, \`<html>\`, \`<head>\`, or \`<body>\`.
+- Never write raw hex colors for surfaces or text; use Nosta CSS variables (\`var(--ground)\`, \`var(--surface)\`, \`var(--ink)\`, \`var(--muted)\`, \`var(--line)\`) and semantic ramp classes.
+- Color encodes **meaning**, never sequence or decoration. Use at most 2-3 accent ramps per view; use \`.c-stone\` for neutral structure.
+- Avoid generic AI slop: no unmotivated gradients, no emoji bullet lists, no decorative 3-card SaaS hero grids. Optimize for information density, scannability, and primary-source links.
+
+## Style Presets (\`style\` param)
+- \`nosta-editorial\` (default): Specs, RFCs, research reports. Uses \`Newsreader\` headings + \`Inter\` body + \`JetBrains Mono\` code.
+- \`nosta-diagnostic\`: Traces, logs, test runs, perf profiles. Wider \`1280px\` canvas, high density, \`tabular-nums\`.
+- \`nosta-blueprint\`: Architecture, ERDs, state machines. Subtle dot-grid \`.diagram-stage\` canvas.
+
+## 6 Semantic Color Ramps
+Apply to \`.card\`, \`.callout\`, \`.badge\`, \`.pill\`, \`.trace-row\`, or SVG \`.node\`:
+- \`.c-stone\`: neutral structure, containers, queued
+- \`.c-ochre\`: Nosta brand accent, primary focus, active
+- \`.c-sage\`: pass, healthy, services/workflows
+- \`.c-amber\`: warning, durable storage, latency
+- \`.c-terracotta\`: fail, error, removed/retired
+- \`.c-slate\`: external actors, HTTP routes, informational
+
+## Layout Primitives
+\`.stack\`, \`.prose\` (74ch), \`.grid-2\`, \`.grid-3\`, \`.grid-4\`, \`.split\`, \`.card\`, \`.callout\`, \`.badge\`, \`.kpi-grid\` > \`.kpi\` (\`.kpi-label\`, \`.kpi-value\`, \`.kpi-delta\`), \`.table-wrap\` > \`table.data-table\` (\`td.num\`).`;
+var MODULE_GUIDES = {
+  spec: `## Module: spec
+Use \`style: "nosta-editorial"\`.
+- Lead the first tab with a one-sentence summary in \`.callout.c-ochre\`, followed by a compact \`.kpi-grid\` or decision table.
+- Keep prose inside \`.prose\` (\`74ch\`), breaking long sections with \`<h2>\`, tables (\`.table-wrap > table.data-table\`), and diagrams rather than walls of text.
+- Cite every evidence claim with a clickable link and date/version.
+- Tab order: newest/executive summary first (\`overview\`), architecture/design second (\`architecture\`), verification/risks/open questions next.`,
+  diagram: `## Module: diagram
+Choose **inline SVG** for custom layouts, timelines, and annotated schematics; choose **Mermaid** (\`libs: ["mermaid"]\`) for standard C4, Crow's Foot ERDs, state machines, and sequence diagrams.
+
+### Inline SVG Rules
+- Wrap in \`<div class="diagram-stage">\` and output \`<svg class="svg-diagram" viewBox="0 0 680 H" width="100%">\`.
+- Keep \`viewBox\` width fixed at \`680\` so 1 SVG unit = 1 CSS px; never hardcode a full-canvas background \`<rect>\`.
+- Define an arrowhead marker once:
+  \`<defs><marker id="nosta-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="currentColor" stroke-width="1.5"/></marker></defs>\`
+- Use \`<g class="node c-slate"><rect x="..." y="..." width="..." height="..."/><text class="t" x="..." y="...">Title</text><text class="ts" x="..." y="...">Subtitle</text></g>\`.
+- Use \`<path class="arr" marker-end="url(#nosta-arrow)" d="..."/>\` and \`<line class="leader" .../>\`.
+
+### Mermaid Rules (\`libs: ["mermaid"]\`)
+- Wrap in \`<div class="diagram-stage"><pre class="mermaid">...</pre></div>\`.
+- **Hard column caps (enforced at publish time):** Never exceed **4 horizontal columns** (\`flowchart LR\` max 4 hops deep; \`flowchart TD\` / \`stateDiagram-v2\` / \`erDiagram\` max 4 nodes wide at any rank) and **max 3 participants for \`sequenceDiagram\`** so sequence labels stay readable on mobile. Prefer \`flowchart TD\` by default or split wide diagrams into multiple focused diagrams.
+- On mobile (\`< 640px\`), the shell automatically switches \`LR\`/\`RL\` flowcharts to \`TD\`, scales SVGs to fit 100% of the screen width with \`wrappingWidth: 160\`, and attaches a \`− / 100% / + / Expand\` zoom toolbar to every \`.diagram-stage\`.
+- Use \`\\n\` inside quoted labels (never \`<br/>\`) and keep labels concise.
+- The shell auto-themes Mermaid for dark and light modes and re-renders on theme toggle.`,
+  diagnostics: `## Module: diagnostics
+Use \`style: "nosta-diagnostic"\`.
+- Start with a \`.kpi-grid\` summarizing totals, pass/fail counts, p95/wall-clock duration, and regressions.
+- Add a \`.filter-bar\` with a search \`<input>\` and status \`<select>\` wired to filter \`.trace-row\` elements via data attributes (\`data-status\`, \`data-text\`).
+- Render spans/checks/logs as collapsible rows:
+  \`<div class="trace-list"><details class="trace-row c-sage" data-status="pass"><summary><span>step name</span><span>142 ms</span></summary><pre><code>...</code></pre></details></div>\`
+- Use \`.bar-meter\` (\`<div class="bar-meter c-amber"><span style="width:68%"></span></div>\`) inside tables for relative timing/size comparisons and \`.num\` on every numeric column.`,
+  chart: `## Module: chart
+Pass \`libs: ["echarts"]\` (Apache ECharts 5, Apache-2.0).
+- Place each chart in \`<div id="chart-..." class="chart-box" style="height:320px"></div>\`.
+- Register a render callback with \`window.nostaCharts.register(el, (theme) => option)\`:
+  \`\`\`html
+  <div id="latency-chart" class="chart-box"></div>
+  <script>
+    window.nostaCharts.register("#latency-chart", (theme) => ({
+      tooltip: { trigger: "axis" },
+      xAxis: { type: "category", data: ["v1", "v2", "v3"] },
+      yAxis: { type: "value", name: "ms" },
+      series: [{ name: "p95", type: "bar", data: [240, 118, 42] }]
+    }));
+  </script>
+  \`\`\`
+- The shell automatically initializes ECharts with \`nosta-dark\` or \`nosta-light\`, resizes on viewport change, resizes when hidden tabs become visible, and re-themes live when the user toggles dark/light.`,
+  interactive: `## Module: interactive
+- Keep interactivity vanilla JS inside inline \`<script>\` blocks (runs inside \`sandbox="allow-scripts"\`).
+- Use \`window.nostaSelectTab(tabId)\` to jump between tabs from buttons or diagram nodes.
+- Add \`libs: ["lucide"]\` for icons (\`<i data-lucide="check-circle"></i>\`, auto-rendered on boot) or \`libs: ["highlight"]\` for syntax-highlighted \`<pre><code class="language-ts">\` blocks.
+- Keep state local to the tab container and use event delegation so scripts stay small and resilient.`
+};
+function renderArtifactGuide(modules) {
+  const unique = [...new Set(modules)];
+  return [CORE_GUIDE, ...unique.map((mod) => MODULE_GUIDES[mod])].join(`
+
+---
+
+`);
+}
+
+// src/artifacts/mermaid.ts
+var MAX_MERMAID_COLUMNS = 4;
+var MAX_SEQUENCE_ACTORS = 3;
+var MERMAID_BLOCK_RE = /<pre\b[^>]*\bclass\s*=\s*["'][^"']*\bmermaid\b[^"']*["'][^>]*>([\s\S]*?)<\/pre>/gi;
+var FLOW_ARROW_RE = /\s*(?:<-->|o--o|x--x|-\.->|-\.-|==>|<--|-->|---|--)\s*(?:\|[^|]*\|)?\s*/;
+var SEQ_ARROW_RE = /^([A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*)\s*(?:-->>|->>|-->|->|--x|-x|--\)|-\))\s*[+-]?([A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*)\s*:/;
+var ER_REL_RE = /^([A-Za-z0-9_-]+)\s+[|}o][|.o-]{1,3}--[|.o-]{1,3}[|{o]\s+([A-Za-z0-9_-]+)\s*:/;
+var CLASS_REL_RE = /^([A-Za-z0-9_]+)\s+(?:<\|--|\*--|o--|<--|-->|\.\.>|\.\.\|>|--\|>|--\*|--o|--)\s+([A-Za-z0-9_]+)/;
+var STATE_ARROW_RE = /^(\[\*\]|[A-Za-z0-9_-]+)\s*-->\s*(\[\*\]|[A-Za-z0-9_-]+)/;
+var FLOW_IGNORE_RE = /^(?:subgraph|end|direction|classDef|class\s|style|linkStyle|click|%%)/i;
+function decodeBasicEntities(raw) {
+  return raw.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&").replaceAll("&quot;", '"').replaceAll("&#39;", "'");
+}
+function cleanLines(source) {
+  return decodeBasicEntities(source).replace(/%%\{[\s\S]*?\}%%/g, "").split(/\r?\n/).map((line) => line.replace(/%%.*$/, "").trim()).filter((line) => line.length > 0);
+}
+function nodeIdOf(piece) {
+  const cleaned = piece.replace(/:::[A-Za-z0-9_-]+/g, "").trim();
+  return /^([A-Za-z0-9_-]+)/.exec(cleaned)?.[1] ?? "";
+}
+function stripBackEdges(nodes, edges) {
+  const adj = new Map;
+  for (const node of nodes)
+    adj.set(node, []);
+  for (const [from, to] of edges) {
+    if (from !== to)
+      adj.get(from)?.push(to);
+  }
+  const state = new Map;
+  const kept = [];
+  function visit(u) {
+    state.set(u, 1);
+    for (const v of adj.get(u) ?? []) {
+      const s = state.get(v) ?? 0;
+      if (s === 1)
+        continue;
+      kept.push([u, v]);
+      if (s === 0)
+        visit(v);
+    }
+    state.set(u, 2);
+  }
+  for (const node of nodes) {
+    if ((state.get(node) ?? 0) === 0)
+      visit(node);
+  }
+  return kept;
+}
+function computeGraphDimensions(nodes, edges) {
+  if (nodes.size === 0)
+    return { maxDepth: 0, maxBreadth: 0 };
+  const dagEdges = stripBackEdges(nodes, edges);
+  const rank = new Map;
+  for (const node of nodes)
+    rank.set(node, 0);
+  for (let pass = 0;pass < nodes.size; pass += 1) {
+    let changed = false;
+    for (const [from, to] of dagEdges) {
+      const nextRank = (rank.get(from) ?? 0) + 1;
+      if (nextRank > (rank.get(to) ?? 0)) {
+        rank.set(to, nextRank);
+        changed = true;
+      }
+    }
+    if (!changed)
+      break;
+  }
+  const perRank = new Map;
+  let maxDepth = 0;
+  for (const r of rank.values()) {
+    if (r + 1 > maxDepth)
+      maxDepth = r + 1;
+    perRank.set(r, (perRank.get(r) ?? 0) + 1);
+  }
+  let maxBreadth = 0;
+  for (const count of perRank.values()) {
+    if (count > maxBreadth)
+      maxBreadth = count;
+  }
+  return { maxDepth, maxBreadth };
+}
+function measureSequence(body) {
+  const actors = new Set;
+  for (const line of body) {
+    const decl = /^(?:participant|actor)\s+([A-Za-z0-9_.-]+)/i.exec(line);
+    if (decl?.[1]) {
+      actors.add(decl[1]);
+      continue;
+    }
+    const msg = SEQ_ARROW_RE.exec(line);
+    if (msg?.[1] && msg?.[2]) {
+      actors.add(msg[1]);
+      actors.add(msg[2]);
+    }
+  }
+  return { kind: "sequenceDiagram", direction: "horizontal", columns: actors.size };
+}
+function measureFlowchart(kind, dirToken, body) {
+  const isHorizontal = dirToken === "LR" || dirToken === "RL";
+  const nodes = new Set;
+  const edges = [];
+  for (const line of body) {
+    if (FLOW_IGNORE_RE.test(line))
+      continue;
+    const parts = line.split(FLOW_ARROW_RE).map((part) => part.trim()).filter(Boolean);
+    if (parts.length === 1) {
+      const id = nodeIdOf(parts[0] ?? "");
+      if (id)
+        nodes.add(id);
+      continue;
+    }
+    const groups = parts.map((part) => part.split(/\s*&\s*/).map(nodeIdOf).filter(Boolean));
+    for (const group of groups) {
+      for (const id of group)
+        nodes.add(id);
+    }
+    for (let i = 0;i < groups.length - 1; i += 1) {
+      for (const from of groups[i] ?? []) {
+        for (const to of groups[i + 1] ?? [])
+          edges.push([from, to]);
+      }
+    }
+  }
+  const { maxDepth, maxBreadth } = computeGraphDimensions(nodes, edges);
+  return { kind, direction: isHorizontal ? "horizontal" : "vertical", columns: isHorizontal ? maxDepth : maxBreadth };
+}
+function measureState(kind, body) {
+  let isHorizontal = false;
+  const nodes = new Set;
+  const edges = [];
+  for (const line of body) {
+    if (/^direction\s+(?:LR|RL)\b/i.test(line)) {
+      isHorizontal = true;
+      continue;
+    }
+    const match = STATE_ARROW_RE.exec(line);
+    if (!match?.[1] || !match?.[2])
+      continue;
+    if (match[1] !== "[*]")
+      nodes.add(match[1]);
+    if (match[2] !== "[*]")
+      nodes.add(match[2]);
+    if (match[1] !== "[*]" && match[2] !== "[*]")
+      edges.push([match[1], match[2]]);
+  }
+  const { maxDepth, maxBreadth } = computeGraphDimensions(nodes, edges);
+  return { kind, direction: isHorizontal ? "horizontal" : "vertical", columns: isHorizontal ? maxDepth : maxBreadth };
+}
+function measureRelations(kind, body) {
+  const nodes = new Set;
+  const edges = [];
+  const relRe = kind === "erDiagram" ? ER_REL_RE : CLASS_REL_RE;
+  for (const line of body) {
+    const match = relRe.exec(line);
+    if (!match?.[1] || !match?.[2])
+      continue;
+    nodes.add(match[1]);
+    nodes.add(match[2]);
+    edges.push([match[1], match[2]]);
+  }
+  const { maxBreadth } = computeGraphDimensions(nodes, edges);
+  return { kind, direction: "vertical", columns: maxBreadth };
+}
+function measureMermaidColumns(source) {
+  const lines = cleanLines(source);
+  const tokens = (lines[0] ?? "").split(/\s+/);
+  const kind = tokens[0] ?? "unknown";
+  const body = lines.slice(1);
+  if (kind === "sequenceDiagram")
+    return measureSequence(body);
+  if (kind === "flowchart" || kind === "graph")
+    return measureFlowchart(kind, (tokens[1] ?? "TD").toUpperCase(), body);
+  if (kind === "stateDiagram" || kind === "stateDiagram-v2")
+    return measureState(kind, body);
+  if (kind === "erDiagram" || kind === "classDiagram")
+    return measureRelations(kind, body);
+  return { kind, direction: "vertical", columns: 1 };
+}
+function extractMermaidBlocks(html) {
+  const blocks = [];
+  for (const match of html.matchAll(MERMAID_BLOCK_RE)) {
+    const content = (match[1] ?? "").trim();
+    if (content)
+      blocks.push(content);
+  }
+  return blocks;
+}
+function validateMermaidHtml(tabId, html) {
+  extractMermaidBlocks(html).forEach((block, index) => {
+    const measured = measureMermaidColumns(block);
+    const limit = measured.kind === "sequenceDiagram" ? MAX_SEQUENCE_ACTORS : MAX_MERMAID_COLUMNS;
+    if (measured.columns <= limit)
+      return;
+    let hint = "reduce parallel fan-out per level or split into smaller diagrams";
+    if (measured.kind === "sequenceDiagram")
+      hint = `reduce to at most ${MAX_SEQUENCE_ACTORS} participants so it stays readable on mobile, or split into smaller diagrams`;
+    else if (measured.direction === "horizontal")
+      hint = "switch to vertical (flowchart TD) or split into smaller diagrams";
+    throw new Error(`tab "${tabId}" mermaid block #${index + 1} (${measured.kind}) has ${measured.columns} horizontal columns (max ${limit}); ${hint}`);
+  });
+}
+
+// src/artifacts/tokens.ts
+var ARTIFACT_STYLES = ["nosta-editorial", "nosta-diagnostic", "nosta-blueprint"];
+var ARTIFACT_THEMES = ["auto", "dark", "light"];
+var FONTSOURCE_STYLESHEETS = [
+  "https://cdn.jsdelivr.net/npm/@fontsource-variable/newsreader@5.2.5/index.min.css",
+  "https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.2.5/index.min.css",
+  "https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono@5.2.5/index.min.css"
+];
+var ARTIFACT_PALETTE = {
+  light: {
+    ground: "#f8f7f4",
+    surface: "#fbfaf7",
+    surface2: "#f2f0ea",
+    panel: "#fbfaf7",
+    panel2: "#efece5",
+    ink: "#3b2e10",
+    ink2: "rgba(59, 46, 16, 0.8)",
+    muted: "rgba(59, 46, 16, 0.62)",
+    muted2: "rgba(59, 46, 16, 0.42)",
+    line: "rgba(59, 46, 16, 0.12)",
+    lineSoft: "rgba(59, 46, 16, 0.08)",
+    lineStrong: "rgba(59, 46, 16, 0.24)",
+    accentText: "#6e4f1d",
+    good: "#2d6a4f",
+    warn: "#9a5b13",
+    bad: "#9b2c2c",
+    info: "#2c5282",
+    stone: "#787162"
+  },
+  dark: {
+    ground: "#11110f",
+    surface: "#181815",
+    surface2: "#20201b",
+    panel: "#1b1b17",
+    panel2: "#161613",
+    ink: "#f0efea",
+    ink2: "rgba(240, 239, 234, 0.78)",
+    muted: "rgba(240, 239, 234, 0.58)",
+    muted2: "rgba(240, 239, 234, 0.38)",
+    line: "rgba(240, 239, 234, 0.11)",
+    lineSoft: "rgba(240, 239, 234, 0.08)",
+    lineStrong: "rgba(240, 239, 234, 0.24)",
+    accentText: "#d8c39a",
+    good: "#7bc89c",
+    warn: "#e3b469",
+    bad: "#e89292",
+    info: "#7aa2d4",
+    stone: "#a8a293"
+  }
+};
+function buildEchartsTheme(mode) {
+  const p = ARTIFACT_PALETTE[mode];
+  return {
+    backgroundColor: "transparent",
+    color: [p.accentText, p.good, p.info, p.warn, p.bad, p.stone],
+    textStyle: { color: p.ink2, fontFamily: '"Inter Variable", Inter, system-ui, sans-serif', fontSize: 12 },
+    title: { textStyle: { color: p.ink, fontWeight: 600 }, subtextStyle: { color: p.muted } },
+    legend: { textStyle: { color: p.ink2 } },
+    tooltip: { backgroundColor: p.panel, borderColor: p.lineStrong, textStyle: { color: p.ink, fontSize: 12 } },
+    categoryAxis: {
+      axisLine: { lineStyle: { color: p.lineStrong } },
+      axisTick: { lineStyle: { color: p.lineStrong } },
+      axisLabel: { color: p.muted },
+      splitLine: { lineStyle: { color: p.lineSoft } }
+    },
+    valueAxis: {
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: p.muted },
+      splitLine: { lineStyle: { color: p.lineSoft } }
+    }
+  };
+}
+var NOSTA_ECHARTS_THEMES = {
+  dark: buildEchartsTheme("dark"),
+  light: buildEchartsTheme("light")
+};
+function cssVarsOf(mode) {
+  const p = ARTIFACT_PALETTE[mode];
+  return [
+    `--ground: ${p.ground};`,
+    `--surface: ${p.surface};`,
+    `--surface-2: ${p.surface2};`,
+    `--panel: ${p.panel};`,
+    `--panel-2: ${p.panel2};`,
+    `--ink: ${p.ink};`,
+    `--ink-2: ${p.ink2};`,
+    `--muted: ${p.muted};`,
+    `--muted-2: ${p.muted2};`,
+    `--line: ${p.line};`,
+    `--line-soft: ${p.lineSoft};`,
+    `--line-strong: ${p.lineStrong};`,
+    `--accent-text: ${p.accentText};`,
+    `--good: ${p.good};`,
+    `--warn: ${p.warn};`,
+    `--bad: ${p.bad};`,
+    `--info: ${p.info};`,
+    `color-scheme: ${mode};`
+  ].join(`
+  `);
+}
+var NOSTA_ARTIFACT_CSS = `
+:root,
+:root[data-theme="light"] {
+  ${cssVarsOf("light")}
+  --radius: 10px;
+  --radius-sm: 6px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --font-display: "Newsreader Variable", "Newsreader", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --c-bg: #f2f0ea;
+  --c-border: #d6d1c4;
+  --c-text: #3b2e10;
+  --c-accent: #6e4f1d;
+}
+
+:root[data-theme="dark"] {
+  ${cssVarsOf("dark")}
+  --c-bg: #1b1b17;
+  --c-border: #38362e;
+  --c-text: #d6d3c9;
+  --c-accent: #d8c39a;
+}
+
+.c-stone { --c-bg: #f2f0ea; --c-border: #d6d1c4; --c-text: #3b2e10; --c-accent: #6e4f1d; }
+.c-ochre { --c-bg: #f6efe1; --c-border: #c9a66b; --c-text: #5c3f14; --c-accent: #6e4f1d; }
+.c-sage { --c-bg: #e9f4ee; --c-border: #6aa887; --c-text: #1e4d37; --c-accent: #2d6a4f; }
+.c-amber { --c-bg: #fbf2e1; --c-border: #d4a24c; --c-text: #73430c; --c-accent: #9a5b13; }
+.c-terracotta { --c-bg: #faeaea; --c-border: #cf7676; --c-text: #7d2020; --c-accent: #9b2c2c; }
+.c-slate { --c-bg: #eaf1f8; --c-border: #7aa0c9; --c-text: #1e4066; --c-accent: #2c5282; }
+
+:root[data-theme="dark"] .c-stone { --c-bg: #1b1b17; --c-border: #38362e; --c-text: #d6d3c9; --c-accent: #a8a293; }
+:root[data-theme="dark"] .c-ochre { --c-bg: #262116; --c-border: #8f7446; --c-text: #e8d5ae; --c-accent: #d8c39a; }
+:root[data-theme="dark"] .c-sage { --c-bg: #15241c; --c-border: #3e7d5a; --c-text: #9adbb5; --c-accent: #7bc89c; }
+:root[data-theme="dark"] .c-amber { --c-bg: #292012; --c-border: #9c722f; --c-text: #f0ca86; --c-accent: #e3b469; }
+:root[data-theme="dark"] .c-terracotta { --c-bg: #2b1717; --c-border: #9e4747; --c-text: #f2a7a7; --c-accent: #e89292; }
+:root[data-theme="dark"] .c-slate { --c-bg: #16202b; --c-border: #476c96; --c-text: #9fc2eb; --c-accent: #7aa2d4; }
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--ground);
+  color: var(--ink);
+  font: 14px/1.6 var(--font-sans);
+  letter-spacing: -0.008em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 90;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+a { color: var(--accent-text); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+a:hover { color: var(--ink); text-decoration-color: currentColor; }
+
+.nosta-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: color-mix(in srgb, var(--ground) 92%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.nosta-header-inner { max-width: var(--nosta-max-w, 1080px); margin: 0 auto; padding: 14px 24px; }
+.nosta-header-inner:has(.nosta-tabs) { padding-bottom: 0; }
+.nosta-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.nosta-title { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.022em; line-height: 1.2; color: var(--ink); }
+body[data-style="nosta-editorial"] .nosta-title,
+body[data-style="nosta-editorial"] h1,
+body[data-style="nosta-editorial"] h2 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.015em; }
+body[data-style="nosta-editorial"] .nosta-title { font-size: 26px; }
+body[data-style="nosta-diagnostic"] { --nosta-max-w: 1280px; font-size: 13px; }
+body[data-style="nosta-blueprint"] { --nosta-max-w: 1200px; }
+
+.nosta-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.nosta-theme-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font: 500 12px/1 var(--font-sans);
+  cursor: pointer;
+  transition: border-color 140ms var(--ease), color 140ms var(--ease);
+}
+.nosta-theme-btn:hover { border-color: var(--line-strong); color: var(--ink); }
+
+.nosta-tabs { display: flex; gap: 4px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.nosta-tabs::-webkit-scrollbar { display: none; }
+.nosta-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 12px;
+  font: 500 13px/1.2 var(--font-sans);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.nosta-tab:hover { color: var(--ink); }
+.nosta-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent-text); }
+.nosta-tab-badge {
+  font: 500 11px/1 var(--font-mono);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.nosta-main { max-width: var(--nosta-max-w, 1080px); margin: 0 auto; padding: 24px; }
+.nosta-panel[hidden] { display: none; }
+
+h1, h2, h3, h4 { color: var(--ink); margin: 1.4em 0 0.55em; line-height: 1.25; }
+h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+h1 { font-size: 24px; }
+h2 { font-size: 19px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+h3 { font-size: 15px; font-weight: 600; }
+p { margin: 0.65em 0; color: var(--ink-2); }
+ul, ol { margin: 0.65em 0; padding-left: 1.35em; color: var(--ink-2); }
+li { margin: 0.25em 0; }
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+  color: var(--ink);
+}
+pre {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  overflow: auto;
+  margin: 0.85em 0;
+}
+pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.55; }
+
+/* Theme-aware Highlight.js tokens */
+.hljs { color: var(--ink); background: transparent; }
+.hljs-comment, .hljs-quote { color: var(--muted); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-subst { color: var(--accent-text); font-weight: 500; }
+.hljs-string, .hljs-doctag, .hljs-regexp { color: var(--good); }
+.hljs-number, .hljs-literal, .hljs-variable, .hljs-attr { color: var(--warn); }
+.hljs-title, .hljs-section, .hljs-type, .hljs-built_in { color: var(--info); }
+.hljs-deletion { color: var(--bad); }
+.hljs-addition { color: var(--good); }
+
+.stack { display: flex; flex-direction: column; gap: 16px; }
+.prose { max-width: 74ch; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.split { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; }
+@media (max-width: 760px) {
+  .grid-2, .grid-3, .grid-4, .split { grid-template-columns: 1fr; }
+  .nosta-header-inner, .nosta-main { padding-left: 16px; padding-right: 16px; }
+}
+
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
+.card.c-stone, .card.c-ochre, .card.c-sage, .card.c-amber, .card.c-terracotta, .card.c-slate {
+  background: var(--c-bg);
+  border-color: var(--c-border);
+  color: var(--c-text);
+}
+.callout {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-left: 3px solid var(--c-accent);
+  border-radius: var(--radius);
+  padding: 12px 15px;
+  color: var(--c-text);
+}
+.badge, .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 500 11.5px/1.2 var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  white-space: nowrap;
+}
+
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.kpi-label { font-size: 11.5px; color: var(--muted); }
+.kpi-value { margin-top: 4px; font: 600 20px/1.15 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.kpi-delta { margin-top: 4px; font: 500 11.5px/1.2 var(--font-mono); color: var(--c-text, var(--muted)); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th, .data-table td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+.data-table th { background: var(--surface-2); color: var(--ink); font-weight: 600; font-size: 12px; }
+.data-table tr:last-child td { border-bottom: 0; }
+.data-table td.num, .data-table th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.filter-bar input, .filter-bar select {
+  background: var(--surface-2);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font: 12.5px var(--font-sans);
+}
+.trace-list { display: flex; flex-direction: column; gap: 6px; }
+.trace-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--c-accent, var(--line-strong));
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.trace-row summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.trace-row summary::-webkit-details-marker { display: none; }
+.bar-meter { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.bar-meter > span { display: block; height: 100%; background: var(--c-accent, var(--accent-text)); border-radius: 999px; }
+
+.diagram-stage { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; overflow: hidden; }
+.diagram-stage.is-expanded {
+  position: fixed;
+  inset: 12px;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+}
+.diagram-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.diagram-toolbar button {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-2);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font: 500 11px/1.2 var(--font-mono);
+  cursor: pointer;
+}
+.diagram-toolbar button:hover { border-color: var(--line-strong); color: var(--ink); }
+.diagram-viewport { overflow: auto; -webkit-overflow-scrolling: touch; flex: 1; }
+.diagram-zoom { width: 100%; transition: width 120ms var(--ease); }
+.diagram-stage pre.mermaid { margin: 0; background: transparent; border: 0; padding: 0; overflow: visible; }
+.diagram-stage pre.mermaid svg { width: 100% !important; max-width: none !important; height: auto !important; display: block; margin: 0 auto; }
+.diagram-stage pre.mermaid svg .relationshipLabelBox,
+.diagram-stage pre.mermaid svg .labelBkg,
+.diagram-stage pre.mermaid svg .edgeLabel rect { fill: var(--panel) !important; background-color: var(--panel) !important; opacity: 1 !important; }
+.diagram-stage pre.mermaid svg .relationshipLabel,
+.diagram-stage pre.mermaid svg .edgeLabel text,
+.diagram-stage pre.mermaid svg .edgeLabel span,
+.diagram-stage pre.mermaid svg .edgeLabel p { fill: var(--ink) !important; color: var(--ink) !important; }
+@media (max-width: 640px) {
+  .diagram-stage { padding: 12px; }
+}
+body[data-style="nosta-blueprint"] .diagram-stage {
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.chart-box { width: 100%; height: 320px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+
+svg.svg-diagram { display: block; width: 100%; height: auto; font-family: var(--font-sans); }
+svg.svg-diagram .node rect,
+svg.svg-diagram rect.node { fill: var(--c-bg); stroke: var(--c-border); stroke-width: 1.25; rx: 8; }
+svg.svg-diagram .arr { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+svg.svg-diagram .leader { fill: none; stroke: var(--muted-2); stroke-width: 1; stroke-dasharray: 4 3; }
+svg.svg-diagram .t { fill: var(--c-text, var(--ink)); font-size: 14px; font-weight: 600; font-family: var(--font-sans); }
+svg.svg-diagram .th { fill: var(--ink); font-size: 13px; font-weight: 600; font-family: var(--font-sans); }
+svg.svg-diagram .ts { fill: var(--muted); font-size: 12px; font-weight: 400; font-family: var(--font-sans); }
+svg.svg-diagram .tm { fill: var(--c-text, var(--ink-2)); font-size: 11.5px; font-family: var(--font-mono); }
+`.trim();
+
+// src/artifacts/shell.ts
+var ARTIFACT_LIBS = ["echarts", "mermaid", "lucide", "highlight"];
+var LIB_CDN = {
+  echarts: "https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js",
+  mermaid: "https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js",
+  lucide: "https://cdn.jsdelivr.net/npm/lucide@0.475.0/dist/umd/lucide.min.js",
+  highlight: "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/highlight.min.js"
+};
+function escapeHtml(value) {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+function renderLibTags(libs) {
+  return [...new Set(libs)].map((lib) => `<script src="${LIB_CDN[lib]}"></script>`).join(`
+`);
+}
+function buildRuntimeScript(input) {
+  const hasEcharts = input.libs.includes("echarts");
+  const hasMermaid = input.libs.includes("mermaid");
+  const hasLucide = input.libs.includes("lucide");
+  const hasHighlight = input.libs.includes("highlight");
+  return `
+(function() {
+  var DEFAULT_THEME = ${JSON.stringify(input.theme)};
+  var TAB_IDS = ${JSON.stringify(input.tabIds)};
+  var ECHARTS_THEMES = ${hasEcharts ? JSON.stringify(NOSTA_ECHARTS_THEMES) : "null"};
+
+  function resolveInitialTheme() {
+    if (DEFAULT_THEME === "dark" || DEFAULT_THEME === "light") return DEFAULT_THEME;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  }
+
+  var currentTheme = resolveInitialTheme();
+  var themeListeners = [];
+  var booted = false;
+
+  function applyTheme(next) {
+    currentTheme = next === "light" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", currentTheme);
+    var btn = document.getElementById("nosta-theme-toggle");
+    if (btn) btn.textContent = currentTheme === "dark" ? "Light" : "Dark";
+    themeListeners.forEach(function(fn) { try { fn(currentTheme); } catch (_) {} });
+  }
+
+  document.documentElement.setAttribute("data-theme", currentTheme);
+
+  var chartEntries = [];
+  function mountChart(entry) {
+    if (!window.echarts || !ECHARTS_THEMES) return;
+    if (!window.__nostaEchartsRegistered) {
+      window.echarts.registerTheme("nosta-dark", ECHARTS_THEMES.dark);
+      window.echarts.registerTheme("nosta-light", ECHARTS_THEMES.light);
+      window.__nostaEchartsRegistered = true;
+    }
+    if (entry.instance) entry.instance.dispose();
+    var themeName = currentTheme === "light" ? "nosta-light" : "nosta-dark";
+    entry.instance = window.echarts.init(entry.el, themeName);
+    var opt = entry.buildOption(currentTheme);
+    if (opt) entry.instance.setOption(opt);
+  }
+
+  window.nostaCharts = {
+    register: function(target, buildOption) {
+      var el = typeof target === "string" ? document.querySelector(target) : target;
+      if (!el) return;
+      var entry = { el: el, buildOption: buildOption, instance: null };
+      chartEntries.push(entry);
+      if (booted && window.echarts) mountChart(entry);
+    },
+    resizeAll: function() {
+      chartEntries.forEach(function(entry) {
+        if (entry.instance) entry.instance.resize();
+      });
+    }
+  };
+
+  ${hasEcharts ? `themeListeners.push(function() { chartEntries.forEach(mountChart); });
+  window.addEventListener("resize", function() { window.nostaCharts.resizeAll(); });` : ""}
+
+  ${hasMermaid ? `var MOBILE_BREAKPOINT = 640;
+  function isMobileViewport() {
+    return window.innerWidth < MOBILE_BREAKPOINT;
+  }
+  function adaptMermaidForViewport(src, mobile) {
+    if (!mobile) return src;
+    return src
+      .replace(/^(\\s*(?:flowchart|graph)\\s+)(?:LR|RL)\\b/im, "$1TD")
+      .replace(/^(\\s*direction\\s+)(?:LR|RL)\\b/gim, "$1TB");
+  }
+  function attachDiagramToolbar(stage) {
+    if (!stage || stage.dataset.zoomWired === "1") return;
+    stage.dataset.zoomWired = "1";
+    var viewport = document.createElement("div");
+    viewport.className = "diagram-viewport";
+    var zoom = document.createElement("div");
+    zoom.className = "diagram-zoom";
+    while (stage.firstChild) zoom.appendChild(stage.firstChild);
+    viewport.appendChild(zoom);
+    var bar = document.createElement("div");
+    bar.className = "diagram-toolbar";
+    var btnOut = document.createElement("button");
+    btnOut.type = "button";
+    btnOut.textContent = "−";
+    btnOut.setAttribute("aria-label", "Zoom out");
+    var btnReset = document.createElement("button");
+    btnReset.type = "button";
+    btnReset.textContent = "100%";
+    btnReset.setAttribute("aria-label", "Reset zoom");
+    var btnIn = document.createElement("button");
+    btnIn.type = "button";
+    btnIn.textContent = "+";
+    btnIn.setAttribute("aria-label", "Zoom in");
+    var btnExpand = document.createElement("button");
+    btnExpand.type = "button";
+    btnExpand.textContent = "Expand";
+    bar.appendChild(btnOut);
+    bar.appendChild(btnReset);
+    bar.appendChild(btnIn);
+    bar.appendChild(btnExpand);
+    stage.appendChild(bar);
+    stage.appendChild(viewport);
+    var scale = 1;
+    function setScale(next) {
+      scale = Math.max(0.75, Math.min(2.5, Math.round(next * 100) / 100));
+      zoom.style.width = Math.round(scale * 100) + "%";
+      btnReset.textContent = Math.round(scale * 100) + "%";
+    }
+    btnIn.addEventListener("click", function() { setScale(scale + 0.25); });
+    btnOut.addEventListener("click", function() { setScale(scale - 0.25); });
+    btnReset.addEventListener("click", function() { setScale(1); });
+    btnExpand.addEventListener("click", function() {
+      var expanded = stage.classList.toggle("is-expanded");
+      btnExpand.textContent = expanded ? "Close" : "Expand";
+    });
+  }
+  function renderMermaid(theme, scope) {
+    if (!window.mermaid) return;
+    var root = scope || document;
+    var mobile = isMobileViewport();
+    var modeKey = theme + ":" + (mobile ? "m" : "d");
+    var candidates = root.querySelectorAll("pre.mermaid");
+    var visible = [];
+    candidates.forEach(function(el) {
+      if (!el.dataset.mermaidSrc) el.dataset.mermaidSrc = el.textContent || "";
+      attachDiagramToolbar(el.closest(".diagram-stage"));
+      var panel = el.closest(".nosta-panel");
+      if (panel && panel.hidden) {
+        el.dataset.mermaidMode = "";
+        return;
+      }
+      if (el.dataset.mermaidMode === modeKey && el.getAttribute("data-processed") === "true") return;
+      el.dataset.mermaidMode = modeKey;
+      el.removeAttribute("data-processed");
+      el.textContent = adaptMermaidForViewport(el.dataset.mermaidSrc, mobile);
+      visible.push(el);
+    });
+    if (!visible.length) return;
+    var isLight = theme === "light";
+    window.mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      securityLevel: "loose",
+      themeVariables: isLight
+        ? {
+            darkMode: false,
+            background: "transparent",
+            fontFamily: '"Inter Variable", Inter, system-ui, sans-serif',
+            fontSize: "13px",
+            primaryColor: "#f2f0ea",
+            primaryTextColor: "#3b2e10",
+            primaryBorderColor: "#c9a66b",
+            secondaryColor: "#fbfaf7",
+            tertiaryColor: "#efece5",
+            lineColor: "#787162",
+            textColor: "#3b2e10",
+            edgeLabelBackground: "#fbfaf7",
+            clusterBkg: "#f2f0ea",
+            clusterBorder: "#d6d1c4",
+            actorBkg: "#fbfaf7",
+            actorBorder: "#c9a66b",
+            actorTextColor: "#3b2e10",
+            signalColor: "#3b2e10",
+            signalTextColor: "#3b2e10",
+            labelBoxBkgColor: "#f2f0ea",
+            labelBoxBorderColor: "#d6d1c4",
+            labelTextColor: "#3b2e10",
+            attributeBackgroundColorOdd: "#fbfaf7",
+            attributeBackgroundColorEven: "#f2f0ea",
+          }
+        : {
+            darkMode: true,
+            background: "transparent",
+            fontFamily: '"Inter Variable", Inter, system-ui, sans-serif',
+            fontSize: "13px",
+            primaryColor: "#1f1e1a",
+            primaryTextColor: "#f0efea",
+            primaryBorderColor: "#8f7446",
+            secondaryColor: "#181815",
+            tertiaryColor: "#20201b",
+            lineColor: "#a8a293",
+            textColor: "#f0efea",
+            edgeLabelBackground: "#1b1b17",
+            clusterBkg: "#181815",
+            clusterBorder: "#38362e",
+            actorBkg: "#1f1e1a",
+            actorBorder: "#8f7446",
+            actorTextColor: "#f0efea",
+            signalColor: "#d8c39a",
+            signalTextColor: "#f0efea",
+            labelBoxBkgColor: "#20201b",
+            labelBoxBorderColor: "#38362e",
+            labelTextColor: "#f0efea",
+            attributeBackgroundColorOdd: "#181815",
+            attributeBackgroundColorEven: "#20201b",
+          },
+      flowchart: { useMaxWidth: true, htmlLabels: false, wrappingWidth: 160, nodeSpacing: 32, rankSpacing: 40 },
+      sequence: { useMaxWidth: true, wrap: true, actorMargin: mobile ? 16 : 40, width: mobile ? 122 : 140, messageMargin: 28 },
+      er: { useMaxWidth: true },
+      state: { useMaxWidth: true },
+      class: { useMaxWidth: true }
+    });
+    window.mermaid.run({ nodes: visible });
+  }
+  themeListeners.push(function(theme) { renderMermaid(theme); });
+  var lastMobileState = isMobileViewport();
+  window.addEventListener("resize", function() {
+    var nextMobile = isMobileViewport();
+    if (nextMobile !== lastMobileState) {
+      lastMobileState = nextMobile;
+      renderMermaid(currentTheme);
+    }
+  });` : ""}
+
+  function selectTab(id, notify) {
+    var target = TAB_IDS.indexOf(id) >= 0 ? id : TAB_IDS[0];
+    if (!target) return;
+    var activePanel = null;
+    document.querySelectorAll(".nosta-tab").forEach(function(btn) {
+      var active = btn.getAttribute("data-tab") === target;
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    document.querySelectorAll(".nosta-panel").forEach(function(panel) {
+      var isTarget = panel.getAttribute("data-panel") === target;
+      panel.hidden = !isTarget;
+      if (isTarget) activePanel = panel;
+    });
+    if (notify) {
+      try {
+        if (location.hash !== "#" + target) history.replaceState(null, "", "#" + target);
+      } catch (_) {}
+      try {
+        if (window.__nostaDoc && window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: "nosta-tab", doc: window.__nostaDoc, key: target }, "*");
+        }
+      } catch (_) {}
+    }
+    ${hasMermaid ? "if (activePanel) renderMermaid(currentTheme, activePanel);" : ""}
+    setTimeout(function() { window.nostaCharts.resizeAll(); }, 20);
+  }
+  window.nostaSelectTab = function(id) { selectTab(id, true); };
+
+  function resolveInitialTab() {
+    if (window.__nostaTab && TAB_IDS.indexOf(window.__nostaTab) >= 0) return window.__nostaTab;
+    var hashTab = (location.hash || "").replace(/^#/, "");
+    if (TAB_IDS.indexOf(hashTab) >= 0) return hashTab;
+    return TAB_IDS[0];
+  }
+
+  function boot() {
+    booted = true;
+    applyTheme(currentTheme);
+    var toggle = document.getElementById("nosta-theme-toggle");
+    if (toggle) {
+      toggle.addEventListener("click", function() {
+        applyTheme(currentTheme === "dark" ? "light" : "dark");
+      });
+    }
+    document.querySelectorAll(".nosta-tab").forEach(function(btn) {
+      btn.addEventListener("click", function() {
+        selectTab(btn.getAttribute("data-tab"), true);
+      });
+    });
+    selectTab(resolveInitialTab(), false);
+    ${hasLucide ? "if (window.lucide && window.lucide.createIcons) window.lucide.createIcons();" : ""}
+    ${hasHighlight ? "if (window.hljs && window.hljs.highlightAll) window.hljs.highlightAll();" : ""}
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+})();
+`.trim();
+}
+function compileArtifactHtml(input) {
+  const showTabs = input.tabs.length > 1;
+  const tabButtons = input.tabs.map((tab, index) => {
+    const badge = tab.badge ? `<span class="nosta-tab-badge">${escapeHtml(tab.badge)}</span>` : "";
+    return `<button type="button" class="nosta-tab" role="tab" data-tab="${escapeHtml(tab.id)}" aria-selected="${index === 0 ? "true" : "false"}">${escapeHtml(tab.label)}${badge}</button>`;
+  }).join(`
+        `);
+  const panels = input.tabs.map((tab, index) => `<section class="nosta-panel" role="tabpanel" data-panel="${escapeHtml(tab.id)}"${index === 0 ? "" : " hidden"}>
+${tab.html}
+</section>`).join(`
+    `);
+  const subtitle = input.subtitle ? `<p class="nosta-subtitle">${escapeHtml(input.subtitle)}</p>` : "";
+  const fontLinks = FONTSOURCE_STYLESHEETS.map((href) => `<link rel="stylesheet" href="${href}">`).join(`
+`);
+  const libTags = renderLibTags(input.libs);
+  const runtime = buildRuntimeScript({
+    theme: input.theme,
+    tabIds: input.tabs.map((tab) => tab.id),
+    libs: input.libs
+  });
+  return [
+    "<!doctype html>",
+    `<html lang="en" data-theme="${input.theme === "light" ? "light" : "dark"}">`,
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${escapeHtml(input.title)}</title>`,
+    fontLinks,
+    `<style>
+${NOSTA_ARTIFACT_CSS}
+</style>`,
+    libTags,
+    `<script>
+${runtime}
+</script>`,
+    "</head>",
+    `<body data-style="${escapeHtml(input.style)}">`,
+    '  <header class="nosta-header">',
+    '    <div class="nosta-header-inner">',
+    '      <div class="nosta-title-row">',
+    "        <div>",
+    `          <h1 class="nosta-title">${escapeHtml(input.title)}</h1>`,
+    subtitle ? `          ${subtitle}` : "",
+    "        </div>",
+    '        <button type="button" id="nosta-theme-toggle" class="nosta-theme-btn" aria-label="Toggle color theme">Light</button>',
+    "      </div>",
+    showTabs ? `      <nav class="nosta-tabs" role="tablist">
+        ${tabButtons}
+      </nav>` : "",
+    "    </div>",
+    "  </header>",
+    '  <main class="nosta-main">',
+    `    ${panels}`,
+    "  </main>",
+    "</body>",
+    "</html>"
+  ].filter((line) => line.length > 0).join(`
+`);
+}
+
+// src/artifacts/index.ts
+var ALLOWED_EXTERNAL_HOSTS = new Set(["cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com"]);
+var FORBIDDEN_DOC_WRAPPER = /<(?:!doctype|html|head|body)\b/i;
+var EXTERNAL_ASSET_RE = /<(?:script|link)\b[^>]*(?:src|href)\s*=\s*["']([^"']+)["']/gi;
+var artifactGuideInputSchema = object({
+  modules: array(_enum(ARTIFACT_GUIDE_MODULES)).min(1).describe("Design modules to load before calling nosta_artifact_publish.")
+});
+var artifactTabSchema = object({
+  id: string2().regex(PAGE_TAB, "tab id must match [A-Za-z0-9_-]{1,64}").describe("URL hash & tab key, e.g. 'overview'."),
+  label: string2().trim().min(1).max(60).describe("Short tab label."),
+  badge: string2().trim().max(24).optional().describe("Optional count or status pill on the tab."),
+  html: string2().trim().min(1).describe("Inner HTML/SVG fragment for this tab (no <html>/<body> wrapper).")
+});
+var artifactPublishInputSchema = object({
+  ticket: string2().regex(PAGE_TICKET, "ticket must match [A-Za-z0-9][A-Za-z0-9._-]{0,99}").describe("Ticket or session slug."),
+  name: string2().regex(PAGE_NAME, "name must match [A-Za-z0-9][A-Za-z0-9._-]{0,199}").describe("Artifact slug within ticket."),
+  title: string2().trim().min(1).max(MAX_PAGE_TITLE).describe("Human-readable artifact title."),
+  subtitle: string2().trim().max(240).optional().describe("Optional one-line subtitle shown under the title."),
+  style: _enum(ARTIFACT_STYLES).default("nosta-editorial"),
+  theme: _enum(ARTIFACT_THEMES).default("auto"),
+  tabs: array(artifactTabSchema).min(1).max(16).describe("One or more content tabs rendered inside the Nosta shell."),
+  libs: array(_enum(ARTIFACT_LIBS)).optional().describe("Optional allowlisted CDN libraries to load on demand."),
+  flowId: string2().regex(LINK_ID, "flowId must match [A-Za-z0-9:._-]{1,200}").optional().describe("Optional Nosta flow ID to link this artifact to."),
+  stepId: string2().trim().max(128).optional().describe("Optional step ID."),
+  linkedTo: array(string2().refine(isDocumentKey, "linkedTo entries must be ticket/name")).optional().describe("Optional related document keys (ticket/name)."),
+  guideRead: literal(true).describe("Must be true; requires calling nosta_artifact_guide first in this session."),
+  dryRunPath: string2().trim().min(1).optional().describe("Optional absolute local file path to write HTML without uploading.")
+});
+function createArtifactSessionState() {
+  return { readModules: new Set };
+}
+var ARTIFACT_TOOLS = [
+  {
+    name: "nosta_artifact_guide",
+    description: "Load Nosta's warm editorial design tokens, 6 semantic ramps, layout primitives, and recipes for the requested artifact modules before calling nosta_artifact_publish.",
+    inputSchema: toMcpInputSchema(artifactGuideInputSchema)
+  },
+  {
+    name: "nosta_artifact_publish",
+    description: "Validate, wrap in Nosta's design shell (Newsreader + Inter + JetBrains Mono, auto dark/light + toggle, tab persistence, optional ECharts/Mermaid/Lucide/Highlight.js), and publish a tabbed HTML artifact to Nosta.",
+    inputSchema: toMcpInputSchema(artifactPublishInputSchema)
+  }
+];
+function validateTabFragments(tabs) {
+  const seen = new Set;
+  for (const tab of tabs) {
+    if (seen.has(tab.id)) {
+      throw new Error(`duplicate tab id: ${tab.id}`);
+    }
+    seen.add(tab.id);
+    if (FORBIDDEN_DOC_WRAPPER.test(tab.html)) {
+      throw new Error(`tab "${tab.id}" must contain an inner HTML fragment, not <html>/<body>/<!doctype>`);
+    }
+    for (const match of tab.html.matchAll(EXTERNAL_ASSET_RE)) {
+      const rawUrl = match[1] ?? "";
+      if (!/^https?:\/\//i.test(rawUrl))
+        continue;
+      let host = "";
+      try {
+        host = new URL(rawUrl).hostname.toLowerCase();
+      } catch {
+        throw new Error(`tab "${tab.id}" has invalid external asset URL: ${rawUrl}`);
+      }
+      if (!ALLOWED_EXTERNAL_HOSTS.has(host)) {
+        throw new Error(`tab "${tab.id}" references disallowed external asset host "${host}"; use libs or allowlisted CDNs`);
+      }
+    }
+    validateMermaidHtml(tab.id, tab.html);
+  }
+}
+async function callArtifactTool(input) {
+  if (input.name === "nosta_artifact_guide") {
+    const parsed = parseToolArgs(artifactGuideInputSchema, input.args);
+    for (const mod of parsed.modules) {
+      input.session.readModules.add(mod);
+    }
+    return renderArtifactGuide(parsed.modules);
+  }
+  if (input.name !== "nosta_artifact_publish")
+    return null;
+  if (input.session.readModules.size === 0) {
+    throw new Error("call nosta_artifact_guide with the modules you need (spec, diagram, diagnostics, chart, interactive) before calling nosta_artifact_publish");
+  }
+  const parsed = parseToolArgs(artifactPublishInputSchema, input.args);
+  validateTabFragments(parsed.tabs);
+  const libs = [...new Set(parsed.libs ?? [])];
+  const html = compileArtifactHtml({
+    title: parsed.title,
+    subtitle: parsed.subtitle,
+    style: parsed.style,
+    theme: parsed.theme,
+    tabs: parsed.tabs,
+    libs
+  });
+  const bytes = Buffer.byteLength(html, "utf8");
+  if (bytes > MAX_PAGE_BYTES) {
+    throw new Error(`compiled artifact is ${bytes} bytes; the limit is ${MAX_PAGE_BYTES}`);
+  }
+  const route = `/artifacts/${encodeURIComponent(parsed.ticket)}/${encodeURIComponent(parsed.name)}`;
+  const summary = {
+    ticket: parsed.ticket,
+    name: parsed.name,
+    title: parsed.title,
+    style: parsed.style,
+    theme: parsed.theme,
+    libs,
+    tabs: parsed.tabs.map((tab) => tab.id),
+    bytes,
+    route
+  };
+  if (parsed.dryRunPath) {
+    await mkdir4(dirname3(parsed.dryRunPath), { recursive: true });
+    await writeFile3(parsed.dryRunPath, html, "utf8");
+    return JSON.stringify({ dryRun: true, path: parsed.dryRunPath, ...summary });
+  }
+  await publishPage(input.backend, {
+    ticket: parsed.ticket,
+    name: parsed.name,
+    title: parsed.title,
+    stepId: parsed.stepId ?? "",
+    html,
+    flowId: parsed.flowId,
+    linkedTo: parsed.linkedTo
+  });
+  return JSON.stringify({ ...summary, url: `${input.backend.baseUrl}${route}` });
+}
+
 // src/gate/ipc.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir as mkdir3, readFile as readFile5, rename as rename2, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { chmod, lstat, mkdir as mkdir5, readFile as readFile7, rename as rename3, rm, writeFile as writeFile4 } from "node:fs/promises";
 import { createServer } from "node:http";
-import { homedir as homedir2 } from "node:os";
-import { join as join5 } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { join as join6 } from "node:path";
 function defaultGateDir(env = process.env) {
-  return env.NOSTA_GATE_DIR || join5(homedir2(), ".nosta", "gate");
+  return env.NOSTA_GATE_DIR || join6(homedir3(), ".nosta", "gate");
 }
 function constantTimeTokenMatch(given, expected) {
   const a = Buffer.from(given, "utf8");
@@ -8350,7 +10353,7 @@ function requiredString(value, field) {
   return value;
 }
 async function prepareGateDir(gateDir) {
-  await mkdir3(gateDir, { recursive: true, mode: 448 });
+  await mkdir5(gateDir, { recursive: true, mode: 448 });
   const dirStat = await lstat(gateDir);
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
     throw new Error(`gateDir "${gateDir}" must be a real directory, not a symlink`);
@@ -8366,8 +10369,8 @@ async function startGateIpcServer(options) {
   const gateDir = options.gateDir ?? defaultGateDir();
   const pid = options.pid ?? process.pid;
   const token = randomBytes2(32).toString("hex");
-  const socketPath = join5(gateDir, `${pid}.sock`);
-  const discoveryPath = join5(gateDir, "current.json");
+  const socketPath = join6(gateDir, `${pid}.sock`);
+  const discoveryPath = join6(gateDir, "current.json");
   const startedAt = new Date().toISOString();
   await prepareGateDir(gateDir);
   await rm(socketPath, { force: true });
@@ -8385,13 +10388,13 @@ async function startGateIpcServer(options) {
     return;
   });
   const session = { pid, socketPath, token, startedAt };
-  const tmpPath = join5(gateDir, `current.${pid}.tmp`);
-  await writeFile2(tmpPath, `${JSON.stringify(session, null, 2)}
+  const tmpPath = join6(gateDir, `current.${pid}.tmp`);
+  await writeFile4(tmpPath, `${JSON.stringify(session, null, 2)}
 `, { encoding: "utf8", mode: 384 });
   await chmod(tmpPath, 384).catch(() => {
     return;
   });
-  await rename2(tmpPath, discoveryPath);
+  await rename3(tmpPath, discoveryPath);
   let closed = false;
   const close = async () => {
     if (closed)
@@ -8402,7 +10405,7 @@ async function startGateIpcServer(options) {
       return;
     });
     try {
-      const raw = await readFile5(discoveryPath, "utf8");
+      const raw = await readFile7(discoveryPath, "utf8");
       const current = JSON.parse(raw);
       if (current.pid === pid && current.token === token) {
         await rm(discoveryPath, { force: true });
@@ -8618,11 +10621,15 @@ function getPrompt(input) {
 // src/server.ts
 var backend = transportFromEnv();
 var gate = new WorkflowGate({ backend });
-var TOOLS = [...FLOW_TOOLS];
+var artifactSession = createArtifactSessionState();
+var TOOLS = [...FLOW_TOOLS, ...ARTIFACT_TOOLS];
 async function callTool(name, args) {
   const flow = await callFlowTool({ name, args, backend, gate });
   if (flow !== null)
     return flow;
+  const artifact = await callArtifactTool({ name, args, backend, session: artifactSession });
+  if (artifact !== null)
+    return artifact;
   throw new Error(`unknown tool: ${name}`);
 }
 function send(message) {
@@ -8653,7 +10660,7 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.3.0" }
+        serverInfo: { name: "nosta", version: "0.4.0" }
       });
     } else if (method === "ping") {
       sendResult(id, {});
@@ -8723,6 +10730,37 @@ function startServer() {
 if (false) {}
 
 // src/bin.ts
+async function readStdinText() {
+  const chunks = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+async function runFlowSyncCli(args) {
+  let rawJson = null;
+  for (let i = 0;i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--json") {
+      const value = args[i + 1];
+      if (!value)
+        throw new Error("--json requires a JSON string argument");
+      rawJson = value;
+      i += 1;
+    } else if (arg === "--file") {
+      const filePath = args[i + 1];
+      if (!filePath)
+        throw new Error("--file requires a path argument");
+      rawJson = await readFile8(filePath, "utf8");
+      i += 1;
+    }
+  }
+  const text = rawJson ?? await readStdinText();
+  const parsed = flowSyncInputSchema.parse(JSON.parse(text));
+  const result = await syncFlow({ args: parsed, backend: transportFromEnv() });
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+}
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
@@ -8739,6 +10777,10 @@ async function main() {
     const options = parseInstallArgs({ argv: args.slice(1) });
     const result = await runInstall(options);
     process.stdout.write(formatInstallSummary(result));
+    return;
+  }
+  if (command === "flow" && args[1] === "sync") {
+    await runFlowSyncCli(args.slice(2));
     return;
   }
   throw new Error(`unknown command: ${command}

@@ -89,9 +89,9 @@ codex mcp add nosta -- npx -y @nostadev/mcp
 
 ## What's Included
 
-- **MCP tools**: `nosta_flow_start`, `nosta_flow_status`, `nosta_flow_log`, `nosta_flow_advance`, `nosta_flow_approve`, `nosta_flow_bypass`
+- **MCP tools**: `nosta_flow_start`, `nosta_flow_status`, `nosta_flow_log`, `nosta_flow_advance`, `nosta_flow_approve`, `nosta_flow_bypass`, `nosta_flow_sync`, `nosta_artifact_guide`, `nosta_artifact_publish`
 - **MCP prompts**: `start_flow`, `review_flow`, `approve_flow`, `review_files`
-- **Bundled skills**: `running-nosta-flows`, `speccing-a-ticket`, `building-a-node`, `closing-a-node`, `shipping-a-flow`, `reviewing-code-quality`, `writing-pr-descriptions`, `landing-the-pr`
+- **Bundled skills**: `running-nosta-flows`, `speccing-a-ticket`, `building-a-node`, `closing-a-node`, `shipping-a-flow`, `reviewing-code-quality`, `writing-pr-descriptions`, `landing-the-pr`, `building-artifacts`
 - **Hooks**: `PreToolUse` approval guard on `nosta_flow_approve` and fail-open `SessionStart` backend/skill check
 
 ## Environment

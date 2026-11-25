@@ -11,7 +11,7 @@ description: Run and triage a strict, fresh-context code review for correctness,
 ## Caller workflow
 1. Never review code you wrote in the same session.
 2. Run deterministic checks first (repo lint, typecheck, formatter) and fix all tool errors before requesting a review.
-3. Start a fresh review via `nosta_flow_start` (passing `paths` of the changed files) and poll `nosta_flow_status` until complete, or launch a fresh read-only reviewer with no argument defending the design.
+3. Start a fresh review via `nosta_flow_start` (passing `paths`, `repoRoot`, and `branch` so `parentId` auto-links from `~/.nosta/flows/index.json`) and poll `nosta_flow_status` until complete, or launch a fresh read-only reviewer with no argument defending the design and record its result via `nosta_flow_sync({ review: { model, verdict, findings, summary } })`.
 4. Triage every finding before editing:
    - Fix valid correctness, security, and maintainability findings yourself as `fix(<scope>): ...` commits.
    - Fix the finding inside the owning function/module rather than adding a parallel wrapper.
