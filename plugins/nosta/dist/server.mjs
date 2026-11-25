@@ -6489,6 +6489,8 @@ var MAX_PAGE_TITLE = 200;
 var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
+var PAGE_SLOT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var pageSlotSchema = string2().regex(PAGE_SLOT);
 var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
 var MEDIA_CONTENT_TYPES = {
   ".mp4": "video/mp4",
@@ -6522,6 +6524,7 @@ var pageRowSchema = object({
   bytes: number2(),
   created: string2().min(1),
   kind: _enum(["html", "diff", "media"]).optional(),
+  slot: pageSlotSchema.optional(),
   storage: _enum(["cloud", "local"]).optional(),
   localPath: string2().min(1).max(1000).optional(),
   localHost: string2().min(1).max(200).optional(),
@@ -6533,6 +6536,7 @@ var localMediaInputSchema = object({
   bytes: number2().int().min(0),
   title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
   stepId: string2().trim().max(128).optional(),
+  slot: pageSlotSchema.optional(),
   flowId: string2().regex(LINK_ID).optional(),
   localHost: string2().trim().min(1).max(200).optional()
 });
@@ -6619,30 +6623,142 @@ function validatePacket(input) {
   return { ok: true, packet: { title, files, totalBytes } };
 }
 
-// ../../packages/shared/src/schema/flow/step/usage.ts
-var MAX_RAW_BYTES = 64 * 1024;
-var usageSchema = object({
-  inputTokens: countSchema,
-  outputTokens: countSchema,
-  cachedInputTokens: countSchema.optional(),
-  reasoningTokens: countSchema.optional()
+// ../../packages/shared/src/lifecycle.ts
+var LIFECYCLE_STATES = ["idle", "queued", "running"];
+var LIFECYCLE_OUTCOMES = ["complete", "blocked", "errored", "terminated"];
+var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
+var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
+var BLOCK_REASONS = [
+  "spec_failed",
+  "implement_failed",
+  "checks_failed",
+  "standing_findings",
+  "usage_cap",
+  "merge_rejected",
+  "approval_timeout",
+  "merge_ready_timeout",
+  "checks_after_rebase"
+];
+
+// ../../packages/shared/src/schema/label.ts
+var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+var MAX_FLOW_LABELS = 200;
+var labelColorSchema = _enum(["slate", "blue", "green", "amber", "red", "violet"]);
+var labelSchema = object({
+  name: string2().regex(LABEL_NAME),
+  color: labelColorSchema
 });
-var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
+var labelListSchema = object({ labels: array(labelSchema) });
+var flowLabelsInputSchema = object({ labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS) });
 
-// src/api/generated/nosta.ts
-var getApproveFlowUrl = (flowId) => {
-  return `/api/flow/${flowId}/approval`;
-};
-var getListFlowEventsUrl = (id) => {
-  return `/api/flow/${id}/events`;
-};
-var getRunCloudStepUrl = (id) => {
-  return `/api/flow/${id}/step`;
-};
+// ../../packages/shared/src/schema/flow.ts
+var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
+var prioritySchema = _enum(FLOW_PRIORITIES);
+var flowNameSchema = string2().trim().min(1).max(80);
+var flowDueSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
+var updateFlowInputSchema = object({
+  name: flowNameSchema.nullable().optional(),
+  due: flowDueSchema.nullable().optional(),
+  priority: prioritySchema.nullable().optional(),
+  labels: flowLabelsInputSchema.shape.labels.optional()
+});
 
-// src/gate/index.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { basename as basename3 } from "node:path";
+// ../../packages/shared/src/schema/runtime/provider.ts
+var CLI_DRIVERS = ["claude", "antigravity", "codex"];
+var CLOUD_SESSION_DRIVERS = ["anthropic-routine", "webhook", "gemini-interactions"];
+var PROVIDER_DRIVERS = ["pi", ...CLI_DRIVERS, ...CLOUD_SESSION_DRIVERS];
+var AUTH_MODES = ["api-key", "oauth-file"];
+var STEP_RUNTIMES = ["durable", "vm", "cloud_session", "local"];
+var providerDriverSchema = _enum(PROVIDER_DRIVERS);
+var authModeSchema = _enum(AUTH_MODES);
+var stepRuntimeSchema = _enum(STEP_RUNTIMES);
+var ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+var providerInstanceInputSchema = object({
+  label: string2().min(1).max(120).optional(),
+  provider: providerDriverSchema,
+  authKind: authModeSchema.default("api-key"),
+  secretName: string2().min(1).max(200).optional(),
+  baseUrl: string2().url().max(500).optional(),
+  env: record(string2().regex(ENV_KEY), string2().max(500)).default({}),
+  defaultModel: string2().min(1).max(120).optional(),
+  routineId: string2().min(1).max(120).optional(),
+  fallbackInstanceId: string2().regex(ID_PATTERN).optional(),
+  enabled: boolean2().default(true)
+});
+var providerInstanceSchema = providerInstanceInputSchema.extend({
+  id: string2().regex(ID_PATTERN),
+  updatedAt: number2().int().min(0)
+});
+var scopePolicySchema = object({
+  scopeId: string2().min(1).max(200),
+  allowOperatorFallback: boolean2(),
+  updatedAt: number2().int().min(0)
+});
+var instanceCooldownSchema = object({
+  instanceId: string2().regex(ID_PATTERN),
+  until: number2().int().min(0),
+  reason: string2().max(300)
+});
+var providerCooldownStatusSchema = object({
+  until: number2().int().min(0),
+  reason: string2().max(300)
+});
+var providerWithStatusSchema = providerInstanceSchema.extend({
+  cooldown: providerCooldownStatusSchema.nullable()
+});
+var providerListResponseSchema = object({
+  providers: array(providerWithStatusSchema)
+});
+
+// ../../packages/shared/src/schema/flow/config.ts
+var childConfigSchema = object({
+  tools: array(string2()),
+  secrets: array(string2()),
+  hosts: array(string2()),
+  mcpServers: array(string2()),
+  runtime: stepRuntimeSchema.optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+var flowConfigSchema = object({
+  mergeApproval: _enum(["human", "auto"]),
+  checks: array(string2()),
+  usageCap: number2().int().positive().nullable(),
+  children: record(string2(), childConfigSchema).default({}),
+  scopeId: string2().min(1).max(200).optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+
+// ../../packages/shared/src/schema/flow/slice.ts
+var flowTargetSchema = object({
+  repo: string2(),
+  base: string2(),
+  landed: array(string2()),
+  ticket: string2().nullable().optional(),
+  ticketUrl: string2().nullable().optional()
+});
+var proofRowSchema = object({
+  file: string2(),
+  name: string2(),
+  command: string2()
+});
+var flowSpecNodeSchema = object({
+  id: string2(),
+  behavior: string2(),
+  files: array(string2()),
+  estimate: string2(),
+  hazards: string2(),
+  blockedBy: array(string2()),
+  proof: array(proofRowSchema),
+  config: childConfigSchema
+});
+var flowSliceSchema = object({
+  target: flowTargetSchema,
+  config: flowConfigSchema,
+  spec: flowSpecNodeSchema
+});
 
 // ../../packages/shared/src/schema/flow/status.ts
 var flowStatusSchema = _enum([
@@ -6669,6 +6785,226 @@ var stepStatusSchema = _enum([
   "errored",
   "rejected"
 ]);
+
+// ../../packages/shared/src/review-report.ts
+var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
+var findingSchema = object({
+  file: string2(),
+  line: number2().int(),
+  evidence: string2(),
+  severity: findingSeveritySchema.optional(),
+  correction: string2().optional()
+});
+var reviewReportSchema = object({
+  findings: array(findingSchema),
+  verdict: _enum(["PASS", "FAIL"])
+});
+
+// ../../packages/shared/src/schema/flow/step/usage.ts
+var MAX_RAW_BYTES = 64 * 1024;
+var usageSchema = object({
+  inputTokens: countSchema,
+  outputTokens: countSchema,
+  cachedInputTokens: countSchema.optional(),
+  reasoningTokens: countSchema.optional()
+});
+var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
+
+// ../../packages/shared/src/schema/flow/step/record.ts
+var stepFileRefSchema = object({
+  name: string2(),
+  sha256: string2(),
+  bytes: countSchema
+});
+var stepBaseSchema = object({
+  id: string2().min(1),
+  flowId: string2().min(1),
+  attempt: positiveSchema.default(1),
+  name: string2().default(""),
+  startedAt: countSchema,
+  endedAt: countSchema.nullable(),
+  summary: string2().default(""),
+  claimToken: string2().nullable().optional()
+});
+var agentStepSchema = stepBaseSchema.extend({
+  kind: literal("agent"),
+  role: agentRoleSchema,
+  status: _enum(["queued", "running", "complete", "errored"]),
+  providerInstanceId: string2().nullable().optional(),
+  model: string2().nullable().default(null),
+  files: array(stepFileRefSchema).default([]),
+  verdict: _enum(["PASS", "FAIL"]).nullable().default(null),
+  findings: array(findingSchema).default([]),
+  output: string2().nullable().default(null),
+  usage: usageSchema.nullable().default(null)
+});
+var commandStepSchema = stepBaseSchema.extend({
+  kind: literal("command"),
+  status: _enum(["queued", "running", "complete", "errored"]),
+  command: string2().default(""),
+  exitCode: number2().int().nullable().default(null),
+  output: string2().nullable().default(null),
+  providerInstanceId: string2().nullable().optional(),
+  model: string2().nullable().optional(),
+  usage: usageSchema.nullable().optional()
+});
+var approvalStepSchema = stepBaseSchema.extend({
+  kind: literal("approval"),
+  status: _enum(["queued", "complete", "rejected"]),
+  decision: _enum(["approve", "reject"]).nullable().default(null),
+  actor: string2().nullable().default(null),
+  decisionId: string2().nullable().default(null)
+});
+var errorDetailAtomSchema = union([string2(), number2(), boolean2(), _null3()]);
+var errorDetailValueSchema = union([errorDetailAtomSchema, array(errorDetailAtomSchema)]);
+var callStepErrorSchema = object({
+  code: string2().min(1),
+  message: string2(),
+  retryable: boolean2().default(false),
+  details: record(string2(), errorDetailValueSchema).nullable().optional()
+});
+var callStepSchema = stepBaseSchema.extend({
+  kind: literal("call"),
+  status: _enum(["queued", "running", "complete", "errored"]),
+  call: string2().default(""),
+  callVersion: positiveSchema.nullable().default(null),
+  attempts: countSchema.default(1),
+  output: string2().nullable().default(null),
+  error: callStepErrorSchema.nullable().default(null)
+});
+var stepRecordSchema = discriminatedUnion("kind", [
+  agentStepSchema,
+  commandStepSchema,
+  approvalStepSchema,
+  callStepSchema
+]);
+function approvalDecisionForStatus(status) {
+  if (status === "complete")
+    return "approve";
+  if (status === "rejected")
+    return "reject";
+  return null;
+}
+
+// ../../packages/shared/src/schema/flow/record.ts
+var pullRequestSchema = object({
+  url: string2(),
+  number: positiveSchema,
+  base: string2()
+});
+var FLOW_TAB_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var flowTabKindSchema = _enum(["artifacts", "steps", "diff", "ship"]);
+var flowTabSchema = object({
+  id: string2().regex(FLOW_TAB_ID),
+  label: string2().trim().min(1).max(40),
+  kind: flowTabKindSchema,
+  slot: string2().regex(FLOW_TAB_ID).optional()
+});
+var flowDocSlotSchema = string2().regex(FLOW_TAB_ID);
+var flowDocRefSchema = object({
+  id: string2().min(1).max(160),
+  ticket: string2().min(1).max(100),
+  name: string2().min(1).max(200),
+  title: string2().min(1).max(200),
+  slot: flowDocSlotSchema.default("artifact"),
+  stepId: string2().max(128).nullable().default(null),
+  sha256: string2().max(128).nullable().default(null),
+  bytes: countSchema.default(0),
+  createdAt: countSchema
+});
+var flowEvidenceRefSchema = object({
+  id: string2().min(1).max(160),
+  ticket: string2().min(1).max(100),
+  name: string2().min(1).max(200),
+  title: string2().min(1).max(200),
+  kind: _enum(["media", "html"]).default("media"),
+  contentType: string2().max(128).nullable().default(null),
+  stepId: string2().max(128).nullable().default(null),
+  sha256: string2().max(128).nullable().default(null),
+  bytes: countSchema.default(0),
+  createdAt: countSchema
+});
+var flowDiffSummarySchema = object({
+  base: string2().max(200),
+  head: string2().max(200),
+  ticket: string2().max(100).nullable().default(null),
+  name: string2().max(200).nullable().default(null),
+  files: array(string2().max(500)).max(500).default([]),
+  migrations: array(string2().max(500)).max(200).default([]),
+  additions: countSchema.default(0),
+  deletions: countSchema.default(0),
+  sha256: string2().max(128).nullable().default(null)
+});
+var flowShipMetaSchema = object({
+  risk: string2().max(4000).nullable().default(null),
+  deployOrder: string2().max(4000).nullable().default(null),
+  notes: array(string2().max(1000)).max(50).default([])
+});
+var flowModeSchema = _enum(["spec", "review", "local", "yaml"]);
+var flowRecordSchema = object({
+  id: string2(),
+  mode: flowModeSchema.default("spec"),
+  parentId: string2().nullable().default(null),
+  rootFlowId: string2(),
+  attempt: positiveSchema.default(1),
+  childFlowIds: array(string2()).default([]),
+  blockedBy: array(string2()).default([]),
+  flowHash: string2().nullable().default(null),
+  idempotencyKey: string2().nullable().default(null),
+  target: flowTargetSchema.nullable().default(null),
+  workspace: string2().nullable().default(null),
+  definitionName: string2().nullable().default(null),
+  bundleSha: string2().nullable().default(null),
+  scheduleId: string2().nullable().default(null),
+  scheduleCron: string2().nullable().default(null),
+  values: record(string2(), string2()).default({}),
+  tabs: array(flowTabSchema).max(16).nullable().default(null),
+  docs: array(flowDocRefSchema).default([]),
+  evidence: array(flowEvidenceRefSchema).default([]),
+  diffSummary: flowDiffSummarySchema.nullable().default(null),
+  ship: flowShipMetaSchema.nullable().default(null),
+  endState: string2().nullable().default(null),
+  baseSha: string2().nullable().default(null),
+  config: flowConfigSchema.nullable().default(null),
+  slice: flowSliceSchema.nullable().default(null),
+  steps: array(stepRecordSchema).default([]),
+  labels: flowLabelsInputSchema.shape.labels.default([]),
+  name: string2().max(80).nullable().default(null),
+  due: flowDueSchema.nullable().default(null),
+  priority: prioritySchema.nullable().default(null),
+  spec: string2().nullable().default(null),
+  branch: string2().nullable().default(null),
+  sandboxId: string2().nullable().default(null),
+  pr: pullRequestSchema.nullable().default(null),
+  mergeSha: string2().nullable().default(null),
+  diff: string2().nullable().default(null),
+  diffTruncated: boolean2().default(false),
+  reason: _enum(BLOCK_REASONS).nullable().default(null),
+  round: countSchema.default(0),
+  phase: flowPhaseSchema.default("queued"),
+  version: positiveSchema,
+  state: lifecycleStateSchema,
+  outcome: lifecycleOutcomeSchema.nullable(),
+  status: flowStatusSchema,
+  clearedAt: countSchema.nullable().default(null),
+  createdAt: countSchema,
+  updatedAt: countSchema
+});
+
+// src/api/generated/nosta.ts
+var getApproveFlowUrl = (flowId) => {
+  return `/api/flow/${flowId}/approval`;
+};
+var getListFlowEventsUrl = (id) => {
+  return `/api/flow/${id}/events`;
+};
+var getRunCloudStepUrl = (id) => {
+  return `/api/flow/${id}/step`;
+};
+
+// src/gate/index.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { basename as basename3 } from "node:path";
 
 // ../../packages/shared/src/schema/flow/step/event.ts
 var stepEventStatusSchema = _enum([...flowStatusSchema.options, "rejected"]);
@@ -6782,6 +7118,7 @@ function emptyLocalFlow(input) {
     ...input.base ? { base: input.base } : {},
     ...input.ticket ? { ticket: input.ticket } : {},
     ...input.title ? { title: input.title } : {},
+    ...input.tabs !== undefined ? { tabs: input.tabs } : {},
     docs: [],
     evidence: [],
     diffSummary: null,
@@ -6799,105 +7136,14 @@ import { promisify } from "node:util";
 
 // src/gate/policy.ts
 import { basename } from "node:path";
-
-// ../../packages/shared/src/review-report.ts
-var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
-var findingSchema = object({
-  file: string2(),
-  line: number2().int(),
-  evidence: string2(),
-  severity: findingSeveritySchema.optional(),
-  correction: string2().optional()
-});
-var reviewReportSchema = object({
-  findings: array(findingSchema),
-  verdict: _enum(["PASS", "FAIL"])
-});
-
-// ../../packages/shared/src/schema/flow/step/record.ts
-var stepFileRefSchema = object({
-  name: string2(),
-  sha256: string2(),
-  bytes: countSchema
-});
-var stepBaseSchema = object({
-  id: string2().min(1),
-  flowId: string2().min(1),
-  attempt: positiveSchema.default(1),
-  name: string2().default(""),
-  startedAt: countSchema,
-  endedAt: countSchema.nullable(),
-  summary: string2().default(""),
-  claimToken: string2().nullable().optional()
-});
-var agentStepSchema = stepBaseSchema.extend({
-  kind: literal("agent"),
-  role: agentRoleSchema,
-  status: _enum(["queued", "running", "complete", "errored"]),
-  providerInstanceId: string2().nullable().optional(),
-  model: string2().nullable().default(null),
-  files: array(stepFileRefSchema).default([]),
-  verdict: _enum(["PASS", "FAIL"]).nullable().default(null),
-  findings: array(findingSchema).default([]),
-  output: string2().nullable().default(null),
-  usage: usageSchema.nullable().default(null)
-});
-var commandStepSchema = stepBaseSchema.extend({
-  kind: literal("command"),
-  status: _enum(["queued", "running", "complete", "errored"]),
-  command: string2().default(""),
-  exitCode: number2().int().nullable().default(null),
-  output: string2().nullable().default(null),
-  providerInstanceId: string2().nullable().optional(),
-  model: string2().nullable().optional(),
-  usage: usageSchema.nullable().optional()
-});
-var approvalStepSchema = stepBaseSchema.extend({
-  kind: literal("approval"),
-  status: _enum(["queued", "complete", "rejected"]),
-  decision: _enum(["approve", "reject"]).nullable().default(null),
-  actor: string2().nullable().default(null),
-  decisionId: string2().nullable().default(null)
-});
-var errorDetailAtomSchema = union([string2(), number2(), boolean2(), _null3()]);
-var errorDetailValueSchema = union([errorDetailAtomSchema, array(errorDetailAtomSchema)]);
-var callStepErrorSchema = object({
-  code: string2().min(1),
-  message: string2(),
-  retryable: boolean2().default(false),
-  details: record(string2(), errorDetailValueSchema).nullable().optional()
-});
-var callStepSchema = stepBaseSchema.extend({
-  kind: literal("call"),
-  status: _enum(["queued", "running", "complete", "errored"]),
-  call: string2().default(""),
-  callVersion: positiveSchema.nullable().default(null),
-  attempts: countSchema.default(1),
-  output: string2().nullable().default(null),
-  error: callStepErrorSchema.nullable().default(null)
-});
-var stepRecordSchema = discriminatedUnion("kind", [
-  agentStepSchema,
-  commandStepSchema,
-  approvalStepSchema,
-  callStepSchema
-]);
-function approvalDecisionForStatus(status) {
-  if (status === "complete")
-    return "approve";
-  if (status === "rejected")
-    return "reject";
-  return null;
-}
-
-// src/gate/policy.ts
 var workflowConfigSchema = object({
   version: literal(1),
   nodes: array(string2().min(1)).min(1),
   approvalNodes: array(string2().min(1)).default(["go"]),
   allowBeforeGo: array(string2().min(1)).default([]),
   gateBeforeGo: array(string2().min(1)).default([]),
-  prGateAfter: array(string2().min(1)).default([])
+  prGateAfter: array(string2().min(1)).default([]),
+  tabs: array(flowTabSchema).max(16).optional()
 }).superRefine((data, ctx) => {
   const nodeSet = new Set(data.nodes);
   if (nodeSet.size !== data.nodes.length) {
@@ -6911,6 +7157,15 @@ var workflowConfigSchema = object({
   for (const node of data.prGateAfter) {
     if (!nodeSet.has(node)) {
       ctx.addIssue({ code: "custom", path: ["prGateAfter"], message: `prGateAfter "${node}" is not in nodes` });
+    }
+  }
+  if (data.tabs) {
+    const seenTabs = new Set;
+    for (const tab of data.tabs) {
+      if (seenTabs.has(tab.id)) {
+        ctx.addIssue({ code: "custom", path: ["tabs"], message: `duplicate tab id "${tab.id}"` });
+      }
+      seenTabs.add(tab.id);
     }
   }
 });
@@ -7408,6 +7663,7 @@ class WorkflowGate {
       throw new Error(`no .nosta/workflow.json found in ${repoRoot}`);
     const workspace = basename3(repoRoot) || "workspace";
     const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
+    const tabs = input.tabs ?? config.tabs;
     const body = {
       mode: "local",
       ...input.parentId ? { parentId: input.parentId } : {},
@@ -7418,6 +7674,7 @@ class WorkflowGate {
       branch,
       ticket: input.ticket ?? null,
       ticketUrl: input.ticketUrl ?? null,
+      ...tabs ? { tabs } : {},
       ...input.endState ? { endState: input.endState } : {},
       ...input.spec ? { spec: input.spec } : {},
       ...input.values ? { values: input.values } : {}
@@ -7440,6 +7697,7 @@ class WorkflowGate {
       base: input.base,
       ticket: input.ticket,
       title: name,
+      ...tabs ? { tabs } : {},
       now: this.now()
     }));
     return { flow: parsed.flow, binding, nextAction: describeNextAction(binding) };
@@ -8033,239 +8291,6 @@ import { createHash } from "node:crypto";
 import { readFile as readFile5 } from "node:fs/promises";
 import { basename as basename5 } from "node:path";
 
-// ../../packages/shared/src/lifecycle.ts
-var LIFECYCLE_STATES = ["idle", "queued", "running"];
-var LIFECYCLE_OUTCOMES = ["complete", "blocked", "errored", "terminated"];
-var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
-var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
-var BLOCK_REASONS = [
-  "spec_failed",
-  "implement_failed",
-  "checks_failed",
-  "standing_findings",
-  "usage_cap",
-  "merge_rejected",
-  "approval_timeout",
-  "merge_ready_timeout",
-  "checks_after_rebase"
-];
-
-// ../../packages/shared/src/schema/label.ts
-var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
-var MAX_FLOW_LABELS = 200;
-var labelColorSchema = _enum(["slate", "blue", "green", "amber", "red", "violet"]);
-var labelSchema = object({
-  name: string2().regex(LABEL_NAME),
-  color: labelColorSchema
-});
-var labelListSchema = object({ labels: array(labelSchema) });
-var flowLabelsInputSchema = object({ labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS) });
-
-// ../../packages/shared/src/schema/flow.ts
-var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
-var prioritySchema = _enum(FLOW_PRIORITIES);
-var flowNameSchema = string2().trim().min(1).max(80);
-var flowDueSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
-var updateFlowInputSchema = object({
-  name: flowNameSchema.nullable().optional(),
-  due: flowDueSchema.nullable().optional(),
-  priority: prioritySchema.nullable().optional(),
-  labels: flowLabelsInputSchema.shape.labels.optional()
-});
-
-// ../../packages/shared/src/schema/runtime/provider.ts
-var CLI_DRIVERS = ["claude", "antigravity", "codex"];
-var CLOUD_SESSION_DRIVERS = ["anthropic-routine", "webhook", "gemini-interactions"];
-var PROVIDER_DRIVERS = ["pi", ...CLI_DRIVERS, ...CLOUD_SESSION_DRIVERS];
-var AUTH_MODES = ["api-key", "oauth-file"];
-var STEP_RUNTIMES = ["durable", "vm", "cloud_session", "local"];
-var providerDriverSchema = _enum(PROVIDER_DRIVERS);
-var authModeSchema = _enum(AUTH_MODES);
-var stepRuntimeSchema = _enum(STEP_RUNTIMES);
-var ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
-var providerInstanceInputSchema = object({
-  label: string2().min(1).max(120).optional(),
-  provider: providerDriverSchema,
-  authKind: authModeSchema.default("api-key"),
-  secretName: string2().min(1).max(200).optional(),
-  baseUrl: string2().url().max(500).optional(),
-  env: record(string2().regex(ENV_KEY), string2().max(500)).default({}),
-  defaultModel: string2().min(1).max(120).optional(),
-  routineId: string2().min(1).max(120).optional(),
-  fallbackInstanceId: string2().regex(ID_PATTERN).optional(),
-  enabled: boolean2().default(true)
-});
-var providerInstanceSchema = providerInstanceInputSchema.extend({
-  id: string2().regex(ID_PATTERN),
-  updatedAt: number2().int().min(0)
-});
-var scopePolicySchema = object({
-  scopeId: string2().min(1).max(200),
-  allowOperatorFallback: boolean2(),
-  updatedAt: number2().int().min(0)
-});
-var instanceCooldownSchema = object({
-  instanceId: string2().regex(ID_PATTERN),
-  until: number2().int().min(0),
-  reason: string2().max(300)
-});
-var providerCooldownStatusSchema = object({
-  until: number2().int().min(0),
-  reason: string2().max(300)
-});
-var providerWithStatusSchema = providerInstanceSchema.extend({
-  cooldown: providerCooldownStatusSchema.nullable()
-});
-var providerListResponseSchema = object({
-  providers: array(providerWithStatusSchema)
-});
-
-// ../../packages/shared/src/schema/flow/config.ts
-var childConfigSchema = object({
-  tools: array(string2()),
-  secrets: array(string2()),
-  hosts: array(string2()),
-  mcpServers: array(string2()),
-  runtime: stepRuntimeSchema.optional(),
-  providerInstanceId: string2().min(1).max(64).optional(),
-  vmProfileId: string2().min(1).max(64).optional()
-});
-var flowConfigSchema = object({
-  mergeApproval: _enum(["human", "auto"]),
-  checks: array(string2()),
-  usageCap: number2().int().positive().nullable(),
-  children: record(string2(), childConfigSchema).default({}),
-  scopeId: string2().min(1).max(200).optional(),
-  providerInstanceId: string2().min(1).max(64).optional(),
-  vmProfileId: string2().min(1).max(64).optional()
-});
-
-// ../../packages/shared/src/schema/flow/slice.ts
-var flowTargetSchema = object({
-  repo: string2(),
-  base: string2(),
-  landed: array(string2()),
-  ticket: string2().nullable().optional(),
-  ticketUrl: string2().nullable().optional()
-});
-var proofRowSchema = object({
-  file: string2(),
-  name: string2(),
-  command: string2()
-});
-var flowSpecNodeSchema = object({
-  id: string2(),
-  behavior: string2(),
-  files: array(string2()),
-  estimate: string2(),
-  hazards: string2(),
-  blockedBy: array(string2()),
-  proof: array(proofRowSchema),
-  config: childConfigSchema
-});
-var flowSliceSchema = object({
-  target: flowTargetSchema,
-  config: flowConfigSchema,
-  spec: flowSpecNodeSchema
-});
-
-// ../../packages/shared/src/schema/flow/record.ts
-var pullRequestSchema = object({
-  url: string2(),
-  number: positiveSchema,
-  base: string2()
-});
-var flowDocSlotSchema = _enum(["alignment", "spec", "doc"]);
-var flowDocRefSchema = object({
-  id: string2().min(1).max(160),
-  ticket: string2().min(1).max(100),
-  name: string2().min(1).max(200),
-  title: string2().min(1).max(200),
-  slot: flowDocSlotSchema.default("doc"),
-  stepId: string2().max(128).nullable().default(null),
-  sha256: string2().max(128).nullable().default(null),
-  bytes: countSchema.default(0),
-  createdAt: countSchema
-});
-var flowEvidenceRefSchema = object({
-  id: string2().min(1).max(160),
-  ticket: string2().min(1).max(100),
-  name: string2().min(1).max(200),
-  title: string2().min(1).max(200),
-  kind: _enum(["media", "html"]).default("media"),
-  contentType: string2().max(128).nullable().default(null),
-  stepId: string2().max(128).nullable().default(null),
-  sha256: string2().max(128).nullable().default(null),
-  bytes: countSchema.default(0),
-  createdAt: countSchema
-});
-var flowDiffSummarySchema = object({
-  base: string2().max(200),
-  head: string2().max(200),
-  ticket: string2().max(100).nullable().default(null),
-  name: string2().max(200).nullable().default(null),
-  files: array(string2().max(500)).max(500).default([]),
-  migrations: array(string2().max(500)).max(200).default([]),
-  additions: countSchema.default(0),
-  deletions: countSchema.default(0),
-  sha256: string2().max(128).nullable().default(null)
-});
-var flowShipMetaSchema = object({
-  risk: string2().max(4000).nullable().default(null),
-  deployOrder: string2().max(4000).nullable().default(null),
-  notes: array(string2().max(1000)).max(50).default([])
-});
-var flowModeSchema = _enum(["spec", "review", "local", "yaml"]);
-var flowRecordSchema = object({
-  id: string2(),
-  mode: flowModeSchema.default("spec"),
-  parentId: string2().nullable().default(null),
-  rootFlowId: string2(),
-  attempt: positiveSchema.default(1),
-  childFlowIds: array(string2()).default([]),
-  blockedBy: array(string2()).default([]),
-  flowHash: string2().nullable().default(null),
-  idempotencyKey: string2().nullable().default(null),
-  target: flowTargetSchema.nullable().default(null),
-  workspace: string2().nullable().default(null),
-  definitionName: string2().nullable().default(null),
-  bundleSha: string2().nullable().default(null),
-  scheduleId: string2().nullable().default(null),
-  scheduleCron: string2().nullable().default(null),
-  values: record(string2(), string2()).default({}),
-  docs: array(flowDocRefSchema).default([]),
-  evidence: array(flowEvidenceRefSchema).default([]),
-  diffSummary: flowDiffSummarySchema.nullable().default(null),
-  ship: flowShipMetaSchema.nullable().default(null),
-  endState: string2().nullable().default(null),
-  baseSha: string2().nullable().default(null),
-  config: flowConfigSchema.nullable().default(null),
-  slice: flowSliceSchema.nullable().default(null),
-  steps: array(stepRecordSchema).default([]),
-  labels: flowLabelsInputSchema.shape.labels.default([]),
-  name: string2().max(80).nullable().default(null),
-  due: flowDueSchema.nullable().default(null),
-  priority: prioritySchema.nullable().default(null),
-  spec: string2().nullable().default(null),
-  branch: string2().nullable().default(null),
-  sandboxId: string2().nullable().default(null),
-  pr: pullRequestSchema.nullable().default(null),
-  mergeSha: string2().nullable().default(null),
-  diff: string2().nullable().default(null),
-  diffTruncated: boolean2().default(false),
-  reason: _enum(BLOCK_REASONS).nullable().default(null),
-  round: countSchema.default(0),
-  phase: flowPhaseSchema.default("queued"),
-  version: positiveSchema,
-  state: lifecycleStateSchema,
-  outcome: lifecycleOutcomeSchema.nullable(),
-  status: flowStatusSchema,
-  clearedAt: countSchema.nullable().default(null),
-  createdAt: countSchema,
-  updatedAt: countSchema
-});
-
 // src/transport.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
@@ -8410,6 +8435,7 @@ function publishPage(backend, page) {
     title: page.title,
     stepId: page.stepId ?? "",
     html: page.html,
+    ...page.slot ? { slot: page.slot } : {},
     ...page.flowId ? { flowId: page.flowId } : {},
     ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
   };
@@ -8429,6 +8455,7 @@ function transportFromEnv(env = process.env) {
 
 // src/sync.ts
 var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
+var MAX_SYNC_DIFF_BYTES = 512 * 1024;
 var syncDocInputSchema = object({
   id: string2().min(1).max(160),
   title: string2().min(1).max(200),
@@ -8478,11 +8505,12 @@ var flowSyncInputSchema = object({
   base: string2().optional().describe("Base branch/ref for git diff (defaults to main)."),
   ticket: string2().optional().describe("Ticket identifier for artifact storage and index lookup."),
   status: _enum(["running", "complete", "errored"]).optional().describe("Flow report status (default running)."),
+  tabs: array(flowTabSchema).max(16).optional().describe("Optional custom modular Flow tabs for this flow."),
   docs: array(syncDocInputSchema).max(64).optional().describe("HTML documents to upload (by sha256) and attach to flow.docs."),
   evidence: array(syncEvidenceInputSchema).max(64).optional().describe("Media or HTML evidence files to upload and attach to flow.evidence."),
   checks: array(syncCheckInputSchema).max(64).optional().describe("Timed command gate runs recorded as kind=command steps."),
   review: syncReviewInputSchema.optional().describe("Review run recorded as kind=agent, role=review step."),
-  diff: syncDiffOptionSchema.optional().describe("Compute git diff summary (files, migrations, +/- counts) in repoRoot."),
+  diff: syncDiffOptionSchema.optional().describe("Compute and upload git diff + summary (files, migrations, +/- counts) in repoRoot."),
   pr: object({ url: string2().url(), number: number2().int().positive(), base: string2().min(1) }).optional(),
   ship: flowShipMetaSchema.partial().optional().describe("Optional ship risk, deployOrder, and notes."),
   values: record(string2(), string2()).optional().describe("Optional string metadata merged into flow.values."),
@@ -8510,6 +8538,14 @@ function upsertById(list, item) {
     next[idx] = item;
   return next;
 }
+function truncateDiff(raw) {
+  if (!raw.trim())
+    return { text: null, truncated: false };
+  const encoded = Buffer.from(raw, "utf8");
+  if (encoded.byteLength <= MAX_SYNC_DIFF_BYTES)
+    return { text: raw, truncated: false };
+  return { text: encoded.subarray(0, MAX_SYNC_DIFF_BYTES).toString("utf8"), truncated: true };
+}
 async function resolveTargetFlowId(input) {
   let repoRoot = input.args.repoRoot;
   let branch = input.args.branch;
@@ -8536,13 +8572,15 @@ async function syncDocs(input) {
     const bytes = new TextEncoder().encode(html).byteLength;
     const sha256 = sha256Of(html);
     const name = slugOf(doc.name ?? doc.id, "doc");
+    const slot = doc.slot ?? "artifact";
     const existing = input.state.docs.find((entry) => entry.id === doc.id);
-    if (!existing || existing.sha256 !== sha256 || existing.title !== doc.title || existing.name !== name || existing.ticket !== input.ticket) {
+    if (!existing || existing.sha256 !== sha256 || existing.title !== doc.title || existing.name !== name || existing.ticket !== input.ticket || existing.slot !== slot) {
       await publishPage(input.backend, {
         ticket: input.ticket,
         name,
         title: doc.title,
         stepId: doc.stepId ?? "",
+        slot,
         html,
         flowId: input.state.flowId
       });
@@ -8553,7 +8591,7 @@ async function syncDocs(input) {
       ticket: input.ticket,
       name,
       title: doc.title,
-      slot: doc.slot ?? "doc",
+      slot,
       stepId: doc.stepId ?? null,
       sha256,
       bytes,
@@ -8582,11 +8620,12 @@ async function syncEvidence(input) {
           name,
           title: item.title,
           stepId: item.stepId ?? "",
+          slot: "evidence",
           html: raw.toString("utf8"),
           flowId: input.state.flowId
         });
       } else {
-        const qs = new URLSearchParams({ title: item.title, flowId: input.state.flowId });
+        const qs = new URLSearchParams({ title: item.title, flowId: input.state.flowId, slot: "evidence" });
         if (item.stepId)
           qs.set("stepId", item.stepId);
         await input.backend.request(`/api/media/${encodeURIComponent(input.ticket)}/${encodeURIComponent(name)}?${qs.toString()}`, {
@@ -8612,9 +8651,10 @@ async function syncEvidence(input) {
   }
   return { refs, uploaded };
 }
-async function computeDiffSummary(input) {
+async function computeDiff(input) {
   const mergeBase = await runGit(input.repoRoot, ["merge-base", input.base, input.head]) ?? input.base;
   const numstat = await runGit(input.repoRoot, ["diff", "--numstat", `${mergeBase}..${input.head}`]) ?? "";
+  const rawDiff = await runGit(input.repoRoot, ["diff", `${mergeBase}..${input.head}`]) ?? "";
   const headSha = await runGit(input.repoRoot, ["rev-parse", input.head]) ?? input.head;
   const files = [];
   const migrations = [];
@@ -8637,16 +8677,21 @@ async function computeDiffSummary(input) {
     if (Number.isFinite(del))
       deletions += del;
   }
+  const { text: diff, truncated: diffTruncated } = truncateDiff(rawDiff);
   return {
-    base: input.base,
-    head: headSha,
-    ticket: null,
-    name: null,
-    files: files.slice(0, 500),
-    migrations: migrations.slice(0, 200),
-    additions,
-    deletions,
-    sha256: sha256Of(`${mergeBase}:${headSha}:${numstat}`)
+    summary: {
+      base: input.base,
+      head: headSha,
+      ticket: null,
+      name: null,
+      files: files.slice(0, 500),
+      migrations: migrations.slice(0, 200),
+      additions,
+      deletions,
+      sha256: sha256Of(`${mergeBase}:${headSha}:${numstat}`)
+    },
+    diff,
+    diffTruncated
   };
 }
 function buildSteps(args, now) {
@@ -8698,16 +8743,63 @@ function mergeRefs(existing, incoming) {
     out = upsertById(out, ref);
   return out;
 }
-async function resolveDiffSummary(input) {
+async function resolveComputedDiff(input) {
   if (!input.args.diff)
-    return input.existing.diffSummary;
+    return null;
   const repoRoot = input.repoRoot ?? input.existing.repoRoot;
   if (!repoRoot)
     throw new Error("diff sync requires a git repository (pass repoRoot)");
   const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
   const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
   const head = diffOpts.head ?? "HEAD";
-  return computeDiffSummary({ repoRoot, base, head, ticket: input.ticket });
+  return computeDiff({ repoRoot, base, head });
+}
+async function attachPublishedArtifact(input) {
+  const now = input.now ?? Date.now();
+  const sha256 = sha256Of(input.html);
+  const existing = await readLocalFlow(input.flowId, input.stateDir) ?? emptyLocalFlow({ flowId: input.flowId, ticket: input.ticket, now });
+  const isEvidence = input.slot === "evidence";
+  const docRef = isEvidence ? null : {
+    id: input.name,
+    ticket: input.ticket,
+    name: input.name,
+    title: input.title,
+    slot: input.slot,
+    stepId: input.stepId || null,
+    sha256,
+    bytes: input.bytes,
+    createdAt: now
+  };
+  const evidenceRef = isEvidence ? {
+    id: input.name,
+    ticket: input.ticket,
+    name: input.name,
+    title: input.title,
+    kind: "html",
+    contentType: "text/html; charset=utf-8",
+    stepId: input.stepId || null,
+    sha256,
+    bytes: input.bytes,
+    createdAt: now
+  } : null;
+  await input.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}/report`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      status: "running",
+      finishedAt: null,
+      steps: [],
+      ...docRef ? { docs: [docRef] } : {},
+      ...evidenceRef ? { evidence: [evidenceRef] } : {}
+    })
+  });
+  await saveLocalFlow({
+    ...existing,
+    ticket: existing.ticket ?? input.ticket,
+    docs: docRef ? mergeRefs(existing.docs, [docRef]) : existing.docs,
+    evidence: evidenceRef ? mergeRefs(existing.evidence, [evidenceRef]) : existing.evidence,
+    updatedAt: now
+  }, input.stateDir);
 }
 async function syncFlow(input) {
   const now = (input.now ?? Date.now)();
@@ -8716,10 +8808,12 @@ async function syncFlow(input) {
   const ticket = input.args.ticket ?? existing.ticket ?? resolved.flowId;
   const docOut = input.args.docs ? await syncDocs({ state: existing, docs: input.args.docs, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
   const evOut = input.args.evidence ? await syncEvidence({ state: existing, evidence: input.args.evidence, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
-  const diffSummary = await resolveDiffSummary({ args: input.args, existing, repoRoot: resolved.repoRoot, ticket });
+  const computedDiff = await resolveComputedDiff({ args: input.args, existing, repoRoot: resolved.repoRoot });
+  const diffSummary = computedDiff ? computedDiff.summary : existing.diffSummary;
   const ship = mergeShip(existing.ship, input.args.ship);
   const steps = buildSteps(input.args, now);
   const status = input.args.status ?? "running";
+  const tabs = input.args.tabs !== undefined ? input.args.tabs : existing.tabs;
   await input.backend.request(`/api/flow/${encodeURIComponent(resolved.flowId)}/report`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -8729,7 +8823,8 @@ async function syncFlow(input) {
       steps,
       ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
       ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
-      ...input.args.diff ? { diffSummary } : {},
+      ...computedDiff ? { diffSummary: computedDiff.summary, diff: computedDiff.diff, diffTruncated: computedDiff.diffTruncated } : {},
+      ...input.args.tabs !== undefined ? { tabs: input.args.tabs } : {},
       ...input.args.ship ? { ship } : {},
       ...input.args.pr ? { pr: input.args.pr } : {},
       ...input.args.values ? { values: input.args.values } : {},
@@ -8743,6 +8838,7 @@ async function syncFlow(input) {
     ...resolved.repoRoot ? { repoRoot: resolved.repoRoot } : {},
     ...resolved.branch ? { branch: resolved.branch } : {},
     ...input.args.base ? { base: input.args.base } : {},
+    ...tabs !== undefined ? { tabs } : {},
     ticket,
     docs: mergeRefs(existing.docs, docOut.refs),
     evidence: mergeRefs(existing.evidence, evOut.refs),
@@ -8756,6 +8852,7 @@ async function syncFlow(input) {
     uploadedEvidence: evOut.uploaded,
     stepsReported: steps.length,
     diffSummary,
+    ...tabs !== undefined ? { tabs } : {},
     flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(resolved.flowId)}`
   };
 }
@@ -8781,6 +8878,7 @@ var flowStartInputSchema = object({
   ticket: string2().optional().describe("Optional ticket key/identifier (local mode)."),
   endState: string2().optional().describe("Optional target end state summary (local mode)."),
   spec: string2().optional().describe("Optional inline spec markdown text (local mode)."),
+  tabs: array(flowTabSchema).max(16).optional().describe("Optional custom modular Flow tabs (local mode; defaults to workflow.json tabs or standard lifecycle tabs)."),
   values: record(string2(), string2()).optional().describe("Optional string key/value metadata map (local mode).")
 }).superRefine((data, ctx) => {
   const hasSpec = data.path !== undefined;
@@ -9031,6 +9129,7 @@ async function startFlow(input) {
       ticketUrl: trimmed(args.ticketUrl),
       endState: trimmed(args.endState),
       spec: trimmed(args.spec),
+      tabs: args.tabs,
       values: args.values
     }));
     return enrichFlowReply(raw, backend.baseUrl);
@@ -9107,27 +9206,27 @@ async function bypassLocal(args, gate) {
 var ARTIFACT_GUIDE_MODULES = ["spec", "diagram", "diagnostics", "chart", "interactive"];
 var CORE_GUIDE = `# Nosta Artifact Design System (Core)
 
-You are authoring fragments for \`nosta_artifact_publish\`. The host shell automatically wraps your tabs with Nosta's warm editorial CSS, Fontsource fonts (Newsreader + Inter + JetBrains Mono via cdn.jsdelivr.net), dark/light auto-theme + toggle, and tab-hash persistence.
+You are authoring fragments for \`nosta_artifact_publish\`. The host shell automatically wraps your tabs to match \`app.nosta.dev\`'s calm monochrome warm-neutral palette, Inter + JetBrains Mono typography, dark/light theme sync, and tab-hash persistence.
 
 ## Hard Rules
 - Pass **inner HTML fragments only** per tab. Never include \`<!doctype>\`, \`<html>\`, \`<head>\`, or \`<body>\`.
-- Never write raw hex colors for surfaces or text; use Nosta CSS variables (\`var(--ground)\`, \`var(--surface)\`, \`var(--ink)\`, \`var(--muted)\`, \`var(--line)\`) and semantic ramp classes.
-- Color encodes **meaning**, never sequence or decoration. Use at most 2-3 accent ramps per view; use \`.c-stone\` for neutral structure.
-- Avoid generic AI slop: no unmotivated gradients, no emoji bullet lists, no decorative 3-card SaaS hero grids. Optimize for information density, scannability, and primary-source links.
+- Never write raw hex colors for surfaces or text; rely on Nosta CSS variables (\`var(--ground)\`, \`var(--surface)\`, \`var(--ink)\`, \`var(--muted)\`, \`var(--line)\`).
+- **Keep cards, KPIs, and containers monochrome neutral.** Never color-code sibling cards or KPI boxes. Reserve semantic classes (\`.c-sage\` for pass, \`.c-amber\` for warn, \`.c-terracotta\` for fail) strictly for status badges, trace borders, and progress bars.
+- Use Inter for all prose, headings, labels, and KPI values; reserve \`<code>\` / \`.num\` (JetBrains Mono) strictly for code, SHAs, and numeric columns.
+- Avoid generic AI slop: no unmotivated gradients, no rainbow card grids, no emoji bullet lists. Optimize for clarity, density, and primary-source links.
 
 ## Style Presets (\`style\` param)
-- \`nosta-editorial\` (default): Specs, RFCs, research reports. Uses \`Newsreader\` headings + \`Inter\` body + \`JetBrains Mono\` code.
-- \`nosta-diagnostic\`: Traces, logs, test runs, perf profiles. Wider \`1280px\` canvas, high density, \`tabular-nums\`.
-- \`nosta-blueprint\`: Architecture, ERDs, state machines. Subtle dot-grid \`.diagram-stage\` canvas.
+- \`nosta-editorial\` (default): Specs, RFCs, alignment docs, and design reviews.
+- \`nosta-diagnostic\`: Traces, gate runs, perf profiles, and verification reports.
+- \`nosta-blueprint\`: Architecture diagrams, ERDs, and state machines with a subtle dot-grid \`.diagram-stage\`.
 
-## 6 Semantic Color Ramps
-Apply to \`.card\`, \`.callout\`, \`.badge\`, \`.pill\`, \`.trace-row\`, or SVG \`.node\`:
-- \`.c-stone\`: neutral structure, containers, queued
-- \`.c-ochre\`: Nosta brand accent, primary focus, active
-- \`.c-sage\`: pass, healthy, services/workflows
-- \`.c-amber\`: warning, durable storage, latency
-- \`.c-terracotta\`: fail, error, removed/retired
-- \`.c-slate\`: external actors, HTTP routes, informational
+## Semantic Status Classes
+Use strictly on \`.badge\`, \`.pill\`, \`.trace-row\`, \`.bar-meter\`, or a single lead \`.callout\`:
+- \`.c-stone\` / neutral (default): structure, cards, KPIs, queued
+- \`.c-ochre\`: subtle primary callout or active accent
+- \`.c-sage\`: pass, healthy
+- \`.c-amber\`: warning, latency, caution
+- \`.c-terracotta\`: fail, error, blocker
 
 ## Layout Primitives
 \`.stack\`, \`.prose\` (74ch), \`.grid-2\`, \`.grid-3\`, \`.grid-4\`, \`.split\`, \`.card\`, \`.callout\`, \`.badge\`, \`.kpi-grid\` > \`.kpi\` (\`.kpi-label\`, \`.kpi-value\`, \`.kpi-delta\`), \`.table-wrap\` > \`table.data-table\` (\`td.num\`).`;
@@ -9399,7 +9498,6 @@ function validateMermaidHtml(tabId, html) {
 var ARTIFACT_STYLES = ["nosta-editorial", "nosta-diagnostic", "nosta-blueprint"];
 var ARTIFACT_THEMES = ["auto", "dark", "light"];
 var FONTSOURCE_STYLESHEETS = [
-  "https://cdn.jsdelivr.net/npm/@fontsource-variable/newsreader@5.2.5/index.min.css",
   "https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.2.5/index.min.css",
   "https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono@5.2.5/index.min.css"
 ];
@@ -9421,7 +9519,7 @@ var ARTIFACT_PALETTE = {
     good: "#2d6a4f",
     warn: "#9a5b13",
     bad: "#9b2c2c",
-    info: "#2c5282",
+    info: "#5c5342",
     stone: "#787162"
   },
   dark: {
@@ -9432,7 +9530,7 @@ var ARTIFACT_PALETTE = {
     panel2: "#161613",
     ink: "#f0efea",
     ink2: "rgba(240, 239, 234, 0.78)",
-    muted: "rgba(240, 239, 234, 0.58)",
+    muted: "rgba(240, 239, 234, 0.6)",
     muted2: "rgba(240, 239, 234, 0.38)",
     line: "rgba(240, 239, 234, 0.11)",
     lineSoft: "rgba(240, 239, 234, 0.08)",
@@ -9441,7 +9539,7 @@ var ARTIFACT_PALETTE = {
     good: "#7bc89c",
     warn: "#e3b469",
     bad: "#e89292",
-    info: "#7aa2d4",
+    info: "#b8b1a3",
     stone: "#a8a293"
   }
 };
@@ -9449,7 +9547,7 @@ function buildEchartsTheme(mode) {
   const p = ARTIFACT_PALETTE[mode];
   return {
     backgroundColor: "transparent",
-    color: [p.accentText, p.good, p.info, p.warn, p.bad, p.stone],
+    color: [p.accentText, p.good, p.stone, p.warn, p.bad, p.info],
     textStyle: { color: p.ink2, fontFamily: '"Inter Variable", Inter, system-ui, sans-serif', fontSize: 12 },
     title: { textStyle: { color: p.ink, fontWeight: 600 }, subtextStyle: { color: p.muted } },
     legend: { textStyle: { color: p.ink2 } },
@@ -9503,36 +9601,29 @@ var NOSTA_ARTIFACT_CSS = `
   --radius: 10px;
   --radius-sm: 6px;
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  --font-display: "Newsreader Variable", "Newsreader", Georgia, "Times New Roman", serif;
   --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --c-bg: #f2f0ea;
-  --c-border: #d6d1c4;
-  --c-text: #3b2e10;
-  --c-accent: #6e4f1d;
+  --c-bg: var(--surface-2);
+  --c-border: var(--line);
+  --c-text: var(--ink-2);
+  --c-accent: var(--accent-text);
 }
 
 :root[data-theme="dark"] {
   ${cssVarsOf("dark")}
-  --c-bg: #1b1b17;
-  --c-border: #38362e;
-  --c-text: #d6d3c9;
-  --c-accent: #d8c39a;
+  --c-bg: var(--surface-2);
+  --c-border: var(--line);
+  --c-text: var(--ink-2);
+  --c-accent: var(--accent-text);
 }
 
-.c-stone { --c-bg: #f2f0ea; --c-border: #d6d1c4; --c-text: #3b2e10; --c-accent: #6e4f1d; }
-.c-ochre { --c-bg: #f6efe1; --c-border: #c9a66b; --c-text: #5c3f14; --c-accent: #6e4f1d; }
-.c-sage { --c-bg: #e9f4ee; --c-border: #6aa887; --c-text: #1e4d37; --c-accent: #2d6a4f; }
-.c-amber { --c-bg: #fbf2e1; --c-border: #d4a24c; --c-text: #73430c; --c-accent: #9a5b13; }
-.c-terracotta { --c-bg: #faeaea; --c-border: #cf7676; --c-text: #7d2020; --c-accent: #9b2c2c; }
-.c-slate { --c-bg: #eaf1f8; --c-border: #7aa0c9; --c-text: #1e4066; --c-accent: #2c5282; }
-
-:root[data-theme="dark"] .c-stone { --c-bg: #1b1b17; --c-border: #38362e; --c-text: #d6d3c9; --c-accent: #a8a293; }
-:root[data-theme="dark"] .c-ochre { --c-bg: #262116; --c-border: #8f7446; --c-text: #e8d5ae; --c-accent: #d8c39a; }
-:root[data-theme="dark"] .c-sage { --c-bg: #15241c; --c-border: #3e7d5a; --c-text: #9adbb5; --c-accent: #7bc89c; }
-:root[data-theme="dark"] .c-amber { --c-bg: #292012; --c-border: #9c722f; --c-text: #f0ca86; --c-accent: #e3b469; }
-:root[data-theme="dark"] .c-terracotta { --c-bg: #2b1717; --c-border: #9e4747; --c-text: #f2a7a7; --c-accent: #e89292; }
-:root[data-theme="dark"] .c-slate { --c-bg: #16202b; --c-border: #476c96; --c-text: #9fc2eb; --c-accent: #7aa2d4; }
+/* Restrained semantic tokens: monochrome neutral surfaces, color only for status text & accents */
+.c-stone { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--muted); --c-accent: var(--line-strong); }
+.c-ochre { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--accent-text); --c-accent: var(--accent-text); }
+.c-sage { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--good); --c-accent: var(--good); }
+.c-amber { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--warn); --c-accent: var(--warn); }
+.c-terracotta { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--bad); --c-accent: var(--bad); }
+.c-slate { --c-bg: var(--surface-2); --c-border: var(--line); --c-text: var(--ink-2); --c-accent: var(--line-strong); }
 
 *, *::before, *::after { box-sizing: border-box; }
 
@@ -9541,20 +9632,11 @@ html, body {
   min-height: 100%;
   background: var(--ground);
   color: var(--ink);
-  font: 14px/1.6 var(--font-sans);
+  font: 13.5px/1.6 var(--font-sans);
   letter-spacing: -0.008em;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 90;
-  opacity: 0.025;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 a { color: var(--accent-text); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
@@ -9564,28 +9646,31 @@ a:hover { color: var(--ink); text-decoration-color: currentColor; }
   position: sticky;
   top: 0;
   z-index: 40;
-  background: color-mix(in srgb, var(--ground) 92%, transparent);
-  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--ground) 94%, transparent);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
 }
 .nosta-header-inner { max-width: var(--nosta-max-w, 1080px); margin: 0 auto; padding: 14px 24px; }
 .nosta-header-inner:has(.nosta-tabs) { padding-bottom: 0; }
 .nosta-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.nosta-title { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.022em; line-height: 1.2; color: var(--ink); }
-body[data-style="nosta-editorial"] .nosta-title,
-body[data-style="nosta-editorial"] h1,
-body[data-style="nosta-editorial"] h2 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.015em; }
-body[data-style="nosta-editorial"] .nosta-title { font-size: 26px; }
-body[data-style="nosta-diagnostic"] { --nosta-max-w: 1280px; font-size: 13px; }
-body[data-style="nosta-blueprint"] { --nosta-max-w: 1200px; }
+.nosta-title { margin: 0; font: 600 18px/1.3 var(--font-sans); letter-spacing: -0.02em; color: var(--ink); }
+.nosta-subtitle { margin: 3px 0 0; font-size: 13px; color: var(--muted); }
+body[data-style="nosta-diagnostic"] { --nosta-max-w: 1200px; font-size: 13px; }
+body[data-style="nosta-blueprint"] { --nosta-max-w: 1160px; }
 
-.nosta-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+/* When embedded inside app.nosta.dev FullscreenBox, drop duplicate title bar and theme toggle */
+:root[data-embedded="true"] .nosta-title-row { display: none; }
+:root[data-embedded="true"] .nosta-header:not(:has(.nosta-tabs)) { display: none; }
+:root[data-embedded="true"] .nosta-header-inner { padding: 0 20px; }
+:root[data-embedded="true"] .nosta-tabs { margin-top: 0; }
+:root[data-embedded="true"] .nosta-main { padding: 20px; }
+
 .nosta-theme-btn {
   flex-shrink: 0;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--ink-2);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 5px 10px;
   font: 500 12px/1 var(--font-sans);
   cursor: pointer;
@@ -9593,7 +9678,7 @@ body[data-style="nosta-blueprint"] { --nosta-max-w: 1200px; }
 }
 .nosta-theme-btn:hover { border-color: var(--line-strong); color: var(--ink); }
 
-.nosta-tabs { display: flex; gap: 4px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.nosta-tabs { display: flex; gap: 4px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
 .nosta-tabs::-webkit-scrollbar { display: none; }
 .nosta-tab {
   display: inline-flex;
@@ -9603,16 +9688,16 @@ body[data-style="nosta-blueprint"] { --nosta-max-w: 1200px; }
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--muted);
-  padding: 8px 12px;
+  padding: 9px 12px;
   font: 500 13px/1.2 var(--font-sans);
   cursor: pointer;
   white-space: nowrap;
   transition: color 140ms var(--ease), border-color 140ms var(--ease);
 }
 .nosta-tab:hover { color: var(--ink); }
-.nosta-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent-text); }
+.nosta-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
 .nosta-tab-badge {
-  font: 500 11px/1 var(--font-mono);
+  font: 500 11px/1 var(--font-sans);
   padding: 2px 6px;
   border-radius: 999px;
   background: var(--surface-2);
@@ -9623,17 +9708,17 @@ body[data-style="nosta-blueprint"] { --nosta-max-w: 1200px; }
 .nosta-main { max-width: var(--nosta-max-w, 1080px); margin: 0 auto; padding: 24px; }
 .nosta-panel[hidden] { display: none; }
 
-h1, h2, h3, h4 { color: var(--ink); margin: 1.4em 0 0.55em; line-height: 1.25; }
+h1, h2, h3, h4 { font-family: var(--font-sans); font-weight: 600; color: var(--ink); letter-spacing: -0.02em; margin: 1.35em 0 0.5em; line-height: 1.3; }
 h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
-h1 { font-size: 24px; }
-h2 { font-size: 19px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
-h3 { font-size: 15px; font-weight: 600; }
-p { margin: 0.65em 0; color: var(--ink-2); }
-ul, ol { margin: 0.65em 0; padding-left: 1.35em; color: var(--ink-2); }
+h1 { font-size: 19px; }
+h2 { font-size: 16px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+h3 { font-size: 14px; }
+p { margin: 0.6em 0; color: var(--ink-2); }
+ul, ol { margin: 0.6em 0; padding-left: 1.35em; color: var(--ink-2); }
 li { margin: 0.25em 0; }
 code {
   font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-size: 12px;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -9646,9 +9731,9 @@ pre {
   border-radius: var(--radius);
   padding: 12px 14px;
   overflow: auto;
-  margin: 0.85em 0;
+  margin: 0.8em 0;
 }
-pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.55; }
+pre code { background: none; border: 0; padding: 0; font-size: 12px; line-height: 1.55; }
 
 /* Theme-aware Highlight.js tokens */
 .hljs { color: var(--ink); background: transparent; }
@@ -9656,14 +9741,14 @@ pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-heig
 .hljs-keyword, .hljs-selector-tag, .hljs-subst { color: var(--accent-text); font-weight: 500; }
 .hljs-string, .hljs-doctag, .hljs-regexp { color: var(--good); }
 .hljs-number, .hljs-literal, .hljs-variable, .hljs-attr { color: var(--warn); }
-.hljs-title, .hljs-section, .hljs-type, .hljs-built_in { color: var(--info); }
+.hljs-title, .hljs-section, .hljs-type, .hljs-built_in { color: var(--ink); font-weight: 500; }
 .hljs-deletion { color: var(--bad); }
 .hljs-addition { color: var(--good); }
 
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .prose { max-width: 74ch; }
-.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .split { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; }
 @media (max-width: 760px) {
@@ -9671,45 +9756,41 @@ pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-heig
   .nosta-header-inner, .nosta-main { padding-left: 16px; padding-right: 16px; }
 }
 
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
-.card.c-stone, .card.c-ochre, .card.c-sage, .card.c-amber, .card.c-terracotta, .card.c-slate {
-  background: var(--c-bg);
-  border-color: var(--c-border);
-  color: var(--c-text);
-}
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; color: var(--ink-2); }
 .callout {
-  background: var(--c-bg);
-  border: 1px solid var(--c-border);
-  border-left: 3px solid var(--c-accent);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--c-accent, var(--accent-text));
   border-radius: var(--radius);
-  padding: 12px 15px;
-  color: var(--c-text);
+  padding: 11px 14px;
+  color: var(--ink-2);
 }
+.callout strong { color: var(--ink); }
 .badge, .pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font: 500 11.5px/1.2 var(--font-mono);
+  font: 500 11.5px/1.2 var(--font-sans);
   padding: 2px 8px;
   border-radius: 999px;
-  background: var(--c-bg);
-  border: 1px solid var(--c-border);
-  color: var(--c-text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--c-text, var(--ink-2));
   white-space: nowrap;
 }
 
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
 .kpi-label { font-size: 11.5px; color: var(--muted); }
-.kpi-value { margin-top: 4px; font: 600 20px/1.15 var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink); }
-.kpi-delta { margin-top: 4px; font: 500 11.5px/1.2 var(--font-mono); color: var(--c-text, var(--muted)); }
+.kpi-value { margin-top: 4px; font: 600 18px/1.2 var(--font-sans); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; color: var(--ink); }
+.kpi-delta { margin-top: 3px; font-size: 11.5px; line-height: 1.3; color: var(--muted); }
 
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th, .data-table td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
-.data-table th { background: var(--surface-2); color: var(--ink); font-weight: 600; font-size: 12px; }
+.data-table th, .data-table td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; color: var(--ink-2); }
+.data-table th { background: var(--surface-2); color: var(--muted); font-weight: 500; font-size: 12px; }
 .data-table tr:last-child td { border-bottom: 0; }
-.data-table td.num, .data-table th.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.data-table td.num, .data-table th.num { text-align: right; font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .filter-bar {
   display: flex;
@@ -9733,7 +9814,7 @@ pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-heig
 .trace-row {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--c-accent, var(--line-strong));
+  border-left: 2px solid var(--c-accent, var(--line-strong));
   border-radius: var(--radius-sm);
   padding: 8px 12px;
 }
@@ -9744,36 +9825,37 @@ pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-heig
   gap: 10px;
   cursor: pointer;
   list-style: none;
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font: 500 12.5px/1.3 var(--font-sans);
+  color: var(--ink);
 }
+.trace-row summary span:last-child { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
 .trace-row summary::-webkit-details-marker { display: none; }
-.bar-meter { height: 6px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.bar-meter { height: 5px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
 .bar-meter > span { display: block; height: 100%; background: var(--c-accent, var(--accent-text)); border-radius: 999px; }
 
-.diagram-stage { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; overflow: hidden; }
+.diagram-stage { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; overflow: hidden; }
 .diagram-stage.is-expanded {
   position: fixed;
   inset: 12px;
   z-index: 80;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
 }
 .diagram-toolbar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 .diagram-toolbar button {
   border: 1px solid var(--line);
   background: var(--surface);
-  color: var(--ink-2);
+  color: var(--muted);
   border-radius: var(--radius-sm);
   padding: 3px 8px;
-  font: 500 11px/1.2 var(--font-mono);
+  font: 500 11px/1.2 var(--font-sans);
   cursor: pointer;
 }
 .diagram-toolbar button:hover { border-color: var(--line-strong); color: var(--ink); }
@@ -9799,13 +9881,13 @@ body[data-style="nosta-blueprint"] .diagram-stage {
 
 svg.svg-diagram { display: block; width: 100%; height: auto; font-family: var(--font-sans); }
 svg.svg-diagram .node rect,
-svg.svg-diagram rect.node { fill: var(--c-bg); stroke: var(--c-border); stroke-width: 1.25; rx: 8; }
+svg.svg-diagram rect.node { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.25; rx: 8; }
 svg.svg-diagram .arr { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
 svg.svg-diagram .leader { fill: none; stroke: var(--muted-2); stroke-width: 1; stroke-dasharray: 4 3; }
-svg.svg-diagram .t { fill: var(--c-text, var(--ink)); font-size: 14px; font-weight: 600; font-family: var(--font-sans); }
+svg.svg-diagram .t { fill: var(--ink); font-size: 13.5px; font-weight: 600; font-family: var(--font-sans); }
 svg.svg-diagram .th { fill: var(--ink); font-size: 13px; font-weight: 600; font-family: var(--font-sans); }
 svg.svg-diagram .ts { fill: var(--muted); font-size: 12px; font-weight: 400; font-family: var(--font-sans); }
-svg.svg-diagram .tm { fill: var(--c-text, var(--ink-2)); font-size: 11.5px; font-family: var(--font-mono); }
+svg.svg-diagram .tm { fill: var(--ink-2); font-size: 11.5px; font-family: var(--font-mono); }
 `.trim();
 
 // src/artifacts/shell.ts
@@ -9835,8 +9917,17 @@ function buildRuntimeScript(input) {
   var ECHARTS_THEMES = ${hasEcharts ? JSON.stringify(NOSTA_ECHARTS_THEMES) : "null"};
 
   function resolveInitialTheme() {
+    if (window.__nostaTheme === "dark" || window.__nostaTheme === "light") return window.__nostaTheme;
+    var q = new URLSearchParams(location.search).get("theme");
+    if (q === "dark" || q === "light") return q;
     if (DEFAULT_THEME === "dark" || DEFAULT_THEME === "light") return DEFAULT_THEME;
     return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  }
+
+  try {
+    if (window.self !== window.top) document.documentElement.setAttribute("data-embedded", "true");
+  } catch (_) {
+    document.documentElement.setAttribute("data-embedded", "true");
   }
 
   var currentTheme = resolveInitialTheme();
@@ -9850,6 +9941,12 @@ function buildRuntimeScript(input) {
     if (btn) btn.textContent = currentTheme === "dark" ? "Light" : "Dark";
     themeListeners.forEach(function(fn) { try { fn(currentTheme); } catch (_) {} });
   }
+
+  window.addEventListener("message", function(e) {
+    if (e && e.data && e.data.type === "nosta-theme" && (e.data.theme === "dark" || e.data.theme === "light")) {
+      applyTheme(e.data.theme);
+    }
+  });
 
   document.documentElement.setAttribute("data-theme", currentTheme);
 
@@ -9977,21 +10074,21 @@ function buildRuntimeScript(input) {
             fontSize: "13px",
             primaryColor: "#f2f0ea",
             primaryTextColor: "#3b2e10",
-            primaryBorderColor: "#c9a66b",
+            primaryBorderColor: "rgba(59, 46, 16, 0.24)",
             secondaryColor: "#fbfaf7",
             tertiaryColor: "#efece5",
             lineColor: "#787162",
             textColor: "#3b2e10",
             edgeLabelBackground: "#fbfaf7",
             clusterBkg: "#f2f0ea",
-            clusterBorder: "#d6d1c4",
+            clusterBorder: "rgba(59, 46, 16, 0.16)",
             actorBkg: "#fbfaf7",
-            actorBorder: "#c9a66b",
+            actorBorder: "rgba(59, 46, 16, 0.24)",
             actorTextColor: "#3b2e10",
             signalColor: "#3b2e10",
             signalTextColor: "#3b2e10",
             labelBoxBkgColor: "#f2f0ea",
-            labelBoxBorderColor: "#d6d1c4",
+            labelBoxBorderColor: "rgba(59, 46, 16, 0.16)",
             labelTextColor: "#3b2e10",
             attributeBackgroundColorOdd: "#fbfaf7",
             attributeBackgroundColorEven: "#f2f0ea",
@@ -10001,23 +10098,23 @@ function buildRuntimeScript(input) {
             background: "transparent",
             fontFamily: '"Inter Variable", Inter, system-ui, sans-serif',
             fontSize: "13px",
-            primaryColor: "#1f1e1a",
+            primaryColor: "#1b1b17",
             primaryTextColor: "#f0efea",
-            primaryBorderColor: "#8f7446",
+            primaryBorderColor: "rgba(240, 239, 234, 0.24)",
             secondaryColor: "#181815",
             tertiaryColor: "#20201b",
             lineColor: "#a8a293",
             textColor: "#f0efea",
             edgeLabelBackground: "#1b1b17",
             clusterBkg: "#181815",
-            clusterBorder: "#38362e",
-            actorBkg: "#1f1e1a",
-            actorBorder: "#8f7446",
+            clusterBorder: "rgba(240, 239, 234, 0.16)",
+            actorBkg: "#1b1b17",
+            actorBorder: "rgba(240, 239, 234, 0.24)",
             actorTextColor: "#f0efea",
             signalColor: "#d8c39a",
             signalTextColor: "#f0efea",
             labelBoxBkgColor: "#20201b",
-            labelBoxBorderColor: "#38362e",
+            labelBoxBorderColor: "rgba(240, 239, 234, 0.16)",
             labelTextColor: "#f0efea",
             attributeBackgroundColorOdd: "#181815",
             attributeBackgroundColorEven: "#20201b",
@@ -10180,11 +10277,14 @@ var artifactPublishInputSchema = object({
   name: string2().regex(PAGE_NAME, "name must match [A-Za-z0-9][A-Za-z0-9._-]{0,199}").describe("Artifact slug within ticket."),
   title: string2().trim().min(1).max(MAX_PAGE_TITLE).describe("Human-readable artifact title."),
   subtitle: string2().trim().max(240).optional().describe("Optional one-line subtitle shown under the title."),
+  slot: string2().regex(PAGE_SLOT, "slot must match [a-z0-9][a-z0-9_-]{0,63}").default("artifact").describe("Target Flow tab slot: 'alignment', 'spec', 'evidence', 'artifact' (Artifacts drawer only), or a custom flow tab id."),
   style: _enum(ARTIFACT_STYLES).default("nosta-editorial"),
   theme: _enum(ARTIFACT_THEMES).default("auto"),
   tabs: array(artifactTabSchema).min(1).max(16).describe("One or more content tabs rendered inside the Nosta shell."),
   libs: array(_enum(ARTIFACT_LIBS)).optional().describe("Optional allowlisted CDN libraries to load on demand."),
-  flowId: string2().regex(LINK_ID, "flowId must match [A-Za-z0-9:._-]{1,200}").optional().describe("Optional Nosta flow ID to link this artifact to."),
+  flowId: string2().regex(LINK_ID, "flowId must match [A-Za-z0-9:._-]{1,200}").optional().describe("Optional Nosta flow ID to link and sync this artifact to (auto-resolved from ~/.nosta/flows/index.json when omitted)."),
+  repoRoot: string2().trim().min(1).optional().describe("Optional git repo root for auto-resolving the bound flow."),
+  branch: string2().trim().min(1).optional().describe("Optional git branch for auto-resolving the bound flow."),
   stepId: string2().trim().max(128).optional().describe("Optional step ID."),
   linkedTo: array(string2().refine(isDocumentKey, "linkedTo entries must be ticket/name")).optional().describe("Optional related document keys (ticket/name)."),
   guideRead: literal(true).describe("Must be true; requires calling nosta_artifact_guide first in this session."),
@@ -10201,7 +10301,7 @@ var ARTIFACT_TOOLS = [
   },
   {
     name: "nosta_artifact_publish",
-    description: "Validate, wrap in Nosta's design shell (Newsreader + Inter + JetBrains Mono, auto dark/light + toggle, tab persistence, optional ECharts/Mermaid/Lucide/Highlight.js), and publish a tabbed HTML artifact to Nosta.",
+    description: "Validate, wrap in Nosta's native monochrome warm-neutral shell (Inter + JetBrains Mono, auto theme sync, tab persistence, optional ECharts/Mermaid/Lucide/Highlight.js), publish a tabbed HTML artifact to Nosta, and sync it into the bound Flow object under the requested tab slot.",
     inputSchema: toMcpInputSchema(artifactPublishInputSchema)
   }
 ];
@@ -10231,6 +10331,21 @@ function validateTabFragments(tabs) {
     }
     validateMermaidHtml(tab.id, tab.html);
   }
+}
+async function resolveBoundFlowId(input) {
+  if (input.explicitFlowId)
+    return input.explicitFlowId;
+  let repoRoot = input.repoRoot;
+  let branch = input.branch;
+  if (repoRoot || branch) {
+    try {
+      const resolved = await resolveRepoBranch({ repoRoot, branch });
+      repoRoot = resolved.repoRoot;
+      branch = resolved.branch;
+    } catch {}
+  }
+  const indexed = await resolveIndexedFlowId({ repoRoot, branch, ticket: input.ticket, stateDir: input.stateDir });
+  return indexed ?? undefined;
 }
 async function callArtifactTool(input) {
   if (input.name === "nosta_artifact_guide") {
@@ -10265,6 +10380,7 @@ async function callArtifactTool(input) {
     ticket: parsed.ticket,
     name: parsed.name,
     title: parsed.title,
+    slot: parsed.slot,
     style: parsed.style,
     theme: parsed.theme,
     libs,
@@ -10277,16 +10393,42 @@ async function callArtifactTool(input) {
     await writeFile3(parsed.dryRunPath, html, "utf8");
     return JSON.stringify({ dryRun: true, path: parsed.dryRunPath, ...summary });
   }
+  const flowId = await resolveBoundFlowId({
+    explicitFlowId: parsed.flowId,
+    ticket: parsed.ticket,
+    repoRoot: parsed.repoRoot,
+    branch: parsed.branch,
+    stateDir: input.stateDir
+  });
   await publishPage(input.backend, {
     ticket: parsed.ticket,
     name: parsed.name,
     title: parsed.title,
     stepId: parsed.stepId ?? "",
+    slot: parsed.slot,
     html,
-    flowId: parsed.flowId,
+    flowId,
     linkedTo: parsed.linkedTo
   });
-  return JSON.stringify({ ...summary, url: `${input.backend.baseUrl}${route}` });
+  if (flowId) {
+    await attachPublishedArtifact({
+      flowId,
+      ticket: parsed.ticket,
+      name: parsed.name,
+      title: parsed.title,
+      slot: parsed.slot,
+      stepId: parsed.stepId,
+      html,
+      bytes,
+      backend: input.backend,
+      stateDir: input.stateDir
+    });
+  }
+  return JSON.stringify({
+    ...summary,
+    ...flowId ? { flowId, flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(flowId)}` } : {},
+    url: `${input.backend.baseUrl}${route}`
+  });
 }
 
 // src/gate/ipc.ts
@@ -10660,7 +10802,7 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.4.0" }
+        serverInfo: { name: "nosta", version: "0.5.0" }
       });
     } else if (method === "ping") {
       sendResult(id, {});

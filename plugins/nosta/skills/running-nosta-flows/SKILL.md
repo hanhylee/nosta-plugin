@@ -34,11 +34,12 @@ description: Start, monitor, inspect, and handle merge gates for Nosta flows and
 ### Syncing local flow state and artifacts
 1. Local flows persist under `~/.nosta/flows/<id>.json` (indexed by `(repoRoot, branch)` and `ticket` in `~/.nosta/flows/index.json`), shared across MCP and the `nosta flow sync` CLI.
 2. Call `nosta_flow_sync` (or `nosta flow sync --json '<payload>'` from shell hooks) to idempotently sync any combination of:
-   - `docs`: HTML documents with `slot: "alignment" | "spec" | "doc"` (`sourcePath` or inline `html`, deduped by `sha256`).
-   - `evidence`: screenshots, videos, logs, or HTML captures (`sourcePath`, deduped by `sha256`).
+   - `tabs`: optional modular tab layout (`[{ id, label, kind: "artifacts" | "steps" | "diff" | "ship", slot? }]`) overriding the default lifecycle tabs.
+   - `docs`: HTML documents with `slot: "alignment" | "spec" | "artifact"` or a custom tab id (`sourcePath` or inline `html`, deduped by `sha256`).
+   - `evidence`: screenshots, videos, logs, or HTML captures (`sourcePath`, deduped by `sha256`), shown front-and-center in the **Ship** tab.
    - `checks`: timed command gate runs (`command`, `exitCode`, `durationMs`, `output`).
    - `review`: code review verdicts and structured findings (`model`, `verdict`, `findings`, `summary`).
-   - `diff: true` (or `{ base, head }`): computes changed files, `+/-` counts, and migration/schema paths from git.
+   - `diff: true` (or `{ base, head }`): computes changed files, `+/-` counts, migration/schema paths, and uploads the unified diff to the Flow so the **Diff** tab populates automatically.
    - `ship`: `{ risk, deployOrder, notes }` and `pr: { url, number, base }`.
 3. `nosta_flow_sync` merges by `id` without clobbering cloud verdicts and works even after a flow settles to `idle`.
 

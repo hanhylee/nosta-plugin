@@ -9,7 +9,7 @@
     {
       "name": "nosta",
       "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": {
         "name": "hanhylee"
       },

@@ -35,5 +35,5 @@ description: Ground a ticket or feature idea in code, align on scope and decisio
    - `## Proof`: boundary/behavior tests and real non-test verification steps.
    - `### Machine flow`: valid JSON naming the target repo, base branch, run config (`mergeApproval: "human"` by default), and each node's behavior, files, blockers, and proof.
 3. Leave no `TBD`, `TODO`, or vague requirements.
-4. When working on a bound local flow, sync any alignment/decision HTML (`slot: "alignment"`) and spec HTML (`slot: "spec"`) via `nosta_flow_sync` so the Flow page's **Alignment** and **Spec** tabs populate before asking for Go.
+4. When working on a bound local flow, publish alignment/decision HTML with `slot: "alignment"` and spec HTML with `slot: "spec"` via `nosta_artifact_publish` (which auto-syncs into the bound Flow object) or `nosta_flow_sync` so the Flow page's **Alignment** and **Spec** tabs populate before asking for Go.
 5. Present the spec to the owner and wait for an explicit Go before creating branches or running `nosta_flow_start`.
