@@ -1,6 +1,7 @@
 ---
-name: building-artifacts
-description: Build and publish cohesive, Nosta-styled HTML artifacts (specs, architecture diagrams, diagnostics pages, and interactive charts) via nosta_artifact_guide and nosta_artifact_publish.
+
+name: build-artifact
+description: Build and publish cohesive, Nosta-styled HTML artifacts (specs, architecture diagrams, diagnostics pages, and interactive charts) via guide_artifact and publish_artifact.
 ---
 
 # Building Nosta Artifacts
@@ -9,18 +10,18 @@ Use the Nosta MCP artifact builder whenever you produce a standalone spec, RFC, 
 
 ## Mandatory Two-Step Loop
 
-1. **Load design modules first:** Call `nosta_artifact_guide` with only the modules needed for the page (`spec`, `diagram`, `diagnostics`, `chart`, `interactive`).
-2. **Publish fragments inside Nosta's shell:** Call `nosta_artifact_publish` with `guideRead: true`, `slot` (`alignment`, `spec`, `evidence`, `artifact` for the Artifacts drawer only, or a custom tab id from `flow.tabs`), inner HTML/SVG fragments per tab, a style preset, and any required `libs` (`echarts`, `mermaid`, `lucide`, `highlight`). When a Flow is bound (via `flowId` or `~/.nosta/flows/index.json`), `nosta_artifact_publish` automatically syncs the artifact into that Flow object under the requested slot.
+1. **Load design modules first:** Call `guide_artifact` with only the modules needed for the page (`spec`, `diagram`, `diagnostics`, `chart`, `interactive`).
+2. **Publish fragments inside Nosta's shell:** Call `publish_artifact` with `guideRead: true`, `slot` (`alignment`, `spec`, `evidence`, `artifact` for the Artifacts drawer only, or a custom tab id from `flow.tabs`), inner HTML/SVG fragments per tab, a style preset, and any required `libs` (`echarts`, `mermaid`, `lucide`, `highlight`). When a Flow is bound (via `flowId` or `~/.nosta/flows/index.json`), `publish_artifact` automatically syncs the artifact into that Flow object under the requested slot.
 
 Never hand-roll `<!doctype html>`, `<html>`, or `<head>` wrappers inside tab fragments — the MCP server injects Nosta's native monochrome warm-neutral tokens, typography (`Inter` + `JetBrains Mono`), theme sync, and tab-hash persistence automatically.
 
 ## Pick the Right Style Preset
 
-| Preset | Use for |
-|---|---|
-| `nosta-editorial` *(default)* | Specs, RFCs, alignment docs, design reviews, research reports |
-| `nosta-diagnostic` | Traces, test runs, perf profiles, incident reports, eval comparisons |
-| `nosta-blueprint` | System architecture, C4 diagrams, Crow's Foot ERDs, state machines |
+| Preset                        | Use for                                                              |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `nosta-editorial` _(default)_ | Specs, RFCs, alignment docs, design reviews, research reports        |
+| `nosta-diagnostic`            | Traces, test runs, perf profiles, incident reports, eval comparisons |
+| `nosta-blueprint`             | System architecture, C4 diagrams, Crow's Foot ERDs, state machines   |
 
 ## Craft & Anti-Slop Rules
 

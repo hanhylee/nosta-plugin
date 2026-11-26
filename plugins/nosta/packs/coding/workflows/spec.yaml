@@ -1,0 +1,18 @@
+name: spec
+version: 1
+workspace: default
+description: Write a concrete, code-grounded spec and publish it for owner approval before implementation.
+evidence:
+  required: true
+  artifacts:
+    - spec
+guards:
+  approvalNodes:
+    - approve_spec
+steps:
+  - id: write_spec
+    kind: agent
+    prompt: Draft the implementation spec with concrete file paths, architecture diagrams, and verification plan.
+  - id: approve_spec
+    kind: wait
+    signal: spec_approved

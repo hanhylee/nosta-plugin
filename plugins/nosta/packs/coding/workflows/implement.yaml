@@ -1,0 +1,15 @@
+name: implement
+version: 1
+workspace: default
+description: Implement an approved change in an isolated worktree with behavior tests and lint/typecheck verification.
+evidence:
+  required: true
+  checks:
+    - verify
+steps:
+  - id: build
+    kind: agent
+    prompt: Implement the approved changes in small behavior-scoped commits with behavior tests.
+  - id: verify
+    kind: command
+    run: bun run lint && bun run typecheck && bun run test

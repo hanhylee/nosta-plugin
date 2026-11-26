@@ -1,0 +1,18 @@
+name: land_pr
+version: 1
+workspace: default
+description: Triage PR comments and CI checks, verify merge readiness, and merge on explicit owner confirmation.
+evidence:
+  required: true
+  checks:
+    - triage_pr
+guards:
+  approvalNodes:
+    - approve_merge
+steps:
+  - id: triage_pr
+    kind: agent
+    prompt: Inspect PR checks, review comments, and mergeability; fix any open findings and push updates.
+  - id: approve_merge
+    kind: wait
+    signal: merge_approved

@@ -1,0 +1,16 @@
+name: explore
+version: 1
+workspace: default
+description: Blank-slate exploratory workflow that captures verifiable evidence for ad-hoc work.
+evidence:
+  required: true
+  artifacts:
+    - summary.md
+  checks:
+    - explore
+steps:
+  - id: explore
+    kind: agent
+    prompt: Investigate the task, verify findings against primary sources or runnable checks, and record concrete evidence via sync_flow.
+    outputs:
+      - summary.md

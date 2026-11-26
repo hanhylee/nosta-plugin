@@ -1,0 +1,15 @@
+name: align
+version: 1
+workspace: default
+description: Ground a ticket or idea in the codebase and align on scope and open decisions before writing a spec.
+evidence:
+  required: true
+  artifacts:
+    - alignment
+steps:
+  - id: align
+    kind: agent
+    prompt: Research the codebase, identify open design decisions, and align with the owner one decision at a time.
+  - id: approve_alignment
+    kind: wait
+    signal: alignment_approved

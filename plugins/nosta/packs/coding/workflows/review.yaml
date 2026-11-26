@@ -1,0 +1,16 @@
+name: review
+version: 1
+workspace: default
+description: Run a fresh-context code quality review on a branch or diff and record findings.
+evidence:
+  required: true
+  artifacts:
+    - findings.md
+  checks:
+    - review_diff
+steps:
+  - id: review_diff
+    kind: agent
+    prompt: Review the branch diff for correctness, simplicity, duplicate helpers, caller impact, and safe error handling.
+    outputs:
+      - findings.md

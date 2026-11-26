@@ -6,8 +6,8 @@ type ToolBeforeOutput = {
   args?: Record<string, unknown>;
 };
 
-const APPROVE_SUFFIX = "nosta_flow_approve";
-const BYPASS_SUFFIX = "nosta_flow_bypass";
+const APPROVE_SUFFIX = "approve_flow";
+const BYPASS_SUFFIX = "bypass_flow";
 
 function nonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -17,13 +17,17 @@ function positiveInt(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
-export function checkApproveGuard(input: ToolBeforeInput, output: ToolBeforeOutput): void {
+export function checkApproveGuard(
+  input: ToolBeforeInput,
+  output: ToolBeforeOutput,
+): void {
   const tool = typeof input?.tool === "string" ? input.tool : "";
   if (!tool.endsWith(APPROVE_SUFFIX) && !tool.endsWith(BYPASS_SUFFIX)) {
     return;
   }
 
-  const args = output?.args && typeof output.args === "object" ? output.args : null;
+  const args =
+    output?.args && typeof output.args === "object" ? output.args : null;
   if (!args) {
     throw new Error(
       `Nosta approval guard blocked ${tool}: missing arguments. Confirm flow approval or bypass explicitly with the user.`,
@@ -33,7 +37,7 @@ export function checkApproveGuard(input: ToolBeforeInput, output: ToolBeforeOutp
   if (tool.endsWith(BYPASS_SUFFIX)) {
     if (!nonEmptyString(args.reason)) {
       throw new Error(
-        "Nosta approval guard blocked nosta_flow_bypass: a non-empty reason and explicit user confirmation are required.",
+        "Nosta approval guard blocked bypass_flow: a non-empty reason and explicit user confirmation are required.",
       );
     }
     return;
@@ -48,13 +52,16 @@ export function checkApproveGuard(input: ToolBeforeInput, output: ToolBeforeOutp
 
   if (!isLocalNode && !isCloudGate) {
     throw new Error(
-      "Nosta approval guard blocked nosta_flow_approve: provide either { node } or fresh { flowId, decision, version, attempt } after explicit user confirmation.",
+      "Nosta approval guard blocked approve_flow: provide either { node } or fresh { flowId, decision, version, attempt } after explicit user confirmation.",
     );
   }
 }
 
 export async function NostaApproveGuardPlugin(): Promise<{
-  "tool.execute.before": (input: ToolBeforeInput, output: ToolBeforeOutput) => Promise<void>;
+  "tool.execute.before": (
+    input: ToolBeforeInput,
+    output: ToolBeforeOutput,
+  ) => Promise<void>;
 }> {
   return {
     "tool.execute.before": async (input, output) => {

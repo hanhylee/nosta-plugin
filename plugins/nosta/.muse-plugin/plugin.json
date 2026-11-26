@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "nosta",
   "displayName": "Nosta",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
   "compat": {
     "manifestDir": ".muse-plugin"
@@ -10,48 +10,23 @@
   "capabilities": {
     "skills": [
       {
-        "id": "running-nosta-flows",
-        "path": "skills/running-nosta-flows/SKILL.md",
+        "id": "author-flow",
+        "path": "skills/author-flow/SKILL.md",
         "enabledDefault": true
       },
       {
-        "id": "speccing-a-ticket",
-        "path": "skills/speccing-a-ticket/SKILL.md",
+        "id": "use-flow",
+        "path": "skills/use-flow/SKILL.md",
         "enabledDefault": true
       },
       {
-        "id": "building-a-node",
-        "path": "skills/building-a-node/SKILL.md",
+        "id": "improve-flow",
+        "path": "skills/improve-flow/SKILL.md",
         "enabledDefault": true
       },
       {
-        "id": "closing-a-node",
-        "path": "skills/closing-a-node/SKILL.md",
-        "enabledDefault": true
-      },
-      {
-        "id": "shipping-a-flow",
-        "path": "skills/shipping-a-flow/SKILL.md",
-        "enabledDefault": true
-      },
-      {
-        "id": "reviewing-code-quality",
-        "path": "skills/reviewing-code-quality/SKILL.md",
-        "enabledDefault": true
-      },
-      {
-        "id": "writing-pr-descriptions",
-        "path": "skills/writing-pr-descriptions/SKILL.md",
-        "enabledDefault": true
-      },
-      {
-        "id": "landing-the-pr",
-        "path": "skills/landing-the-pr/SKILL.md",
-        "enabledDefault": true
-      },
-      {
-        "id": "building-artifacts",
-        "path": "skills/building-artifacts/SKILL.md",
+        "id": "build-artifact",
+        "path": "skills/build-artifact/SKILL.md",
         "enabledDefault": true
       }
     ],

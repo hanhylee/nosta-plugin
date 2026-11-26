@@ -1,0 +1,50 @@
+name: ship
+version: 1
+workspace: default
+description: Assemble diff and evidence, run final verification, and open a ready PR on explicit owner approval.
+defaultTab: overview
+tabs:
+  - id: overview
+    description: Ticket body and context.
+  - id: alignment
+    description: Grounded problem statement, trade-offs, and owner decisions.
+  - id: spec
+    description: Architecture, file plan, and verification criteria.
+  - id: diff
+    description: Cumulative branch diff against base.
+  - id: ship
+    defaultTab: verdict
+    tabs:
+      - id: verdict
+        label: Verdict & Blast Radius
+        description: Readiness verdict, new dependencies, migrations, breaking changes, and deploy steps.
+        required: true
+      - id: proof
+        label: Behavior Proof
+        description: Concrete before/after behavior proof, CLI/eval outputs, and recordings.
+        required: true
+      - id: code-health
+        label: Code Health & Review
+        description: Review pass findings and fixes, open P3s, modularity, and test delta.
+      - id: risks
+        label: Gaps & Risk
+        description: What was not exercised live, rollback plan, and residual risks.
+evidence:
+  required: true
+  artifacts:
+    - verdict
+    - proof
+  checks:
+    - assemble_evidence
+guards:
+  approvalNodes:
+    - approve_ship
+  prGateAfter:
+    - approve_ship
+steps:
+  - id: assemble_evidence
+    kind: agent
+    prompt: Publish the cumulative diff and Ship subtab artifacts (verdict, proof, code-health, risks) and verify all gates and final review are clean.
+  - id: approve_ship
+    kind: wait
+    signal: ship_approved

@@ -6946,342 +6946,11 @@ var require_public_api = __commonJS(function(exports) {
 });
 
 // src/bin.ts
-import { readFile as readFile8 } from "node:fs/promises";
+import { readFile as readFile9 } from "node:fs/promises";
 
-// src/install/index.ts
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { cp as cp2, mkdir as mkdir2, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join as join3, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-// src/install/targets.ts
-import { join } from "node:path";
-var DEFAULT_PACKAGE_NAME = "@nostadev/mcp";
-var HARNESSES = ["opencode", "codex", "cursor", "windsurf", "claude"];
-function isHarness(value) {
-  return HARNESSES.includes(value);
-}
-function resolveTarget(input) {
-  const { harness, scope, cwd, homeDir } = input;
-  if (harness === "opencode") {
-    const base = scope === "global" ? join(homeDir, ".config", "opencode") : join(cwd, ".opencode");
-    return {
-      harness,
-      scope,
-      configPath: scope === "global" ? join(base, "opencode.json") : join(cwd, "opencode.json"),
-      configFormat: "opencode-json",
-      skillsDir: join(base, "skills"),
-      pluginPath: join(base, "plugins", "nosta-approve-guard.ts")
-    };
-  }
-  if (harness === "codex") {
-    const configRoot = scope === "global" ? join(homeDir, ".codex") : join(cwd, ".codex");
-    const skillsDir = scope === "global" ? join(homeDir, ".codex", "skills") : join(cwd, ".agents", "skills");
-    return {
-      harness,
-      scope,
-      configPath: join(configRoot, "config.toml"),
-      configFormat: "codex-toml",
-      skillsDir,
-      pluginPath: null
-    };
-  }
-  if (harness === "cursor") {
-    const base = scope === "global" ? join(homeDir, ".cursor") : join(cwd, ".cursor");
-    return {
-      harness,
-      scope,
-      configPath: join(base, "mcp.json"),
-      configFormat: "mcp-servers-json",
-      skillsDir: join(base, "skills"),
-      pluginPath: null
-    };
-  }
-  if (harness === "windsurf") {
-    const base = scope === "global" ? join(homeDir, ".codeium", "windsurf") : join(cwd, ".windsurf");
-    return {
-      harness,
-      scope,
-      configPath: join(base, scope === "global" ? "mcp_config.json" : "mcp.json"),
-      configFormat: "mcp-servers-json",
-      skillsDir: join(base, "skills"),
-      pluginPath: null
-    };
-  }
-  const claudeSkills = scope === "global" ? join(homeDir, ".claude", "skills") : join(cwd, ".claude", "skills");
-  return {
-    harness,
-    scope,
-    configPath: scope === "global" ? join(homeDir, ".claude.json") : join(cwd, ".mcp.json"),
-    configFormat: "mcp-servers-json",
-    skillsDir: claudeSkills,
-    pluginPath: null
-  };
-}
-
-// src/install/writers.ts
-import { cp, mkdir, readdir } from "node:fs/promises";
-import { join as join2 } from "node:path";
-function parseJsonObject(text) {
-  const trimmed = text.trim();
-  if (!trimmed)
-    return {};
-  const parsed = JSON.parse(trimmed);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("existing config must be a JSON object");
-  }
-  return parsed;
-}
-function asObject(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return { ...value };
-  }
-  return {};
-}
-function mergeOpenCodeJson(input) {
-  const root = parseJsonObject(input.existingText);
-  if (typeof root.$schema !== "string") {
-    root.$schema = "https://opencode.ai/config.json";
-  }
-  const mcp = asObject(root.mcp);
-  const existingNosta = asObject(mcp.nosta);
-  mcp.nosta = {
-    ...existingNosta,
-    type: "local",
-    command: ["npx", "-y", input.packageName],
-    enabled: true
-  };
-  root.mcp = mcp;
-  const permission = asObject(root.permission);
-  permission.nosta_nosta_flow_approve = "ask";
-  permission.nosta_nosta_flow_bypass = "ask";
-  root.permission = permission;
-  return `${JSON.stringify(root, null, 2)}
-`;
-}
-function mergeMcpServersJson(input) {
-  const root = parseJsonObject(input.existingText);
-  const mcpServers = asObject(root.mcpServers);
-  const existingNosta = asObject(mcpServers.nosta);
-  mcpServers.nosta = {
-    ...existingNosta,
-    command: "npx",
-    args: ["-y", input.packageName]
-  };
-  root.mcpServers = mcpServers;
-  return `${JSON.stringify(root, null, 2)}
-`;
-}
-function mergeCodexToml(input) {
-  const managedLines = [
-    "[mcp_servers.nosta]",
-    'command = "npx"',
-    `args = ["-y", ${JSON.stringify(input.packageName)}]`,
-    "enabled = true"
-  ];
-  const managedKeyRe = /^\s*(?:command|args|enabled)\s*=/;
-  const lines = input.existingText.length > 0 ? input.existingText.replace(/\r\n/g, `
-`).split(`
-`) : [];
-  const headerRe = /^\s*\[mcp_servers\.nosta\]\s*(?:#.*)?$/;
-  const anyTableRe = /^\s*\[/;
-  const startIdx = lines.findIndex((line) => headerRe.test(line));
-  if (startIdx >= 0) {
-    let endIdx = startIdx + 1;
-    while (endIdx < lines.length && !anyTableRe.test(lines[endIdx] ?? "")) {
-      endIdx += 1;
-    }
-    const preserved = lines.slice(startIdx + 1, endIdx).filter((line) => line.trim().length > 0 && !managedKeyRe.test(line));
-    const block = [...managedLines, ...preserved].join(`
-`);
-    const before = lines.slice(0, startIdx);
-    const after = lines.slice(endIdx);
-    const replaced = [...before, block, ...after.length > 0 ? ["", ...after] : []].join(`
-`).replace(/\n{3,}/g, `
-
-`);
-    return `${replaced.trimEnd()}
-`;
-  }
-  const block = managedLines.join(`
-`);
-  const trimmed = input.existingText.trimEnd();
-  return trimmed.length > 0 ? `${trimmed}
-
-${block}
-` : `${block}
-`;
-}
-function mergeHarnessConfig(input) {
-  if (input.format === "opencode-json") {
-    return mergeOpenCodeJson({ existingText: input.existingText, packageName: input.packageName });
-  }
-  if (input.format === "codex-toml") {
-    return mergeCodexToml({ existingText: input.existingText, packageName: input.packageName });
-  }
-  return mergeMcpServersJson({ existingText: input.existingText, packageName: input.packageName });
-}
-async function copySkills(input) {
-  const entries = await readdir(input.sourceDir, { withFileTypes: true });
-  const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-  if (!input.dryRun) {
-    await mkdir(input.targetDir, { recursive: true });
-    for (const name of names) {
-      await cp(join2(input.sourceDir, name), join2(input.targetDir, name), { recursive: true, force: true });
-    }
-  }
-  return names;
-}
-
-// src/install/index.ts
-function usageText() {
-  return [
-    "Usage: nosta-mcp install <harness> [--global | --project] [--dry-run]",
-    `Harnesses: ${HARNESSES.join(", ")}`,
-    "Run with no arguments to start the Nosta stdio MCP server."
-  ].join(`
-`);
-}
-function resolveAssetsDir(baseDir) {
-  const candidates = [resolve(baseDir), resolve(baseDir, ".."), resolve(baseDir, "../..")];
-  for (const dir of candidates) {
-    if (existsSync(join3(dir, "skills")))
-      return dir;
-  }
-  throw new Error(`could not locate bundled skills directory from ${baseDir}`);
-}
-function resolveDefaultPackageName(assetsDir) {
-  const envName = process.env.NOSTA_MCP_PACKAGE?.trim();
-  if (envName)
-    return envName;
-  const pkgPath = join3(assetsDir, "package.json");
-  if (existsSync(pkgPath)) {
-    const parsed = JSON.parse(readFileSync(pkgPath, "utf8"));
-    if (typeof parsed.name === "string" && parsed.name.trim() && parsed.private !== true) {
-      return parsed.name.trim();
-    }
-  }
-  return DEFAULT_PACKAGE_NAME;
-}
-function scanInstallFlags(args) {
-  let harnessArg = null;
-  let scope = "global";
-  let dryRun = false;
-  let packageName = null;
-  for (let i = 0;i < args.length; i += 1) {
-    const token = args[i] ?? "";
-    if (token === "--project" || token === "-p")
-      scope = "project";
-    else if (token === "--global" || token === "-g")
-      scope = "global";
-    else if (token === "--dry-run")
-      dryRun = true;
-    else if (token === "--package") {
-      const next = args[i + 1];
-      if (!next)
-        throw new Error("missing value for --package");
-      packageName = next;
-      i += 1;
-    } else if (token.startsWith("-"))
-      throw new Error(`unknown option: ${token}
-${usageText()}`);
-    else if (!harnessArg)
-      harnessArg = token.toLowerCase();
-    else
-      throw new Error(`unexpected argument: ${token}
-${usageText()}`);
-  }
-  return { harnessArg, scope, dryRun, packageName };
-}
-function parseInstallArgs(input) {
-  const { harnessArg, scope, dryRun, packageName } = scanInstallFlags(input.argv);
-  if (!harnessArg || !isHarness(harnessArg)) {
-    throw new Error(`unsupported or missing harness: ${harnessArg ?? "(none)"}
-${usageText()}`);
-  }
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const assetsDir = input.assetsDir ? resolve(input.assetsDir) : resolveAssetsDir(scriptDir);
-  return {
-    harness: harnessArg,
-    scope,
-    cwd: resolve(input.cwd ?? process.cwd()),
-    homeDir: resolve(input.homeDir ?? homedir()),
-    assetsDir,
-    packageName: packageName ?? resolveDefaultPackageName(assetsDir),
-    dryRun
-  };
-}
-async function runInstall(options) {
-  const target = resolveTarget({
-    harness: options.harness,
-    scope: options.scope,
-    cwd: options.cwd,
-    homeDir: options.homeDir
-  });
-  const existingText = existsSync(target.configPath) ? await readFile(target.configPath, "utf8") : "";
-  const nextConfig = mergeHarnessConfig({
-    format: target.configFormat,
-    existingText,
-    packageName: options.packageName
-  });
-  if (!options.dryRun) {
-    await mkdir2(dirname(target.configPath), { recursive: true });
-    const tmpPath = `${target.configPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-    await writeFile(tmpPath, nextConfig, "utf8");
-    await rename(tmpPath, target.configPath);
-  }
-  const skillsCopied = await copySkills({
-    sourceDir: join3(options.assetsDir, "skills"),
-    targetDir: target.skillsDir,
-    dryRun: options.dryRun
-  });
-  let installedPluginPath = null;
-  if (target.pluginPath) {
-    const sourceGuard = join3(options.assetsDir, "hooks", "opencode-approve-guard.ts");
-    if (!existsSync(sourceGuard)) {
-      throw new Error(`bundled OpenCode approval guard missing: ${sourceGuard}`);
-    }
-    if (!options.dryRun) {
-      await mkdir2(dirname(target.pluginPath), { recursive: true });
-      await cp2(sourceGuard, target.pluginPath, { force: true });
-    }
-    installedPluginPath = target.pluginPath;
-  }
-  return {
-    harness: target.harness,
-    scope: target.scope,
-    configPath: target.configPath,
-    skillsDir: target.skillsDir,
-    skillsCopied,
-    pluginPath: installedPluginPath,
-    dryRun: options.dryRun
-  };
-}
-function formatInstallSummary(result) {
-  const verb = result.dryRun ? "Would install" : "Installed";
-  const lines = [
-    `${verb} Nosta for ${result.harness} (${result.scope}):`,
-    `  config: ${result.configPath}`,
-    `  skills: ${result.skillsDir} (${result.skillsCopied.length} skills)`
-  ];
-  if (result.pluginPath) {
-    lines.push(`  guard:  ${result.pluginPath}`);
-  }
-  lines.push("");
-  lines.push("Next: export NOSTA_BACKEND_URL=https://app.nosta.dev and NOSTA_PLUGIN_TOKEN=<your-token>");
-  return `${lines.join(`
-`)}
-`;
-}
-
-// src/server.ts
-import { createInterface } from "node:readline";
-
-// src/artifacts/index.ts
-import { mkdir as mkdir4, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname3 } from "node:path";
+// src/flow.ts
+import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
+import { readFile as readFile7, stat as stat3 } from "node:fs/promises";
 
 // ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -7330,6 +6999,28 @@ function floatSafeRemainder(val, step) {
   if (Math.abs(ratio - roundedRatio) < tolerance)
     return 0;
   return ratio - roundedRatio;
+}
+var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
+function defineLazy(object, key, getter) {
+  let value = undefined;
+  Object.defineProperty(object, key, {
+    get() {
+      if (value === EVALUATING) {
+        return;
+      }
+      if (value === undefined) {
+        value = EVALUATING;
+        value = getter();
+      }
+      return value;
+    },
+    set(v) {
+      Object.defineProperty(object, key, {
+        value: v
+      });
+    },
+    configurable: true
+  });
 }
 function assignProp(target, prop, value) {
   Object.defineProperty(target, prop, {
@@ -10265,6 +9956,23 @@ function handleReadonlyResult(payload) {
     payload.value = Object.freeze(payload.value);
   return payload;
 }
+var $ZodLazy = /* @__PURE__ */ $constructor("$ZodLazy", (inst, def) => {
+  $ZodType.init(inst, def);
+  defineLazy(inst._zod, "innerType", () => {
+    const d = def;
+    if (!d._cachedInner)
+      d._cachedInner = def.getter();
+    return d._cachedInner;
+  });
+  defineLazyInternal(inst, "pattern", (zod) => zod.innerType?._zod?.pattern);
+  defineLazyInternal(inst, "propValues", (zod) => zod.innerType?._zod?.propValues);
+  defineLazyInternal(inst, "optin", (zod) => zod.innerType?._zod?.optin ?? undefined);
+  defineLazyInternal(inst, "optout", (zod) => zod.innerType?._zod?.optout ?? undefined);
+  inst._zod.parse = (payload, ctx) => {
+    const inner = inst._zod.innerType;
+    return inner._zod.run(payload, ctx);
+  };
+});
 var $ZodCustom = /* @__PURE__ */ $constructor("$ZodCustom", (inst, def) => {
   $ZodCheck.init(inst, def);
   $ZodType.init(inst, def);
@@ -13409,6 +13117,18 @@ function readonly(innerType) {
     innerType
   });
 }
+var ZodLazy = /* @__PURE__ */ $constructor("ZodLazy", (inst, def) => {
+  $ZodLazy.init(inst, def);
+  ZodType.init(inst, def);
+  inst._zod.processJSONSchema = (ctx, json, params) => lazyProcessor(inst, ctx, json, params);
+  inst.unwrap = () => inst._zod.def.getter();
+});
+function lazy(getter) {
+  return new ZodLazy({
+    type: "lazy",
+    getter
+  });
+}
 var ZodCustom = /* @__PURE__ */ $constructor("ZodCustom", (inst, def) => {
   $ZodCustom.init(inst, def);
   ZodType.init(inst, def);
@@ -13420,79 +13140,6 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// ../../packages/shared/src/schema/primitives.ts
-var countSchema = number2().int().min(0);
-var positiveSchema = number2().int().min(1);
-function listOf(key, item) {
-  const shape = { [key]: array(item) };
-  return object(shape);
-}
-
-// ../../packages/shared/src/storage/pages.ts
-var MAX_PAGE_BYTES = 1500000;
-var MAX_PAGE_TITLE = 200;
-var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
-var PAGE_SLOT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-var pageSlotSchema = string2().regex(PAGE_SLOT);
-var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
-var MEDIA_CONTENT_TYPES = {
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".txt": "text/plain; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8"
-};
-function mediaContentType(name) {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0)
-    return null;
-  return MEDIA_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null;
-}
-function isDocumentKey(value) {
-  const parts = value.split("/");
-  const ticket = parts[0] ?? "";
-  const name = parts[1] ?? "";
-  return parts.length === 2 && PAGE_TICKET.test(ticket) && PAGE_NAME.test(name);
-}
-var pageRowSchema = object({
-  ticket: string2().regex(PAGE_TICKET),
-  name: string2().regex(PAGE_NAME),
-  title: string2().min(1),
-  stepId: string2(),
-  bytes: number2(),
-  created: string2().min(1),
-  kind: _enum(["html", "diff", "media"]).optional(),
-  slot: pageSlotSchema.optional(),
-  storage: _enum(["cloud", "local"]).optional(),
-  localPath: string2().min(1).max(1000).optional(),
-  localHost: string2().min(1).max(200).optional(),
-  flowId: string2().regex(LINK_ID).optional(),
-  linkedTo: array(string2().refine(isDocumentKey)).optional()
-});
-var localMediaInputSchema = object({
-  localPath: string2().trim().min(1).max(1000),
-  bytes: number2().int().min(0),
-  title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
-  stepId: string2().trim().max(128).optional(),
-  slot: pageSlotSchema.optional(),
-  flowId: string2().regex(LINK_ID).optional(),
-  localHost: string2().trim().min(1).max(200).optional()
-});
-var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
-  nextCursor: string2().nullable().optional()
-});
-
-// src/flow.ts
-import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
-import { readFile as readFile6, stat as stat2 } from "node:fs/promises";
-
 // ../../packages/shared/src/packet.ts
 var MAX_FILES = 32;
 var MAX_PACKET_BYTES = 256 * 1024;
@@ -13568,11 +13215,35 @@ function validatePacket(input) {
   return { ok: true, packet: { title, files, totalBytes } };
 }
 
+// ../../packages/shared/src/schema/primitives.ts
+var countSchema = number2().int().min(0);
+var positiveSchema = number2().int().min(1);
+function listOf(key, item) {
+  const shape = { [key]: array(item) };
+  return object(shape);
+}
+function replyOf(key, item) {
+  const shape = { [key]: item };
+  return object(shape);
+}
+
 // ../../packages/shared/src/lifecycle.ts
 var LIFECYCLE_STATES = ["idle", "queued", "running"];
-var LIFECYCLE_OUTCOMES = ["complete", "blocked", "errored", "terminated"];
+var LIFECYCLE_OUTCOMES = [
+  "complete",
+  "blocked",
+  "errored",
+  "terminated"
+];
 var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
 var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
+var FAILING_OUTCOMES = ["errored", "blocked"];
+function isFailingOutcome(outcome) {
+  return outcome !== null && FAILING_OUTCOMES.includes(outcome);
+}
+function isFailingLifecycle(flow) {
+  return flow.state === "idle" && isFailingOutcome(flow.outcome);
+}
 var BLOCK_REASONS = [
   "spec_failed",
   "implement_failed",
@@ -13588,13 +13259,22 @@ var BLOCK_REASONS = [
 // ../../packages/shared/src/schema/label.ts
 var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 var MAX_FLOW_LABELS = 200;
-var labelColorSchema = _enum(["slate", "blue", "green", "amber", "red", "violet"]);
+var labelColorSchema = _enum([
+  "slate",
+  "blue",
+  "green",
+  "amber",
+  "red",
+  "violet"
+]);
 var labelSchema = object({
   name: string2().regex(LABEL_NAME),
   color: labelColorSchema
 });
 var labelListSchema = object({ labels: array(labelSchema) });
-var flowLabelsInputSchema = object({ labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS) });
+var flowLabelsInputSchema = object({
+  labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS)
+});
 
 // ../../packages/shared/src/schema/flow.ts
 var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
@@ -13610,10 +13290,23 @@ var updateFlowInputSchema = object({
 
 // ../../packages/shared/src/schema/runtime/provider.ts
 var CLI_DRIVERS = ["claude", "antigravity", "codex"];
-var CLOUD_SESSION_DRIVERS = ["anthropic-routine", "webhook", "gemini-interactions"];
-var PROVIDER_DRIVERS = ["pi", ...CLI_DRIVERS, ...CLOUD_SESSION_DRIVERS];
+var CLOUD_SESSION_DRIVERS = [
+  "anthropic-routine",
+  "webhook",
+  "gemini-interactions"
+];
+var PROVIDER_DRIVERS = [
+  "pi",
+  ...CLI_DRIVERS,
+  ...CLOUD_SESSION_DRIVERS
+];
 var AUTH_MODES = ["api-key", "oauth-file"];
-var STEP_RUNTIMES = ["durable", "vm", "cloud_session", "local"];
+var STEP_RUNTIMES = [
+  "durable",
+  "vm",
+  "cloud_session",
+  "local"
+];
 var providerDriverSchema = _enum(PROVIDER_DRIVERS);
 var authModeSchema = _enum(AUTH_MODES);
 var stepRuntimeSchema = _enum(STEP_RUNTIMES);
@@ -13655,6 +13348,9 @@ var providerWithStatusSchema = providerInstanceSchema.extend({
 var providerListResponseSchema = object({
   providers: array(providerWithStatusSchema)
 });
+function isValidProfileId(value) {
+  return ID_PATTERN.test(value);
+}
 
 // ../../packages/shared/src/schema/flow/config.ts
 var childConfigSchema = object({
@@ -13753,7 +13449,12 @@ var usageSchema = object({
   cachedInputTokens: countSchema.optional(),
   reasoningTokens: countSchema.optional()
 });
-var USAGE_KEYS = new Set(["inputTokens", "outputTokens", "cachedInputTokens", "reasoningTokens"]);
+var USAGE_KEYS = new Set([
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "reasoningTokens"
+]);
 
 // ../../packages/shared/src/schema/flow/step/record.ts
 var stepFileRefSchema = object({
@@ -13800,8 +13501,16 @@ var approvalStepSchema = stepBaseSchema.extend({
   actor: string2().nullable().default(null),
   decisionId: string2().nullable().default(null)
 });
-var errorDetailAtomSchema = union([string2(), number2(), boolean2(), _null3()]);
-var errorDetailValueSchema = union([errorDetailAtomSchema, array(errorDetailAtomSchema)]);
+var errorDetailAtomSchema = union([
+  string2(),
+  number2(),
+  boolean2(),
+  _null3()
+]);
+var errorDetailValueSchema = union([
+  errorDetailAtomSchema,
+  array(errorDetailAtomSchema)
+]);
 var callStepErrorSchema = object({
   code: string2().min(1),
   message: string2(),
@@ -13838,13 +13547,92 @@ var pullRequestSchema = object({
   base: string2()
 });
 var FLOW_TAB_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-var flowTabSchema = object({
-  id: string2().regex(FLOW_TAB_ID),
-  label: string2().trim().min(1).max(40),
-  slot: string2().regex(FLOW_TAB_ID).optional(),
+var flowTabIdSchema = string2().regex(FLOW_TAB_ID);
+var flowSubtabSchema = object({
+  id: flowTabIdSchema,
+  label: string2().trim().min(1).max(40).optional(),
+  slot: flowTabIdSchema.optional(),
   description: string2().trim().max(400).optional(),
   required: boolean2().optional()
 });
+var flowTabSchema = object({
+  id: flowTabIdSchema,
+  label: string2().trim().min(1).max(40).optional(),
+  slot: flowTabIdSchema.optional(),
+  description: string2().trim().max(400).optional(),
+  required: boolean2().optional(),
+  defaultTab: flowTabIdSchema.optional(),
+  tabs: array(flowSubtabSchema).max(12).optional()
+});
+function validateFlowSubtabs(tab) {
+  if (!tab.tabs || tab.tabs.length === 0) {
+    if (tab.defaultTab) {
+      return {
+        code: `unknown_default_subtab:${tab.id}.${tab.defaultTab}`,
+        path: "tabs",
+        message: `defaultTab "${tab.defaultTab}" is not in "${tab.id}" subtabs`
+      };
+    }
+    return null;
+  }
+  const seen = new Set;
+  for (const sub of tab.tabs) {
+    if (sub.id === "steps") {
+      return {
+        code: `invalid_subtab_id:${tab.id}.steps`,
+        path: "tabs",
+        message: `subtab "${tab.id}.steps" is invalid (Steps lives in the drawer)`
+      };
+    }
+    if (seen.has(sub.id)) {
+      return {
+        code: `duplicate_subtab_id:${tab.id}.${sub.id}`,
+        path: "tabs",
+        message: `duplicate subtab id "${tab.id}.${sub.id}"`
+      };
+    }
+    seen.add(sub.id);
+  }
+  if (tab.defaultTab && !seen.has(tab.defaultTab)) {
+    return {
+      code: `unknown_default_subtab:${tab.id}.${tab.defaultTab}`,
+      path: "tabs",
+      message: `defaultTab "${tab.defaultTab}" is not in "${tab.id}" subtabs`
+    };
+  }
+  return null;
+}
+function validateFlowTabs(input) {
+  const seenTabs = new Set;
+  for (const tab of input.tabs ?? []) {
+    if (seenTabs.has(tab.id)) {
+      return {
+        code: `duplicate_tab_id:${tab.id}`,
+        path: "tabs",
+        message: `duplicate tab id "${tab.id}"`
+      };
+    }
+    seenTabs.add(tab.id);
+    const subError = validateFlowSubtabs(tab);
+    if (subError)
+      return subError;
+  }
+  if (input.defaultTab === "steps") {
+    return {
+      code: "invalid_default_tab:steps",
+      path: "defaultTab",
+      message: 'defaultTab cannot be "steps" (Steps lives in the drawer)'
+    };
+  }
+  if (input.defaultTab && input.tabs && !seenTabs.has(input.defaultTab)) {
+    return {
+      code: `unknown_default_tab:${input.defaultTab}`,
+      path: "defaultTab",
+      message: `defaultTab "${input.defaultTab}" is not in tabs`
+    };
+  }
+  return null;
+}
 var flowDocSlotSchema = string2().regex(FLOW_TAB_ID);
 var flowDocRefSchema = object({
   id: string2().min(1).max(160),
@@ -13905,11 +13693,13 @@ var flowRecordSchema = object({
   scheduleCron: string2().nullable().default(null),
   values: record(string2(), string2()).default({}),
   tabs: array(flowTabSchema).max(16).nullable().default(null),
+  defaultTab: flowTabIdSchema.nullable().default(null),
   docs: array(flowDocRefSchema).default([]),
   evidence: array(flowEvidenceRefSchema).default([]),
   diffSummary: flowDiffSummarySchema.nullable().default(null),
   ship: flowShipMetaSchema.nullable().default(null),
   endState: string2().nullable().default(null),
+  ticketBody: string2().nullable().default(null),
   baseSha: string2().nullable().default(null),
   config: flowConfigSchema.nullable().default(null),
   slice: flowSliceSchema.nullable().default(null),
@@ -13938,22 +13728,222 @@ var flowRecordSchema = object({
 });
 
 // src/api/generated/nosta.ts
+var getGetFlowPageUrl = (id, params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/flow/${id}/page?${stringifiedParams}` : `/api/flow/${id}/page`;
+};
+var getListFlowsUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["columns", "excludeDefinition"];
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? "null" : String(v));
+      });
+      return;
+    }
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/flow?${stringifiedParams}` : `/api/flow`;
+};
 var getApproveFlowUrl = (flowId) => {
   return `/api/flow/${flowId}/approval`;
+};
+var getListSecretsUrl = () => {
+  return `/api/secrets`;
 };
 var getListFlowEventsUrl = (id) => {
   return `/api/flow/${id}/events`;
 };
+var getStartFlowUrl = (id) => {
+  return `/api/flow/${id}/start`;
+};
 var getRunCloudStepUrl = (id) => {
   return `/api/flow/${id}/step`;
 };
+var getSignalFlowUrl = (id) => {
+  return `/api/flow/${id}/signal`;
+};
+var getCancelFlowUrl = (id) => {
+  return `/api/flow/${id}/cancel`;
+};
 
-// src/gate/index.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { basename as basename3 } from "node:path";
+// ../../packages/shared/src/runtime/telemetry.ts
+var telemetryAgentKindSchema = _enum(["review", "node"]);
+var telemetryDailyRowSchema = object({
+  day: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
+  model: string2().min(1),
+  agentKind: telemetryAgentKindSchema,
+  calls: countSchema,
+  failedCalls: countSchema,
+  usage: usageSchema
+});
+var telemetryDailyResponseSchema = object({
+  rows: array(telemetryDailyRowSchema)
+});
+
+// ../../packages/shared/src/runtime/insights.ts
+var insightsDailyReviewSchema = object({
+  day: string2(),
+  reviews: countSchema,
+  failed: countSchema,
+  findings: countSchema,
+  totalMs: countSchema,
+  failedMs: countSchema
+});
+var insightsDailySettledSchema = object({
+  day: string2(),
+  count: countSchema
+});
+var insightsFlowStatusCountSchema = object({
+  status: flowStatusSchema,
+  count: countSchema
+});
+var insightsFlowPerformanceSchema = object({
+  id: string2(),
+  ticket: string2().nullable(),
+  state: lifecycleStateSchema,
+  outcome: lifecycleOutcomeSchema.nullable(),
+  reviews: countSchema,
+  failed: countSchema,
+  running: countSchema,
+  findings: countSchema,
+  median: countSchema.nullable(),
+  p90: countSchema.nullable()
+});
+var proposalStateSchema = _enum([
+  "detected",
+  "in_progress",
+  "awaiting_verify",
+  "verified_improved",
+  "regressed",
+  "dismissed"
+]);
+var proposalDetectorSchema = _enum([
+  "reliability",
+  "gate_friction",
+  "hygiene"
+]);
+var improvementProposalSchema = object({
+  id: string2(),
+  detector: proposalDetectorSchema,
+  fingerprint: string2(),
+  state: proposalStateSchema,
+  title: string2(),
+  summary: string2(),
+  impactScore: countSchema,
+  impactLabel: string2(),
+  evidenceIds: array(string2()),
+  updatedAt: countSchema
+});
+var insightsProposalListSchema = object({
+  proposals: array(improvementProposalSchema)
+});
+var insightsScanResponseSchema = object({
+  scannedAt: countSchema,
+  detected: countSchema,
+  proposals: array(improvementProposalSchema)
+});
+var insightsResponseSchema = object({
+  fetchedAt: countSchema,
+  days: number2().int().min(1).max(90),
+  dailyReviews: array(insightsDailyReviewSchema),
+  dailySettled: array(insightsDailySettledSchema),
+  flowStatusCounts: array(insightsFlowStatusCountSchema),
+  flowPerformance: array(insightsFlowPerformanceSchema),
+  telemetry: array(telemetryDailyRowSchema).nullable(),
+  topProposals: array(improvementProposalSchema).default([])
+});
+function median(values) {
+  if (values.length === 0)
+    return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(ordered.length / 2);
+  if (ordered.length % 2 === 1)
+    return ordered[mid] ?? 0;
+  return Math.round(((ordered[mid - 1] ?? 0) + (ordered[mid] ?? 0)) / 2);
+}
+
+// ../../packages/shared/src/schema/view.ts
+var workflowVisibilitySchema = _enum(["visible", "hidden"]);
+var VIEW_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var viewKeySchema = string2().regex(VIEW_KEY_RE);
+var flowsViewConfigSchema = object({
+  version: number2().int().min(1).default(1),
+  definitionVisibility: record(string2(), workflowVisibilitySchema).default({})
+}).passthrough();
+var userViewReplySchema = object({
+  viewKey: string2(),
+  config: record(string2(), unknown()),
+  updatedAt: number2().int().min(0).nullable()
+});
+var putViewInputSchema = object({
+  config: record(string2(), unknown())
+});
+
+// ../../packages/shared/src/schema/flow/query.ts
+var NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
+
+// ../../packages/shared/src/schema/flow/summary.ts
+var flowSummarySchema = object({
+  flowId: string2(),
+  parentId: string2().nullable().default(null),
+  scopeId: string2().default(""),
+  workspace: string2().nullable().default(null),
+  definitionName: string2().nullable().default(null),
+  repo: string2(),
+  base: string2(),
+  ticket: string2().nullable().default(null),
+  labels: flowLabelsInputSchema.shape.labels.default([]),
+  name: string2().max(80).nullable().default(null),
+  due: flowDueSchema.nullable().default(null),
+  priority: prioritySchema.nullable().default(null),
+  scheduleId: string2().nullable().default(null),
+  scheduleCron: string2().nullable().default(null),
+  idempotencyKey: string2().nullable().default(null),
+  state: lifecycleStateSchema,
+  outcome: lifecycleOutcomeSchema.nullable(),
+  status: flowStatusSchema,
+  flowVersion: positiveSchema.default(1),
+  childCount: countSchema,
+  stepCount: countSchema.default(0),
+  clearedAt: countSchema.nullable().default(null),
+  createdAt: countSchema,
+  updatedAt: countSchema
+});
+
+// ../../packages/shared/src/schema/flow/list.ts
+var flowSortSchema = _enum(["updated", "priority", "due", "name"]);
+var flowClearedFilterSchema = _enum(["all", "exclude", "only"]);
+var flowColumnPageSchema = object({
+  status: flowStatusSchema,
+  nextCursor: string2().nullable()
+});
+var flowDefinitionCountSchema = object({
+  name: string2(),
+  count: number2().int().min(0),
+  defaultHidden: boolean2()
+});
+var flowListSchema = listOf("flows", flowSummarySchema).extend({
+  columns: array(flowColumnPageSchema).optional(),
+  definitions: array(flowDefinitionCountSchema).optional(),
+  viewConfig: flowsViewConfigSchema.optional()
+});
 
 // ../../packages/shared/src/schema/flow/step/event.ts
-var stepEventStatusSchema = _enum([...flowStatusSchema.options, "rejected"]);
+var stepEventStatusSchema = _enum([
+  ...flowStatusSchema.options,
+  "rejected"
+]);
 var stepEventSchema = object({
   seq: countSchema,
   at: countSchema,
@@ -13967,118 +13957,238 @@ var stepEventSchema = object({
   usage: usageSchema.nullable()
 });
 
-// src/store.ts
-import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
-import { mkdir as mkdir3, readFile as readFile2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import { join as join4, resolve as resolve2 } from "node:path";
-function canonicalRoot(repoRoot) {
-  const abs = resolve2(repoRoot);
+// ../../packages/shared/src/schema/flow/page.ts
+var pageEventSchema = stepEventSchema.omit({ flowId: true });
+var flowPageViewSchema = _enum(["full", "summary"]);
+var flowDiffReplySchema = object({
+  diff: string2().nullable(),
+  diffTruncated: boolean2()
+});
+var flowPageSchema = object({
+  flow: flowRecordSchema,
+  children: array(flowRecordSchema),
+  subflows: array(flowSummarySchema).optional(),
+  parentName: string2().nullable().optional(),
+  view: flowPageViewSchema.optional(),
+  hasSpec: boolean2().optional(),
+  hasDiff: boolean2().optional(),
+  events: array(pageEventSchema),
+  fetchedAt: countSchema,
+  lastEventAt: countSchema.nullable(),
+  stalled: boolean2()
+});
+
+// ../../packages/shared/src/utils/json.ts
+function parseJsonResponse(input) {
+  let decoded;
   try {
-    return realpathSync(abs);
-  } catch {
-    return abs;
+    decoded = JSON.parse(input.raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid ${input.label} response: ${detail}`);
+  }
+  const parsed = input.schema.safeParse(decoded);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => i.message).join("; ");
+    throw new Error(`invalid ${input.label} response: ${issues}`);
+  }
+  return parsed.data;
+}
+
+// src/flows/history.ts
+var flowHistoryInputSchema = object({
+  definition: string2().trim().min(1).describe("Workflow definition name to analyze across recent runs."),
+  workspace: string2().trim().min(1).optional().describe("Optional workspace filter."),
+  limit: number2().int().min(1).max(100).optional().describe("Maximum recent runs to inspect (default 20).")
+});
+function recordPageStats(page, acc) {
+  if (page.flow.evidence.length === 0)
+    acc.missingEvidenceCount += 1;
+  const currentSteps = page.flow.steps.filter((step) => step.attempt === page.flow.attempt);
+  for (const step of currentSteps) {
+    if (step.kind === "approval" && step.decision !== null) {
+      acc.approvalCount += 1;
+    }
+    if (step.endedAt !== null && step.endedAt >= step.startedAt) {
+      const list = acc.stepDurations.get(step.id) ?? [];
+      list.push(step.endedAt - step.startedAt);
+      acc.stepDurations.set(step.id, list);
+    }
+    if (step.status === "errored" || step.status === "rejected") {
+      acc.stepFailures.set(step.id, (acc.stepFailures.get(step.id) ?? 0) + 1);
+    }
   }
 }
-function branchIndexKey(repoRoot, branch) {
-  return `${canonicalRoot(repoRoot)}::${branch.trim()}`;
+async function fetchFlowPage(flowId, backend) {
+  const url = getGetFlowPageUrl(encodeURIComponent(flowId));
+  const raw = await backend.request(url);
+  return parseJsonResponse({
+    raw,
+    schema: flowPageSchema,
+    label: `/api/flow/${flowId}/page`
+  });
 }
-function flowsDir(stateDir) {
-  const root = stateDir ?? process.env.NOSTA_STATE_DIR ?? join4(homedir2(), ".nosta");
-  return join4(root, "flows");
-}
-function safeFlowFile(flowId) {
-  return `${flowId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
-}
-async function readJsonFile(filePath) {
-  try {
-    const raw = await readFile2(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-async function writeJsonAtomic(filePath, value) {
-  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile2(tmp, `${JSON.stringify(value, null, 2)}
-`, "utf8");
-  await rename2(tmp, filePath);
-}
-async function readFlowIndex(stateDir) {
-  const loaded = await readJsonFile(join4(flowsDir(stateDir), "index.json"));
-  return {
-    byBranch: loaded?.byBranch ? { ...loaded.byBranch } : {},
-    byTicket: loaded?.byTicket ? { ...loaded.byTicket } : {}
+async function getFlowHistory(input) {
+  const limit = input.args.limit ?? 20;
+  const listUrl = getListFlowsUrl({
+    definition: input.args.definition,
+    workspace: input.args.workspace,
+    limit
+  });
+  const listRaw = await input.backend.request(listUrl);
+  const parsedList = parseJsonResponse({
+    raw: listRaw,
+    schema: flowListSchema,
+    label: "/api/flow list"
+  });
+  const flows = [...parsedList.flows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+  const acc = {
+    missingEvidenceCount: 0,
+    approvalCount: 0,
+    stepFailures: new Map,
+    stepDurations: new Map
   };
-}
-async function readLocalFlow(flowId, stateDir) {
-  const loaded = await readJsonFile(join4(flowsDir(stateDir), safeFlowFile(flowId)));
-  if (!loaded || typeof loaded.flowId !== "string")
-    return null;
+  let completeCount = 0;
+  let failedCount = 0;
+  const topFailingFlowIds = [];
+  for (const summary of flows) {
+    if (summary.state === "idle" && summary.outcome === "complete") {
+      completeCount += 1;
+    } else if (isFailingLifecycle(summary)) {
+      failedCount += 1;
+      if (topFailingFlowIds.length < 10)
+        topFailingFlowIds.push(summary.flowId);
+    }
+  }
+  const pages = await Promise.all(flows.map((summary) => fetchFlowPage(summary.flowId, input.backend)));
+  for (const page of pages)
+    recordPageStats(page, acc);
+  const failingSteps = Array.from(acc.stepFailures.entries()).map(([stepId, failures]) => ({
+    stepId,
+    failures,
+    medianMs: median(acc.stepDurations.get(stepId) ?? [])
+  })).sort((a, b) => b.failures - a.failures || a.stepId.localeCompare(b.stepId));
   return {
-    ...loaded,
-    docs: Array.isArray(loaded.docs) ? loaded.docs : [],
-    evidence: Array.isArray(loaded.evidence) ? loaded.evidence : [],
-    diffSummary: loaded.diffSummary ?? null,
-    ship: loaded.ship ?? null
-  };
-}
-async function resolveIndexedFlowId(input) {
-  const index = await readFlowIndex(input.stateDir);
-  if (input.repoRoot && input.branch) {
-    const hit = index.byBranch[branchIndexKey(input.repoRoot, input.branch)];
-    if (hit)
-      return hit;
-  }
-  if (input.ticket) {
-    const hit = index.byTicket[input.ticket.trim()];
-    if (hit)
-      return hit;
-  }
-  return null;
-}
-async function saveLocalFlow(state, stateDir) {
-  const dir = flowsDir(stateDir);
-  await mkdir3(dir, { recursive: true });
-  const normalized = {
-    ...state,
-    ...state.repoRoot ? { repoRoot: canonicalRoot(state.repoRoot) } : {}
-  };
-  await writeJsonAtomic(join4(dir, safeFlowFile(normalized.flowId)), normalized);
-  const index = await readFlowIndex(stateDir);
-  if (normalized.repoRoot && normalized.branch) {
-    index.byBranch[branchIndexKey(normalized.repoRoot, normalized.branch)] = normalized.flowId;
-  }
-  if (normalized.ticket) {
-    index.byTicket[normalized.ticket.trim()] = normalized.flowId;
-  }
-  await writeJsonAtomic(join4(dir, "index.json"), index);
-  return normalized;
-}
-function emptyLocalFlow(input) {
-  return {
-    flowId: input.flowId,
-    ...input.repoRoot ? { repoRoot: canonicalRoot(input.repoRoot) } : {},
-    ...input.branch ? { branch: input.branch } : {},
-    ...input.base ? { base: input.base } : {},
-    ...input.ticket ? { ticket: input.ticket } : {},
-    ...input.title ? { title: input.title } : {},
-    ...input.tabs !== undefined ? { tabs: input.tabs } : {},
-    docs: [],
-    evidence: [],
-    diffSummary: null,
-    ship: null,
-    updatedAt: input.now ?? Date.now()
+    definition: input.args.definition,
+    totalRuns: flows.length,
+    completeCount,
+    failedCount,
+    missingEvidenceCount: acc.missingEvidenceCount,
+    failingSteps,
+    approvalCount: acc.approvalCount,
+    topFailingFlowIds
   };
 }
 
-// src/gate/git.ts
-import { execFile } from "node:child_process";
-import { realpathSync as realpathSync2 } from "node:fs";
-import { readFile as readFile3 } from "node:fs/promises";
-import { basename as basename2, dirname as dirname2, isAbsolute, join as join5, relative, resolve as resolve3, sep } from "node:path";
-import { promisify } from "node:util";
+// src/flows/validate.ts
+import { readFile as readFile3, stat } from "node:fs/promises";
+import { isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
+
+// ../../packages/shared/src/security.ts
+function isLoopbackHost(hostname) {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
+}
+function isSafeOutboundUrl(raw, options) {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.username || parsed.password)
+    return false;
+  const allowPrivate = options?.allowPrivate === true;
+  if (parsed.protocol !== "https:" && !(allowPrivate && parsed.protocol === "http:")) {
+    return false;
+  }
+  if (!parsed.hostname)
+    return false;
+  if (!allowPrivate && isLoopbackHost(parsed.hostname))
+    return false;
+  return true;
+}
+
+// ../../packages/shared/src/schema/secret.ts
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var MAX_SECRET_VALUE = 32768;
+var MAX_AUDIT_LIMIT = 500;
+var HEADER_NAME = /^[A-Za-z0-9-]+$/;
+var SECRET_AUDIT_ACTIONS = [
+  "put",
+  "delete",
+  "list",
+  "resolve",
+  "proxy"
+];
+var secretAuditActionSchema = _enum(SECRET_AUDIT_ACTIONS);
+var SECRET_AUDIT_OUTCOMES = [
+  "ok",
+  "missing",
+  "denied",
+  "key_error",
+  "error"
+];
+var secretAuditOutcomeSchema = _enum(SECRET_AUDIT_OUTCOMES);
+var secretBindingSchema = discriminatedUnion("mode", [
+  object({ mode: literal("env") }),
+  object({
+    mode: literal("proxy"),
+    targetBaseUrl: string2().min(1).max(500).refine((raw) => isSafeOutboundUrl(raw, { allowPrivate: true }), "invalid targetBaseUrl"),
+    header: string2().regex(HEADER_NAME).max(100).optional(),
+    prefix: string2().max(100).optional(),
+    urlEnvVar: string2().regex(ENV_NAME).max(100).optional()
+  })
+]);
+var secretMetadataSchema = object({
+  name: string2(),
+  kid: string2(),
+  updatedAt: number2().int().min(0),
+  binding: secretBindingSchema.optional()
+});
+var secretListReplySchema = object({
+  names: array(string2()),
+  items: array(secretMetadataSchema)
+});
+var secretValueReplySchema = object({
+  name: string2(),
+  value: string2()
+});
+var secretWriteInputSchema = object({
+  value: string2().min(1).max(MAX_SECRET_VALUE),
+  binding: secretBindingSchema.optional()
+});
+var secretDeleteReplySchema = object({
+  deleted: string2()
+});
+var secretAuditEntrySchema = object({
+  id: string2(),
+  at: number2().int().min(0),
+  scopeId: string2(),
+  actor: string2(),
+  action: secretAuditActionSchema,
+  secretName: string2().nullable(),
+  outcome: secretAuditOutcomeSchema,
+  flowId: string2().nullable(),
+  stepId: string2().nullable(),
+  kid: string2().nullable(),
+  targetHost: string2().nullable()
+});
+var secretAuditListSchema = object({
+  items: array(secretAuditEntrySchema),
+  nextCursor: string2().nullable()
+});
+var secretAuditQueryInputSchema = object({
+  scopeId: string2().optional(),
+  allScopes: boolean2().optional(),
+  name: string2().optional(),
+  action: secretAuditActionSchema.optional(),
+  flowId: string2().optional(),
+  from: number2().int().min(0).optional(),
+  to: number2().int().min(0).optional(),
+  limit: number2().int().min(1).max(MAX_AUDIT_LIMIT).optional(),
+  cursor: string2().optional()
+});
 
 // ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/index.js
 var composer = require_composer();
@@ -14126,6 +14236,1450 @@ var $stringify = publicApi.stringify;
 var $visit = visit.visit;
 var $visitAsync = visit.visitAsync;
 
+// ../../packages/shared/src/runtime/hybrid.ts
+var MAX_STEP_ARTIFACTS = 64;
+var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
+var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var SHA256_HEX = /^[0-9a-f]{64}$/;
+var COMMIT_HEX = /^[0-9a-f]{40}$/;
+var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
+var SECRET_BASENAMES = new Set([
+  "secrets",
+  ".dev.vars",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+  "id_dsa"
+]);
+function normalizeRelativePath(raw) {
+  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+}
+function isSafeRelativePath(raw) {
+  if (!raw || raw.includes("\x00"))
+    return false;
+  const slash = raw.replaceAll("\\", "/");
+  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
+    return false;
+  const cleaned = normalizeRelativePath(slash);
+  if (!cleaned || cleaned === ".")
+    return false;
+  const parts = cleaned.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+function isSafeMountPath(raw) {
+  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (cleaned === "" || cleaned === "." || cleaned === "./")
+    return true;
+  return isSafeRelativePath(cleaned);
+}
+function isSecretPath(raw) {
+  const cleaned = normalizeRelativePath(raw);
+  if (!cleaned)
+    return false;
+  const parts = cleaned.split("/");
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
+      return true;
+  }
+  const base = (parts[parts.length - 1] ?? "").toLowerCase();
+  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
+}
+var bundleRepoManifestSchema = object({
+  name: string2().regex(REPO_NAME),
+  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
+  commitSha: string2().regex(COMMIT_HEX).optional(),
+  branch: string2().min(1).max(200).optional(),
+  dirty: boolean2(),
+  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
+  patchApplied: boolean2().optional(),
+  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
+  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
+});
+var bundleManifestSchema = object({
+  version: literal(1),
+  workspace: string2().regex(WORKSPACE_NAME),
+  primaryRepo: string2().regex(REPO_NAME),
+  repos: array(bundleRepoManifestSchema).min(1).max(32)
+});
+var bundlePointerSchema = object({
+  workspace: string2().regex(WORKSPACE_NAME),
+  sha: string2().regex(SHA256_HEX),
+  commitSha: string2(),
+  bytes: number2().int().min(1),
+  createdAt: number2().int().min(0),
+  dirty: boolean2().optional(),
+  repoCount: number2().int().min(1).optional()
+});
+var stepArtifactSchema = object({
+  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
+  contentBase64: string2(),
+  bytes: number2().int().min(0),
+  sha256: string2().regex(SHA256_HEX)
+});
+var cloudStepRequestSchema = object({
+  workspace: string2().min(1).max(64),
+  workflowName: string2().min(1).max(64),
+  stepId: string2().min(1).max(64),
+  bundleSha: string2().regex(SHA256_HEX),
+  force: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  pullOutputs: boolean2().optional(),
+  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
+});
+var cloudStepReplySchema = stepRecordSchema.and(object({
+  values: record(string2(), string2()).optional(),
+  artifacts: array(stepArtifactSchema).optional()
+}));
+
+// ../../packages/shared/src/schema/flow/control.ts
+var SIGNAL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var flowCreateReplySchema = replyOf("flow", flowRecordSchema).extend({
+  created: boolean2()
+});
+var approvalInputSchema = object({
+  decision: _enum(["approve", "reject"]),
+  version: positiveSchema,
+  attempt: positiveSchema,
+  decisionId: string2().min(1).max(200),
+  actor: string2().min(1).max(200).optional()
+});
+var approvalReplySchema = replyOf("flow", flowRecordSchema).extend({
+  pendingDelivery: boolean2().optional()
+});
+var flowStartInputSchema = object({
+  stackBase: string2().optional(),
+  awaitMergeReady: boolean2().optional()
+});
+var flowStartReplySchema = object({
+  instanceId: string2(),
+  attempt: number2().int().min(1)
+});
+var flowEventsReplySchema = listOf("events", stepEventSchema);
+var flowSignalInputSchema = object({
+  type: string2().regex(SIGNAL_NAME),
+  payload: record(string2(), string2()).default({}),
+  dedupeKey: string2().min(1).max(128).optional()
+});
+var flowSignalReplySchema = object({
+  flowId: string2(),
+  type: string2(),
+  attempt: number2().int().min(1),
+  queued: boolean2()
+});
+var flowCancelReplySchema = object({
+  flowId: string2(),
+  canceledFlowIds: array(string2()),
+  alreadyIdleIds: array(string2()),
+  failedTerminations: array(object({ flowId: string2(), error: string2() }))
+});
+var flowClearReplySchema = object({
+  flowId: string2(),
+  clearedAt: number2().int().min(0),
+  alreadyCleared: boolean2()
+});
+var FLOW_BATCH_CLEAR_MAX = 200;
+var flowBatchClearInputSchema = object({
+  flowIds: array(string2().min(1).max(128)).min(1).max(FLOW_BATCH_CLEAR_MAX)
+});
+var flowBatchClearReplySchema = object({
+  clearedIds: array(string2()),
+  alreadyClearedIds: array(string2()),
+  clearedAt: number2().int().min(0)
+});
+
+// ../../packages/shared/src/schema/runtime/cloud-session.ts
+var CLOUD_SESSION_ARTIFACTS = [
+  "in.tgz",
+  "values-in.json",
+  "keys.json",
+  "started.txt",
+  "exit.txt",
+  "values.json",
+  "usage.json",
+  "out.tgz",
+  "error.txt"
+];
+var cloudSessionArtifactSchema = _enum(CLOUD_SESSION_ARTIFACTS);
+var CLOUD_SESSION_JOB_ID_PATTERN = /^[A-Za-z0-9:._-]{1,160}$/;
+var cloudSessionRepoSchema = object({
+  repository: string2().min(1).max(200),
+  ref: string2().min(1).max(200),
+  base: string2().min(1).max(200).optional()
+});
+var cloudSessionLinksSchema = object({
+  inputs: string2().url().optional(),
+  values_in: string2().url().optional(),
+  keys: string2().url().optional(),
+  keys_clear: string2().url().optional(),
+  started: string2().url(),
+  exit: string2().url(),
+  values: string2().url(),
+  usage: string2().url(),
+  out: string2().url(),
+  error: string2().url()
+});
+var cloudSessionJobSchema = object({
+  jobId: string2().regex(CLOUD_SESSION_JOB_ID_PATTERN),
+  kind: _enum(["agent", "command"]),
+  repo: cloudSessionRepoSchema.optional(),
+  prompt: string2().min(1).optional(),
+  command: string2().min(1).optional(),
+  minutes: number2().int().min(1).max(120),
+  links: cloudSessionLinksSchema
+});
+var cloudSessionUsageSchema = object({
+  model: string2().min(1).max(120).optional(),
+  inputTokens: number2().int().min(0).default(0),
+  cachedInputTokens: number2().int().min(0).optional(),
+  outputTokens: number2().int().min(0).default(0),
+  reasoningTokens: number2().int().min(0).optional(),
+  durationMs: number2().int().min(0).default(0),
+  status: number2().int().nullable().optional(),
+  error: string2().max(2000).nullable().optional()
+});
+
+// ../../packages/shared/src/schema/runtime/vm.ts
+var VM_VENDORS = ["boat"];
+var vmVendorSchema = _enum(VM_VENDORS);
+var DEFAULT_VM_MACHINE_TYPE = "small";
+var DEFAULT_VM_TTL_SECONDS = 3600;
+var MAX_VM_TTL_SECONDS = 28800;
+var SANDBOX_TOOL_NAMES = [
+  "sandbox_exec",
+  "sandbox_read",
+  "sandbox_write"
+];
+var vmProfileInputSchema = object({
+  label: string2().min(1).max(120).optional(),
+  provider: vmVendorSchema.default("boat"),
+  secretName: string2().min(1).max(200).optional(),
+  baseUrl: string2().url().max(500).optional(),
+  machineType: string2().min(1).max(64).default(DEFAULT_VM_MACHINE_TYPE),
+  ttlSeconds: number2().int().min(60).max(MAX_VM_TTL_SECONDS).default(DEFAULT_VM_TTL_SECONDS),
+  enabled: boolean2().default(true)
+});
+var vmProfileSchema = vmProfileInputSchema.extend({
+  id: string2().refine(isValidProfileId, "invalid vm profile id"),
+  updatedAt: number2().int().min(0)
+});
+var vmProfileListResponseSchema = object({
+  vms: array(vmProfileSchema)
+});
+
+// ../../packages/shared/src/schema/schedule.ts
+var SCHEDULE_ID_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var WORKSPACE_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var BUNDLE_SHA_SHAPE = /^[0-9a-f]{64}$/;
+var CRON_RANGES = [
+  { min: 0, max: 59 },
+  { min: 0, max: 23 },
+  { min: 1, max: 31 },
+  { min: 1, max: 12 },
+  { min: 0, max: 7, normalizeSeven: true }
+];
+function parseNumber(raw) {
+  if (!/^\d+$/.test(raw))
+    return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+function addCronValue(values, entry) {
+  values.add(entry.range.normalizeSeven && entry.value === 7 ? 0 : entry.value);
+}
+function resolveRangeBounds(input) {
+  const { base, range, stepped } = input;
+  if (base === "*") {
+    return { start: range.min, end: range.normalizeSeven ? 6 : range.max };
+  }
+  if (base.includes("-")) {
+    const bounds = base.split("-");
+    if (bounds.length !== 2)
+      return null;
+    const low = parseNumber(bounds[0] ?? "");
+    const high = parseNumber(bounds[1] ?? "");
+    if (low === null || high === null)
+      return null;
+    if (low > high)
+      return null;
+    if (low < range.min || high > range.max)
+      return null;
+    return { start: low, end: high };
+  }
+  const single = parseNumber(base);
+  if (single === null)
+    return null;
+  if (single < range.min || single > range.max)
+    return null;
+  return {
+    start: single,
+    end: stepped ? range.normalizeSeven ? 6 : range.max : single
+  };
+}
+function parseStepPart(segment, range) {
+  const slashParts = segment.split("/");
+  if (slashParts.length > 2)
+    return null;
+  const stepped = slashParts.length === 2;
+  const step = stepped ? parseNumber(slashParts[1] ?? "") : 1;
+  if (step === null || step < 1)
+    return null;
+  const bounds = resolveRangeBounds({
+    base: slashParts[0] ?? "",
+    range,
+    stepped
+  });
+  if (!bounds)
+    return null;
+  const result = [];
+  for (let current = bounds.start;current <= bounds.end; current += step)
+    result.push(current);
+  return result;
+}
+function parseCronField(raw, range) {
+  if (!raw || raw.length > 64)
+    return null;
+  const values = new Set;
+  for (const part of raw.split(",")) {
+    if (!part)
+      return null;
+    const matched = parseStepPart(part, range);
+    if (!matched)
+      return null;
+    for (const value of matched)
+      addCronValue(values, { value, range });
+  }
+  if (values.size === 0)
+    return null;
+  return { wildcard: raw.startsWith("*"), values };
+}
+function parseCron(expression) {
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length !== 5)
+    return null;
+  const parsed = [];
+  for (let index = 0;index < 5; index += 1) {
+    const field = parseCronField(parts[index] ?? "", CRON_RANGES[index]);
+    if (!field)
+      return null;
+    parsed.push(field);
+  }
+  return {
+    minute: parsed[0],
+    hour: parsed[1],
+    dayOfMonth: parsed[2],
+    month: parsed[3],
+    dayOfWeek: parsed[4]
+  };
+}
+function isValidCron(expression) {
+  return parseCron(expression) !== null;
+}
+var scheduleIdSchema = string2().regex(SCHEDULE_ID_SHAPE);
+var cronExpressionSchema = string2().trim().min(9).max(100).refine(isValidCron, "invalid 5-field cron expression");
+var scheduleRecordSchema = object({
+  id: scheduleIdSchema,
+  scopeId: string2().default(""),
+  workspace: string2().regex(WORKSPACE_SHAPE),
+  definitionName: string2().regex(SIGNAL_NAME),
+  cron: cronExpressionSchema,
+  enabled: boolean2(),
+  values: record(string2(), string2()).default({}),
+  bundleSha: string2().regex(BUNDLE_SHA_SHAPE).nullable().default(null),
+  lastTriggeredAt: countSchema.nullable().default(null),
+  lastFlowId: string2().nullable().default(null),
+  createdAt: countSchema,
+  updatedAt: countSchema
+});
+var scheduleCreateInputSchema = object({
+  id: scheduleIdSchema.optional(),
+  workspace: string2().regex(WORKSPACE_SHAPE),
+  definitionName: string2().regex(SIGNAL_NAME),
+  cron: cronExpressionSchema,
+  enabled: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  bundleSha: string2().regex(BUNDLE_SHA_SHAPE).nullable().optional()
+});
+var scheduleUpdateFieldsSchema = object({
+  cron: cronExpressionSchema.optional(),
+  enabled: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  bundleSha: string2().regex(BUNDLE_SHA_SHAPE).nullable().optional()
+});
+var scheduleUpdateInputSchema = scheduleUpdateFieldsSchema.refine((value) => Object.keys(value).length > 0, "update must include at least one field");
+var scheduleReplySchema = object({ schedule: scheduleRecordSchema });
+var scheduleListSchema = object({
+  schedules: array(scheduleRecordSchema)
+});
+
+// ../../packages/shared/src/workflow.ts
+var RESERVED_VALUE_KEYS = new Set([
+  "flow",
+  "run",
+  "round",
+  "end",
+  "part",
+  "reason"
+]);
+var idRe = SIGNAL_NAME;
+var CALL_NAME_RE = /^[A-Za-z][A-Za-z0-9._:/-]{0,127}$/;
+var RESERVED_SECRET_NAMES = new Set(["NOSTA_VALUES_FILE", "HOME", "PATH"]);
+var MAX_STEP_SECRETS = 32;
+var secretListSchema = array(string2().regex(ENV_NAME).refine((name) => !RESERVED_SECRET_NAMES.has(name), "reserved secret name")).max(MAX_STEP_SECRETS);
+var whereSchema = _enum(["local", "cloud"]);
+var stringMap = record(string2(), string2());
+var outputPathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret output path");
+var safeFilePathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret path").transform((value) => normalizeRelativePath(value));
+var MAX_STEP_MINUTES = 60;
+var MAX_CLOUD_SESSION_MINUTES = 120;
+var baseFields = {
+  id: string2().regex(idRe),
+  where: whereSchema.optional(),
+  minutes: number2().int().min(1).max(MAX_CLOUD_SESSION_MINUTES).optional(),
+  secrets: secretListSchema.optional(),
+  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
+  runtime: stepRuntimeSchema.optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  repo: cloudSessionRepoSchema.optional()
+};
+var stepHookSchema = object({
+  event: _enum(["pre", "post"]),
+  run: string2().min(1),
+  secrets: secretListSchema.optional()
+});
+var flowGuardsSchema = object({
+  approvalNodes: array(string2().regex(idRe)).max(32).optional(),
+  allowBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
+  gateBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
+  prGateAfter: array(string2().regex(idRe)).max(32).optional()
+});
+var flowEvidenceSchema = object({
+  required: boolean2().optional(),
+  artifacts: array(safeFilePathSchema).max(32).optional(),
+  checks: array(string2().regex(idRe)).max(32).optional()
+});
+function unsupportedCloudSessionPrimitives(step) {
+  const unsupported = [];
+  if (step.hooks && step.hooks.length > 0)
+    unsupported.push("hooks");
+  if (step.tools !== undefined)
+    unsupported.push("tools");
+  if (step.hosts && step.hosts.length > 0)
+    unsupported.push("hosts");
+  if (step.mcpServers && step.mcpServers.length > 0)
+    unsupported.push("mcpServers");
+  if (step.vmProfileId)
+    unsupported.push("vmProfileId");
+  return unsupported;
+}
+function checkStepMinutes(step, ctx) {
+  if (step.minutes !== undefined && step.minutes > MAX_STEP_MINUTES) {
+    const supportsCloudSession = step.kind === "command" || step.kind === "restricted_agent";
+    if (!supportsCloudSession || step.runtime !== "cloud_session") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["minutes"],
+        message: `minutes must be at most ${MAX_STEP_MINUTES} unless runtime is cloud_session`
+      });
+    }
+  }
+  if (step.kind === "restricted_agent" && step.runtime === "cloud_session") {
+    const unsupported = unsupportedCloudSessionPrimitives(step);
+    if (unsupported.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["runtime"],
+        message: `restricted_agent with runtime cloud_session does not support: ${unsupported.join(", ")}`
+      });
+    }
+  }
+}
+var MAX_STEP_RETRIES = 3;
+var DEFAULT_CALL_RETRY_POLICY = {
+  max: 0,
+  delayMs: 500,
+  maxDelayMs: 30000,
+  backoff: 2
+};
+var callRetryObjectSchema = object({
+  max: number2().int().min(0).max(MAX_STEP_RETRIES).default(DEFAULT_CALL_RETRY_POLICY.max),
+  delayMs: number2().int().min(0).max(300000).default(DEFAULT_CALL_RETRY_POLICY.delayMs),
+  maxDelayMs: number2().int().min(0).max(1800000).default(DEFAULT_CALL_RETRY_POLICY.maxDelayMs),
+  backoff: number2().min(1).max(10).default(DEFAULT_CALL_RETRY_POLICY.backoff)
+});
+var callRetrySchema = union([
+  number2().int().min(0).max(MAX_STEP_RETRIES),
+  callRetryObjectSchema
+]);
+var stepOnErrorSchema = _enum(["fail", "continue"]);
+var stepProviderSchema = string2().trim().min(1).max(64);
+var commandSchema = object({
+  ...baseFields,
+  kind: literal("command"),
+  run: string2().min(1),
+  ends: stringMap.optional(),
+  retries: callRetrySchema.optional(),
+  onError: stepOnErrorSchema.optional(),
+  provider: stepProviderSchema.optional()
+});
+var reviewSchema = object({
+  ...baseFields,
+  kind: literal("review"),
+  skill: string2().min(1),
+  files: array(string2().refine(isValidFileName)).min(1).max(MAX_FILES)
+});
+var agentSchema = object({
+  id: string2().regex(idRe),
+  where: literal("local").optional(),
+  runtime: literal("local").optional(),
+  minutes: number2().int().min(1).max(MAX_STEP_MINUTES).optional(),
+  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  kind: literal("agent"),
+  prompt: string2().min(1)
+}).strict();
+var restrictedAgentSchema = object({
+  ...baseFields,
+  kind: literal("restricted_agent"),
+  prompt: string2().min(1),
+  skills: array(safeFilePathSchema).max(32).optional(),
+  references: array(safeFilePathSchema).max(32).optional(),
+  tools: array(_enum(SANDBOX_TOOL_NAMES)).max(32).optional(),
+  hooks: array(stepHookSchema).max(16).optional(),
+  hosts: array(string2().trim().min(1).max(255)).max(64).optional(),
+  mcpServers: array(string2().trim().min(1).max(64)).max(16).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+var callSchema = object({
+  id: string2().regex(idRe),
+  where: literal("cloud").optional(),
+  minutes: number2().int().min(1).max(60).optional(),
+  secrets: secretListSchema.optional(),
+  kind: literal("call"),
+  call: string2().regex(CALL_NAME_RE),
+  version: number2().int().min(1).optional(),
+  args: record(string2(), unknown()).optional(),
+  outputs: stringMap.optional(),
+  retries: callRetrySchema.optional(),
+  onError: stepOnErrorSchema.optional(),
+  provider: stepProviderSchema.optional()
+});
+var leafCoreSchema = discriminatedUnion("kind", [
+  commandSchema,
+  reviewSchema,
+  agentSchema,
+  restrictedAgentSchema,
+  callSchema
+]).superRefine(checkStepMinutes);
+var MAX_AGAIN_IF_ROUNDS = 100;
+var MAX_WAIT_HOURS = 2160;
+var stepSchema = lazy(() => discriminatedUnion("kind", [
+  commandSchema.extend({ when: leafCoreSchema.optional() }),
+  reviewSchema.extend({ when: leafCoreSchema.optional() }),
+  agentSchema.extend({ when: leafCoreSchema.optional() }).strict(),
+  restrictedAgentSchema.extend({ when: leafCoreSchema.optional() }),
+  callSchema.extend({ when: leafCoreSchema.optional() }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("flow"),
+    mode: _enum(["yaml", "review", "spec"]).optional(),
+    name: string2().regex(idRe).optional(),
+    flow: string2().regex(idRe).optional(),
+    workspace: string2().min(1).max(64).optional(),
+    bundleSha: string2().min(1).optional(),
+    title: string2().min(1).optional(),
+    files: array(string2().refine(isValidFileName)).optional(),
+    spec: string2().min(1).optional(),
+    baseSha: string2().min(1).optional(),
+    ticketUrl: string2().min(1).optional(),
+    secrets: secretListSchema.optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("choose"),
+    value: string2().min(1),
+    cases: record(string2(), array(stepSchema)),
+    default: array(stepSchema).optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("parallel"),
+    steps: array(stepSchema).min(1).max(16),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("wait"),
+    signal: string2().regex(idRe),
+    hours: number2().positive().max(MAX_WAIT_HOURS).optional(),
+    unsignalled: string2().min(1).optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("again_if"),
+    value: string2().min(1),
+    rounds: union([
+      number2().int().min(1).max(MAX_AGAIN_IF_ROUNDS),
+      string2().min(1)
+    ]),
+    from: string2().regex(idRe).optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("end"),
+    state: string2().min(1)
+  })
+]).superRefine(checkStepMinutes));
+var envHookSchema = object({
+  id: string2().regex(idRe),
+  setup: string2().min(1),
+  teardown: string2().min(1).optional(),
+  minutes: number2().int().min(1).max(60).optional(),
+  where: whereSchema.optional(),
+  secrets: secretListSchema.optional()
+});
+var flowScheduleSchema = union([
+  cronExpressionSchema,
+  object({
+    id: scheduleIdSchema.optional(),
+    cron: cronExpressionSchema,
+    enabled: boolean2().optional(),
+    values: stringMap.optional()
+  })
+]);
+var flowConfigSchema2 = object({
+  name: string2().regex(idRe),
+  version: number2().int().min(1),
+  workspace: string2().regex(WORKSPACE_SHAPE),
+  visibility: workflowVisibilitySchema.optional(),
+  schedule: flowScheduleSchema.optional(),
+  tabs: array(flowTabSchema).max(16).optional(),
+  defaultTab: flowTabIdSchema.optional(),
+  guards: flowGuardsSchema.optional(),
+  evidence: flowEvidenceSchema.optional(),
+  defaults: object({ where: whereSchema }).optional(),
+  values: stringMap.optional(),
+  conditions: array(leafCoreSchema).max(16).optional(),
+  prepare: array(leafCoreSchema).max(16).optional(),
+  environment: array(envHookSchema).max(16).optional(),
+  steps: array(stepSchema).min(1).max(64),
+  checks: array(leafCoreSchema).max(16).optional(),
+  record: array(leafCoreSchema).max(16).optional(),
+  alerts: array(leafCoreSchema).max(16).optional()
+});
+function dedupeStrings(items) {
+  if (!items || items.length === 0)
+    return;
+  return Array.from(new Set(items));
+}
+function normalizeStepHooks(hooks) {
+  if (!hooks || hooks.length === 0)
+    return;
+  return hooks.map((hook) => {
+    const secrets = dedupeStrings(hook.secrets);
+    return {
+      event: hook.event,
+      run: hook.run,
+      ...secrets ? { secrets } : {}
+    };
+  });
+}
+function normalizeGuards(raw) {
+  if (!raw)
+    return;
+  const approvalNodes = dedupeStrings(raw.approvalNodes);
+  const allowBeforeApproval = dedupeStrings(raw.allowBeforeApproval);
+  const gateBeforeApproval = dedupeStrings(raw.gateBeforeApproval);
+  const prGateAfter = dedupeStrings(raw.prGateAfter);
+  return {
+    ...approvalNodes ? { approvalNodes } : {},
+    ...allowBeforeApproval ? { allowBeforeApproval } : {},
+    ...gateBeforeApproval ? { gateBeforeApproval } : {},
+    ...prGateAfter ? { prGateAfter } : {}
+  };
+}
+function normalizeEvidence(raw) {
+  if (!raw)
+    return;
+  return {
+    required: raw.required ?? false,
+    artifacts: dedupeStrings(raw.artifacts) ?? [],
+    checks: dedupeStrings(raw.checks) ?? []
+  };
+}
+function normalizeCallRetries(retries) {
+  if (retries === undefined)
+    return;
+  if (typeof retries === "number")
+    return { ...DEFAULT_CALL_RETRY_POLICY, max: retries };
+  return retries;
+}
+function resolveLeafCore(raw, defaultWhere) {
+  if (raw.kind === "agent") {
+    return { ...raw, where: "local" };
+  }
+  const secrets = dedupeStrings(raw.secrets);
+  if (raw.kind === "call") {
+    const retries = normalizeCallRetries(raw.retries);
+    return {
+      id: raw.id,
+      kind: "call",
+      call: raw.call,
+      ...raw.version !== undefined ? { version: raw.version } : {},
+      args: raw.args ?? {},
+      ...raw.outputs ? { outputs: raw.outputs } : {},
+      ...retries ? { retries } : {},
+      ...raw.onError ? { onError: raw.onError } : {},
+      ...raw.provider ? { provider: raw.provider } : {},
+      where: "cloud",
+      ...raw.minutes !== undefined ? { minutes: raw.minutes } : {},
+      ...secrets ? { secrets } : {}
+    };
+  }
+  if (raw.kind === "command") {
+    const retries = normalizeCallRetries(raw.retries);
+    const { secrets: _omit, retries: _omitRetries, ...rest } = raw;
+    return {
+      ...rest,
+      where: raw.where ?? defaultWhere,
+      ...retries ? { retries } : {},
+      ...secrets ? { secrets } : {}
+    };
+  }
+  if (raw.kind === "restricted_agent") {
+    const {
+      secrets: _omitSecrets,
+      skills: rawSkills,
+      references: rawReferences,
+      tools: rawTools,
+      hooks: rawHooks,
+      hosts: rawHosts,
+      mcpServers: rawMcpServers,
+      ...rest
+    } = raw;
+    const skills = dedupeStrings(rawSkills);
+    const references = dedupeStrings(rawReferences);
+    const tools = rawTools !== undefined ? Array.from(new Set(rawTools)) : undefined;
+    const hooks = normalizeStepHooks(rawHooks);
+    const hosts = dedupeStrings(rawHosts);
+    const mcpServers = dedupeStrings(rawMcpServers);
+    return {
+      ...rest,
+      where: raw.where ?? defaultWhere,
+      ...secrets ? { secrets } : {},
+      ...skills ? { skills } : {},
+      ...references ? { references } : {},
+      ...tools !== undefined ? { tools } : {},
+      ...hooks ? { hooks } : {},
+      ...hosts ? { hosts } : {},
+      ...mcpServers ? { mcpServers } : {}
+    };
+  }
+  const { secrets: _omit, ...rest } = raw;
+  return {
+    ...rest,
+    where: raw.where ?? defaultWhere,
+    ...secrets ? { secrets } : {}
+  };
+}
+function resolveLeaf(raw, defaultWhere) {
+  const { when, ...core } = raw;
+  const resolved = resolveLeafCore(core, defaultWhere);
+  if (when)
+    resolved.when = resolveLeafCore(when, defaultWhere);
+  return resolved;
+}
+function resolveStep(raw, defaultWhere) {
+  if (raw.kind === "command" || raw.kind === "review" || raw.kind === "agent" || raw.kind === "restricted_agent" || raw.kind === "call") {
+    return resolveLeaf(raw, defaultWhere);
+  }
+  if (raw.kind === "again_if" || raw.kind === "end")
+    return raw;
+  const when = raw.when ? resolveLeaf(raw.when, defaultWhere) : undefined;
+  if (raw.kind === "choose") {
+    const cases = {};
+    for (const [k, list] of Object.entries(raw.cases))
+      cases[k] = list.map((rawStep) => resolveStep(rawStep, defaultWhere));
+    const fallback = raw.default?.map((rawStep) => resolveStep(rawStep, defaultWhere));
+    return {
+      id: raw.id,
+      kind: "choose",
+      value: raw.value,
+      cases,
+      ...fallback ? { default: fallback } : {},
+      ...when ? { when } : {}
+    };
+  }
+  if (raw.kind === "parallel") {
+    return {
+      id: raw.id,
+      kind: "parallel",
+      steps: raw.steps.map((rawStep) => resolveStep(rawStep, defaultWhere)),
+      ...when ? { when } : {}
+    };
+  }
+  if (raw.kind === "flow") {
+    const secrets = dedupeStrings(raw.secrets);
+    const { when: _ignored, secrets: _omit, flow: flowAlias, ...rest } = raw;
+    const name = rest.name ?? flowAlias;
+    return {
+      ...rest,
+      ...name ? { name } : {},
+      ...secrets ? { secrets } : {},
+      ...when ? { when } : {}
+    };
+  }
+  const { when: _ignored, ...rest } = raw;
+  return { ...rest, ...when ? { when } : {} };
+}
+function* walkSteps(steps, nested = false) {
+  for (const step of steps) {
+    yield { step, nested };
+    if ("when" in step && step.when)
+      yield { step: step.when, nested: true };
+    if (step.kind === "choose") {
+      for (const branch of Object.values(step.cases))
+        yield* walkSteps(branch, true);
+      if (step.default)
+        yield* walkSteps(step.default, true);
+    } else if (step.kind === "parallel") {
+      yield* walkSteps(step.steps, true);
+    }
+  }
+}
+function allSteps(config) {
+  return [
+    ...config.conditions,
+    ...config.prepare,
+    ...config.steps,
+    ...config.checks,
+    ...config.record,
+    ...config.alerts
+  ];
+}
+function validateAgainIfList(steps, allowAgainIf) {
+  const localIds = new Set(steps.map((s) => s.id));
+  for (const step of steps) {
+    if (step.kind === "again_if") {
+      if (!allowAgainIf)
+        return `nested_again_if:${step.id}`;
+      if (step.from && !localIds.has(step.from))
+        return `unknown_again_if_from:${step.from}`;
+    } else if (step.kind === "choose") {
+      for (const branch of Object.values(step.cases)) {
+        const err = validateAgainIfList(branch, allowAgainIf);
+        if (err)
+          return err;
+      }
+      if (step.default) {
+        const err = validateAgainIfList(step.default, allowAgainIf);
+        if (err)
+          return err;
+      }
+    } else if (step.kind === "parallel") {
+      for (const branch of step.steps) {
+        if (branch.kind === "again_if")
+          return `nested_again_if:${branch.id}`;
+        if (branch.kind === "choose" || branch.kind === "parallel") {
+          const err = validateAgainIfList([branch], allowAgainIf);
+          if (err)
+            return err;
+        }
+      }
+    }
+  }
+  return null;
+}
+function collectWorkflowStepIds(steps, include) {
+  const out = [];
+  const seen = new Set;
+  const visit = (list) => {
+    for (const step of list) {
+      if (step.kind === "again_if" || step.kind === "end")
+        continue;
+      if ((!include || include(step)) && !seen.has(step.id)) {
+        seen.add(step.id);
+        out.push(step.id);
+      }
+      if (step.kind === "choose") {
+        for (const branch of Object.values(step.cases))
+          visit(branch);
+        if (step.default)
+          visit(step.default);
+      } else if (step.kind === "parallel") {
+        visit(step.steps);
+      }
+    }
+  };
+  visit(steps);
+  return out;
+}
+function validateRefs(config) {
+  const tabErr = validateFlowTabs(config)?.code ?? null;
+  if (tabErr)
+    return tabErr;
+  const seen = new Set;
+  for (const hook of config.environment) {
+    if (seen.has(hook.id))
+      return `duplicate_step_id:${hook.id}`;
+    seen.add(hook.id);
+    if (hook.teardown) {
+      const td = `${hook.id}_teardown`;
+      if (seen.has(td))
+        return `duplicate_step_id:${td}`;
+      seen.add(td);
+    }
+  }
+  for (const { step } of walkSteps(allSteps(config))) {
+    if (seen.has(step.id))
+      return `duplicate_step_id:${step.id}`;
+    seen.add(step.id);
+  }
+  const bodyAndChecks = [...config.steps, ...config.checks];
+  const guardable = new Set(collectWorkflowStepIds(bodyAndChecks));
+  const evidenceChecks = new Set(collectWorkflowStepIds(bodyAndChecks, isLeafStep));
+  if (config.guards) {
+    for (const id of [
+      ...config.guards.approvalNodes ?? [],
+      ...config.guards.prGateAfter ?? []
+    ]) {
+      if (!guardable.has(id))
+        return `unknown_guard_node:${id}`;
+    }
+  }
+  if (config.evidence) {
+    for (const id of config.evidence.checks) {
+      if (!evidenceChecks.has(id))
+        return `unknown_evidence_check:${id}`;
+    }
+  }
+  const nonBodySteps = [
+    ...config.conditions,
+    ...config.prepare,
+    ...config.checks,
+    ...config.record,
+    ...config.alerts
+  ];
+  const nonBodyErr = validateAgainIfList(nonBodySteps, false);
+  if (nonBodyErr)
+    return nonBodyErr;
+  return validateAgainIfList(config.steps, true);
+}
+function isLeafStep(step) {
+  return step.kind === "command" || step.kind === "review" || step.kind === "agent" || step.kind === "restricted_agent" || step.kind === "call";
+}
+function normalizeSchedule(raw) {
+  if (!raw)
+    return;
+  if (typeof raw === "string")
+    return { cron: raw, enabled: true };
+  return {
+    ...raw.id ? { id: raw.id } : {},
+    cron: raw.cron,
+    enabled: raw.enabled ?? true,
+    ...raw.values ? { values: raw.values } : {}
+  };
+}
+function parseWorkflowYaml(raw) {
+  let doc;
+  try {
+    doc = $parse(raw);
+  } catch {
+    return "invalid_yaml";
+  }
+  const parsed = flowConfigSchema2.safeParse(doc);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    if (!first)
+      return "invalid_workflow";
+    const path = first.path.reduce((acc, part) => typeof part === "number" ? `${acc}[${part}]` : acc ? `${acc}.${String(part)}` : String(part), "");
+    return path ? `invalid_workflow: ${path}: ${first.message}` : `invalid_workflow: ${first.message}`;
+  }
+  const defaultWhere = parsed.data.defaults?.where ?? "local";
+  const schedule = normalizeSchedule(parsed.data.schedule);
+  const guards = normalizeGuards(parsed.data.guards);
+  const evidence = normalizeEvidence(parsed.data.evidence);
+  const config = {
+    name: parsed.data.name,
+    version: parsed.data.version,
+    workspace: parsed.data.workspace,
+    ...parsed.data.visibility ? { visibility: parsed.data.visibility } : {},
+    ...schedule ? { schedule } : {},
+    ...parsed.data.tabs ? { tabs: parsed.data.tabs } : {},
+    ...parsed.data.defaultTab ? { defaultTab: parsed.data.defaultTab } : {},
+    ...guards ? { guards } : {},
+    ...evidence ? { evidence } : {},
+    values: parsed.data.values ?? {},
+    conditions: (parsed.data.conditions ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    prepare: (parsed.data.prepare ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    environment: (parsed.data.environment ?? []).map((h) => {
+      const secrets = dedupeStrings(h.secrets);
+      const { secrets: _omit, ...rest } = h;
+      return {
+        ...rest,
+        where: h.where ?? defaultWhere,
+        ...secrets ? { secrets } : {}
+      };
+    }),
+    steps: parsed.data.steps.map((s) => resolveStep(s, defaultWhere)),
+    checks: (parsed.data.checks ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    record: (parsed.data.record ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    alerts: (parsed.data.alerts ?? []).map((s) => resolveLeaf(s, defaultWhere))
+  };
+  const err = validateRefs(config);
+  return err ?? config;
+}
+
+// src/gate/git.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync3, realpathSync } from "node:fs";
+import { readFile as readFile2 } from "node:fs/promises";
+import {
+  basename as basename2,
+  dirname as dirname2,
+  isAbsolute,
+  join as join4,
+  relative,
+  resolve as resolve2,
+  sep
+} from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { promisify } from "node:util";
+
+// src/install/index.ts
+import { randomBytes } from "node:crypto";
+import { existsSync as existsSync2, readFileSync } from "node:fs";
+import { cp as cp2, mkdir as mkdir2, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join as join3, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/install/targets.ts
+import { join } from "node:path";
+var DEFAULT_PACKAGE_NAME = "@nostadev/mcp";
+var HARNESSES = [
+  "opencode",
+  "codex",
+  "cursor",
+  "windsurf",
+  "claude"
+];
+function isHarness(value) {
+  return HARNESSES.includes(value);
+}
+function resolveTarget(input) {
+  const { harness, scope, cwd, homeDir } = input;
+  const workflowsDir = scope === "project" ? join(cwd, ".nosta", "workflows") : null;
+  if (harness === "opencode") {
+    const base = scope === "global" ? join(homeDir, ".config", "opencode") : join(cwd, ".opencode");
+    return {
+      harness,
+      scope,
+      configPath: scope === "global" ? join(base, "opencode.json") : join(cwd, "opencode.json"),
+      configFormat: "opencode-json",
+      skillsDir: join(base, "skills"),
+      workflowsDir,
+      pluginPath: join(base, "plugins", "nosta-approve-guard.ts")
+    };
+  }
+  if (harness === "codex") {
+    const configRoot = scope === "global" ? join(homeDir, ".codex") : join(cwd, ".codex");
+    const skillsDir = scope === "global" ? join(homeDir, ".codex", "skills") : join(cwd, ".agents", "skills");
+    return {
+      harness,
+      scope,
+      configPath: join(configRoot, "config.toml"),
+      configFormat: "codex-toml",
+      skillsDir,
+      workflowsDir,
+      pluginPath: null
+    };
+  }
+  if (harness === "cursor") {
+    const base = scope === "global" ? join(homeDir, ".cursor") : join(cwd, ".cursor");
+    return {
+      harness,
+      scope,
+      configPath: join(base, "mcp.json"),
+      configFormat: "mcp-servers-json",
+      skillsDir: join(base, "skills"),
+      workflowsDir,
+      pluginPath: null
+    };
+  }
+  if (harness === "windsurf") {
+    const base = scope === "global" ? join(homeDir, ".codeium", "windsurf") : join(cwd, ".windsurf");
+    return {
+      harness,
+      scope,
+      configPath: join(base, scope === "global" ? "mcp_config.json" : "mcp.json"),
+      configFormat: "mcp-servers-json",
+      skillsDir: join(base, "skills"),
+      workflowsDir,
+      pluginPath: null
+    };
+  }
+  const claudeSkills = scope === "global" ? join(homeDir, ".claude", "skills") : join(cwd, ".claude", "skills");
+  return {
+    harness,
+    scope,
+    configPath: scope === "global" ? join(homeDir, ".claude.json") : join(cwd, ".mcp.json"),
+    configFormat: "mcp-servers-json",
+    skillsDir: claudeSkills,
+    workflowsDir,
+    pluginPath: null
+  };
+}
+
+// src/install/writers.ts
+import { existsSync } from "node:fs";
+import { cp, mkdir, readdir } from "node:fs/promises";
+import { join as join2 } from "node:path";
+function parseJsonObject(text) {
+  const trimmed = text.trim();
+  if (!trimmed)
+    return {};
+  const parsed = JSON.parse(trimmed);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("existing config must be a JSON object");
+  }
+  return parsed;
+}
+function asObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...value };
+  }
+  return {};
+}
+function mergeOpenCodeJson(input) {
+  const root = parseJsonObject(input.existingText);
+  if (typeof root.$schema !== "string") {
+    root.$schema = "https://opencode.ai/config.json";
+  }
+  const mcp = asObject(root.mcp);
+  const existingNosta = asObject(mcp.nosta);
+  mcp.nosta = {
+    ...existingNosta,
+    type: "local",
+    command: ["npx", "-y", input.packageName],
+    enabled: true
+  };
+  root.mcp = mcp;
+  const permission = asObject(root.permission);
+  permission.nosta_approve_flow = "ask";
+  permission.nosta_bypass_flow = "ask";
+  root.permission = permission;
+  return `${JSON.stringify(root, null, 2)}
+`;
+}
+function mergeMcpServersJson(input) {
+  const root = parseJsonObject(input.existingText);
+  const mcpServers = asObject(root.mcpServers);
+  const existingNosta = asObject(mcpServers.nosta);
+  mcpServers.nosta = {
+    ...existingNosta,
+    command: "npx",
+    args: ["-y", input.packageName]
+  };
+  root.mcpServers = mcpServers;
+  return `${JSON.stringify(root, null, 2)}
+`;
+}
+function mergeCodexToml(input) {
+  const managedLines = [
+    "[mcp_servers.nosta]",
+    'command = "npx"',
+    `args = ["-y", ${JSON.stringify(input.packageName)}]`,
+    "enabled = true"
+  ];
+  const managedKeyRe = /^\s*(?:command|args|enabled)\s*=/;
+  const lines = input.existingText.length > 0 ? input.existingText.replace(/\r\n/g, `
+`).split(`
+`) : [];
+  const headerRe = /^\s*\[mcp_servers\.nosta\]\s*(?:#.*)?$/;
+  const anyTableRe = /^\s*\[/;
+  const startIdx = lines.findIndex((line) => headerRe.test(line));
+  if (startIdx >= 0) {
+    let endIdx = startIdx + 1;
+    while (endIdx < lines.length && !anyTableRe.test(lines[endIdx] ?? "")) {
+      endIdx += 1;
+    }
+    const preserved = lines.slice(startIdx + 1, endIdx).filter((line) => line.trim().length > 0 && !managedKeyRe.test(line));
+    const block = [...managedLines, ...preserved].join(`
+`);
+    const before = lines.slice(0, startIdx);
+    const after = lines.slice(endIdx);
+    const replaced = [
+      ...before,
+      block,
+      ...after.length > 0 ? ["", ...after] : []
+    ].join(`
+`).replace(/\n{3,}/g, `
+
+`);
+    return `${replaced.trimEnd()}
+`;
+  }
+  const block = managedLines.join(`
+`);
+  const trimmed = input.existingText.trimEnd();
+  return trimmed.length > 0 ? `${trimmed}
+
+${block}
+` : `${block}
+`;
+}
+function mergeHarnessConfig(input) {
+  if (input.format === "opencode-json") {
+    return mergeOpenCodeJson({
+      existingText: input.existingText,
+      packageName: input.packageName
+    });
+  }
+  if (input.format === "codex-toml") {
+    return mergeCodexToml({
+      existingText: input.existingText,
+      packageName: input.packageName
+    });
+  }
+  return mergeMcpServersJson({
+    existingText: input.existingText,
+    packageName: input.packageName
+  });
+}
+async function copySkills(input) {
+  if (!existsSync(input.sourceDir))
+    return [];
+  const entries = await readdir(input.sourceDir, { withFileTypes: true });
+  const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  if (!input.dryRun) {
+    await mkdir(input.targetDir, { recursive: true });
+    for (const name of names) {
+      await cp(join2(input.sourceDir, name), join2(input.targetDir, name), {
+        recursive: true,
+        force: true
+      });
+    }
+  }
+  return names;
+}
+async function copyWorkflowTemplates(input) {
+  if (!existsSync(input.sourceDir))
+    return [];
+  const entries = await readdir(input.sourceDir, { withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name)).map((entry) => entry.name).sort();
+  const copied = [];
+  if (!input.dryRun && files.length > 0) {
+    await mkdir(input.targetDir, { recursive: true });
+  }
+  for (const name of files) {
+    const stem = name.replace(/\.ya?ml$/i, "");
+    if (existsSync(join2(input.targetDir, `${stem}.yaml`)) || existsSync(join2(input.targetDir, `${stem}.yml`))) {
+      continue;
+    }
+    if (!input.dryRun) {
+      await cp(join2(input.sourceDir, name), join2(input.targetDir, name));
+    }
+    copied.push(name);
+  }
+  return copied;
+}
+
+// src/install/index.ts
+function usageText() {
+  return [
+    "Usage: nosta-mcp install <harness> [--global | --project] [--pack <name>] [--dry-run]",
+    `Harnesses: ${HARNESSES.join(", ")}`,
+    "Run with no arguments to start the Nosta stdio MCP server."
+  ].join(`
+`);
+}
+function resolveAssetsDir(baseDir) {
+  const candidates = [
+    resolve(baseDir),
+    resolve(baseDir, ".."),
+    resolve(baseDir, "../..")
+  ];
+  for (const dir of candidates) {
+    if (existsSync2(join3(dir, "skills")))
+      return dir;
+  }
+  throw new Error(`could not locate bundled skills directory from ${baseDir}`);
+}
+function resolveDefaultPackageName(assetsDir) {
+  const envName = process.env.NOSTA_MCP_PACKAGE?.trim();
+  if (envName)
+    return envName;
+  const pkgPath = join3(assetsDir, "package.json");
+  if (existsSync2(pkgPath)) {
+    const parsed = JSON.parse(readFileSync(pkgPath, "utf8"));
+    if (typeof parsed.name === "string" && parsed.name.trim() && parsed.private !== true) {
+      return parsed.name.trim();
+    }
+  }
+  return DEFAULT_PACKAGE_NAME;
+}
+function scanInstallFlags(args) {
+  let harnessArg = null;
+  let scope = "global";
+  let dryRun = false;
+  let packageName = null;
+  const packs = [];
+  for (let i = 0;i < args.length; i += 1) {
+    const token = args[i] ?? "";
+    if (token === "--project" || token === "-p")
+      scope = "project";
+    else if (token === "--global" || token === "-g")
+      scope = "global";
+    else if (token === "--dry-run")
+      dryRun = true;
+    else if (token === "--package" || token === "--pack") {
+      const next = args[i + 1];
+      if (!next)
+        throw new Error(`missing value for ${token}`);
+      if (token === "--package")
+        packageName = next;
+      else if (!packs.includes(next))
+        packs.push(next);
+      i += 1;
+    } else if (token.startsWith("-"))
+      throw new Error(`unknown option: ${token}
+${usageText()}`);
+    else if (!harnessArg)
+      harnessArg = token.toLowerCase();
+    else
+      throw new Error(`unexpected argument: ${token}
+${usageText()}`);
+  }
+  return { harnessArg, scope, dryRun, packageName, packs };
+}
+function parseInstallArgs(input) {
+  const { harnessArg, scope, dryRun, packageName, packs } = scanInstallFlags(input.argv);
+  if (!harnessArg || !isHarness(harnessArg)) {
+    throw new Error(`unsupported or missing harness: ${harnessArg ?? "(none)"}
+${usageText()}`);
+  }
+  const scriptDir = dirname(fileURLToPath(import.meta.url));
+  const assetsDir = input.assetsDir ? resolve(input.assetsDir) : resolveAssetsDir(scriptDir);
+  return {
+    harness: harnessArg,
+    scope,
+    cwd: resolve(input.cwd ?? process.cwd()),
+    homeDir: resolve(input.homeDir ?? homedir()),
+    assetsDir,
+    packageName: packageName ?? resolveDefaultPackageName(assetsDir),
+    packs,
+    dryRun
+  };
+}
+function validatePacks(options) {
+  const packsRoot = join3(options.assetsDir, "packs");
+  for (const pack of options.packs) {
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(pack)) {
+      throw new Error(`invalid pack name: ${pack}`);
+    }
+    if (!existsSync2(join3(packsRoot, pack))) {
+      throw new Error(`unknown starter pack: ${pack}`);
+    }
+  }
+}
+async function runInstall(options) {
+  validatePacks(options);
+  const target = resolveTarget({
+    harness: options.harness,
+    scope: options.scope,
+    cwd: options.cwd,
+    homeDir: options.homeDir
+  });
+  const existingText = existsSync2(target.configPath) ? await readFile(target.configPath, "utf8") : "";
+  const nextConfig = mergeHarnessConfig({
+    format: target.configFormat,
+    existingText,
+    packageName: options.packageName
+  });
+  if (!options.dryRun) {
+    await mkdir2(dirname(target.configPath), { recursive: true });
+    const tmpPath = `${target.configPath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+    await writeFile(tmpPath, nextConfig, "utf8");
+    await rename(tmpPath, target.configPath);
+  }
+  const assetRoots = [
+    options.assetsDir,
+    ...options.packs.map((pack) => join3(options.assetsDir, "packs", pack))
+  ];
+  const copiedSkills = new Set;
+  const copiedWorkflows = new Set;
+  for (const root of assetRoots) {
+    for (const skill of await copySkills({
+      sourceDir: join3(root, "skills"),
+      targetDir: target.skillsDir,
+      dryRun: options.dryRun
+    })) {
+      copiedSkills.add(skill);
+    }
+    if (target.workflowsDir) {
+      for (const workflow of await copyWorkflowTemplates({
+        sourceDir: join3(root, "workflows"),
+        targetDir: target.workflowsDir,
+        dryRun: options.dryRun
+      })) {
+        copiedWorkflows.add(workflow);
+      }
+    }
+  }
+  let installedPluginPath = null;
+  if (target.pluginPath) {
+    const sourceGuard = join3(options.assetsDir, "hooks", "opencode-approve-guard.ts");
+    if (!existsSync2(sourceGuard)) {
+      throw new Error(`bundled OpenCode approval guard missing: ${sourceGuard}`);
+    }
+    if (!options.dryRun) {
+      await mkdir2(dirname(target.pluginPath), { recursive: true });
+      await cp2(sourceGuard, target.pluginPath, { force: true });
+    }
+    installedPluginPath = target.pluginPath;
+  }
+  return {
+    harness: target.harness,
+    scope: target.scope,
+    configPath: target.configPath,
+    skillsDir: target.skillsDir,
+    skillsCopied: [...copiedSkills].sort(),
+    packsInstalled: [...options.packs],
+    workflowsCopied: [...copiedWorkflows].sort(),
+    pluginPath: installedPluginPath,
+    dryRun: options.dryRun
+  };
+}
+function formatInstallSummary(result) {
+  const verb = result.dryRun ? "Would install" : "Installed";
+  const lines = [
+    `${verb} Nosta for ${result.harness} (${result.scope}):`,
+    `  config: ${result.configPath}`,
+    `  skills: ${result.skillsDir} (${result.skillsCopied.length} skills)`
+  ];
+  if (result.packsInstalled.length > 0) {
+    lines.push(`  packs:  ${result.packsInstalled.join(", ")}`);
+  }
+  if (result.workflowsCopied.length > 0) {
+    lines.push(`  flows:  .nosta/workflows (${result.workflowsCopied.length} templates)`);
+  } else if (result.scope === "global" && result.packsInstalled.length > 0) {
+    lines.push("  flows:  skipped in global scope (re-run with --project to copy .nosta/workflows templates)");
+  }
+  if (result.pluginPath) {
+    lines.push(`  guard:  ${result.pluginPath}`);
+  }
+  lines.push("");
+  lines.push("Next: export NOSTA_BACKEND_URL=https://app.nosta.dev and NOSTA_PLUGIN_TOKEN=<your-token>");
+  return `${lines.join(`
+`)}
+`;
+}
+
 // src/gate/policy.ts
 import { basename } from "node:path";
 var workflowConfigSchema = object({
@@ -14135,36 +15689,77 @@ var workflowConfigSchema = object({
   allowBeforeGo: array(string2().min(1)).default([]),
   gateBeforeGo: array(string2().min(1)).default([]),
   prGateAfter: array(string2().min(1)).default([]),
-  tabs: array(flowTabSchema).max(16).optional()
+  tabs: array(flowTabSchema).max(16).optional(),
+  defaultTab: flowTabIdSchema.optional()
 }).superRefine((data, ctx) => {
   const nodeSet = new Set(data.nodes);
   if (nodeSet.size !== data.nodes.length) {
-    ctx.addIssue({ code: "custom", path: ["nodes"], message: "nodes must not contain duplicates" });
+    ctx.addIssue({
+      code: "custom",
+      path: ["nodes"],
+      message: "nodes must not contain duplicates"
+    });
   }
   for (const node of data.approvalNodes) {
     if (!nodeSet.has(node)) {
-      ctx.addIssue({ code: "custom", path: ["approvalNodes"], message: `approvalNode "${node}" is not in nodes` });
+      ctx.addIssue({
+        code: "custom",
+        path: ["approvalNodes"],
+        message: `approvalNode "${node}" is not in nodes`
+      });
     }
   }
   for (const node of data.prGateAfter) {
     if (!nodeSet.has(node)) {
-      ctx.addIssue({ code: "custom", path: ["prGateAfter"], message: `prGateAfter "${node}" is not in nodes` });
+      ctx.addIssue({
+        code: "custom",
+        path: ["prGateAfter"],
+        message: `prGateAfter "${node}" is not in nodes`
+      });
     }
   }
-  if (data.tabs) {
-    const seenTabs = new Set;
-    for (const tab of data.tabs) {
-      if (seenTabs.has(tab.id)) {
-        ctx.addIssue({ code: "custom", path: ["tabs"], message: `duplicate tab id "${tab.id}"` });
-      }
-      seenTabs.add(tab.id);
-    }
+  const tabError = validateFlowTabs(data);
+  if (tabError) {
+    ctx.addIssue({
+      code: "custom",
+      path: [tabError.path],
+      message: tabError.message
+    });
   }
 });
-var PR_GATE_TOOLS = new Set(["pull_request_create", "mcp_t3-code_pull_request_create", "mcp__t3-code__pull_request_create"]);
-var WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "write_file", "edit_file"]);
+var BLANK_SLATE_CONFIG = {
+  version: 1,
+  nodes: ["work"],
+  approvalNodes: [],
+  allowBeforeGo: [],
+  gateBeforeGo: [],
+  prGateAfter: []
+};
+function isEnforcedConfig(config) {
+  return config.approvalNodes.length > 0 || config.gateBeforeGo.length > 0 || config.prGateAfter.length > 0;
+}
+var PR_GATE_TOOLS = new Set([
+  "pull_request_create",
+  "mcp_t3-code_pull_request_create",
+  "mcp__t3-code__pull_request_create"
+]);
+var WRITE_TOOLS = new Set([
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "write_file",
+  "edit_file"
+]);
 var SHELL_TOOLS = new Set(["Bash", "run_command"]);
-var MUTATING_SHELL_CMDS = new Set(["tee", "rm", "mv", "cp", "touch", "truncate", "sed"]);
+var MUTATING_SHELL_CMDS = new Set([
+  "tee",
+  "rm",
+  "mv",
+  "cp",
+  "touch",
+  "truncate",
+  "sed"
+]);
 function commandSegments(command) {
   return command.split(/(?:&&|\|\||[;|\n])/).map((seg) => seg.trim().split(/\s+/).filter(Boolean)).filter((tokens) => tokens.length > 0);
 }
@@ -14270,9 +15865,9 @@ function describeNextAction(binding) {
   if (!current)
     return "All workflow nodes are complete.";
   if (binding.config.approvalNodes.includes(current)) {
-    return `Request owner approval via nosta_flow_approve(node: "${current}") before editing gated product files.`;
+    return `Request owner approval via approve_flow(node: "${current}") before editing gated product files.`;
   }
-  return `Complete "${current}" and call nosta_flow_advance(node: "${current}", summary: "...").`;
+  return `Complete "${current}" and call advance_flow(node: "${current}", summary: "...").`;
 }
 function toStepReportStatus(status) {
   if (status === "active")
@@ -14310,13 +15905,22 @@ function buildCloudReport(binding, now) {
   const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
   const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
   const values = binding.values && Object.keys(binding.values).length > 0 ? binding.values : undefined;
-  return { status, finishedAt: status === "running" ? null : now, steps, ...values ? { values } : {} };
+  return {
+    status,
+    finishedAt: status === "running" ? null : now,
+    steps,
+    ...values ? { values } : {}
+  };
 }
 function cloneBinding(binding) {
   const nodes = {};
   for (const [k, v] of Object.entries(binding.nodes))
     nodes[k] = { ...v };
-  return { ...binding, nodes, ...binding.values ? { values: { ...binding.values } } : {} };
+  return {
+    ...binding,
+    nodes,
+    ...binding.values ? { values: { ...binding.values } } : {}
+  };
 }
 function checkGatedPath(input) {
   const { binding, config, targetPath, toRelative } = input;
@@ -14341,12 +15945,22 @@ function evaluatePrAction(binding, config) {
       currentNode: binding.currentNode
     };
   }
-  return { decision: "allow", reason: "prGateAfter nodes are complete", flowId: binding.flowId, currentNode: binding.currentNode };
+  return {
+    decision: "allow",
+    reason: "prGateAfter nodes are complete",
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
 }
 function evaluatePreApproval(input) {
   const { binding, config, tool, path, command, toRelative } = input;
   if (WRITE_TOOLS.has(tool) && path) {
-    const blocked = checkGatedPath({ binding, config, targetPath: path, toRelative });
+    const blocked = checkGatedPath({
+      binding,
+      config,
+      targetPath: path,
+      toRelative
+    });
     if (blocked)
       return blocked;
   }
@@ -14361,7 +15975,12 @@ function evaluatePreApproval(input) {
     };
   }
   for (const target of shellMutatedPaths(command)) {
-    const blocked = checkGatedPath({ binding, config, targetPath: target, toRelative });
+    const blocked = checkGatedPath({
+      binding,
+      config,
+      targetPath: target,
+      toRelative
+    });
     if (blocked)
       return blocked;
   }
@@ -14378,18 +15997,38 @@ function evaluatePolicy(input) {
     if (blocked)
       return blocked;
   }
-  return { decision: "allow", reason: "action permitted by active workflow phase", flowId: binding.flowId, currentNode: binding.currentNode };
+  return {
+    decision: "allow",
+    reason: "action permitted by active workflow phase",
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
 }
 function evaluateStopDecision(input) {
   const { binding, config, bypassActive } = input;
   if (bypassActive) {
-    return { decision: "allow", reason: "temporary bypass active", flowId: binding.flowId, currentNode: binding.currentNode };
+    return {
+      decision: "allow",
+      reason: "temporary bypass active",
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
   }
   if (!binding.currentNode) {
-    return { decision: "allow", reason: "all workflow nodes complete", flowId: binding.flowId, currentNode: null };
+    return {
+      decision: "allow",
+      reason: "all workflow nodes complete",
+      flowId: binding.flowId,
+      currentNode: null
+    };
   }
   if (config.approvalNodes.includes(binding.currentNode)) {
-    return { decision: "allow", reason: `waiting for owner approval on "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
+    return {
+      decision: "allow",
+      reason: `waiting for owner approval on "${binding.currentNode}"`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
   }
   const hasEvidence = binding.observed.some((ev) => ev.node === binding.currentNode);
   if (!hasEvidence) {
@@ -14400,19 +16039,24 @@ function evaluateStopDecision(input) {
       currentNode: binding.currentNode
     };
   }
-  return { decision: "allow", reason: `evidence recorded for active node "${binding.currentNode}"`, flowId: binding.flowId, currentNode: binding.currentNode };
+  return {
+    decision: "allow",
+    reason: `evidence recorded for active node "${binding.currentNode}"`,
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
 }
 
 // src/gate/git.ts
 var execFileAsync = promisify(execFile);
 function resolveRealPath(targetPath) {
-  const abs = resolve3(targetPath);
+  const abs = resolve2(targetPath);
   const tail = [];
   let cursor = abs;
   while (true) {
     try {
-      const real = realpathSync2(cursor);
-      return tail.length > 0 ? join5(real, ...tail.reverse()) : real;
+      const real = realpathSync(cursor);
+      return tail.length > 0 ? join4(real, ...tail.reverse()) : real;
     } catch {
       const parent = dirname2(cursor);
       if (parent === cursor)
@@ -14439,25 +16083,135 @@ async function runGit(cwd, args) {
 }
 async function resolveRepoBranch(input) {
   if (input.repoRoot && input.branch) {
-    return { repoRoot: canonicalRepoRoot(input.repoRoot), branch: input.branch.trim() };
+    return {
+      repoRoot: canonicalRepoRoot(input.repoRoot),
+      branch: input.branch.trim()
+    };
   }
   const cwd = input.repoRoot ?? process.cwd();
   const root = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
   if (!root)
     throw new Error("could not resolve git repository context; pass { repoRoot, branch }");
   const branch = input.branch?.trim() || await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]) || await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) || await runGit(cwd, ["rev-parse", "--short", "HEAD"]) || "HEAD";
-  return { repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root), branch };
+  return {
+    repoRoot: input.repoRoot ? canonicalRepoRoot(input.repoRoot) : canonicalRepoRoot(root),
+    branch
+  };
 }
-var WORKFLOW_CONFIG_FILES = ["workflow.yaml", "workflow.yml", "workflow.json"];
-async function loadWorkflowConfig(repoRoot) {
-  const baseDir = join5(canonicalRepoRoot(repoRoot), ".nosta");
+async function resolveWorkspaceName(repoRoot) {
+  const canonical = canonicalRepoRoot(repoRoot);
+  const commonDir = await runGit(canonical, ["rev-parse", "--git-common-dir"]);
+  if (commonDir) {
+    const resolved = resolveRealPath(isAbsolute(commonDir) ? commonDir : resolve2(canonical, commonDir));
+    const base = basename2(resolved);
+    if (base === ".git") {
+      const parentName = basename2(dirname2(resolved));
+      if (parentName)
+        return parentName;
+    } else if (base) {
+      return base.replace(/\.git$/, "") || base;
+    }
+  }
+  return basename2(canonical) || "workspace";
+}
+var WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var WORKFLOW_CONFIG_FILES = [
+  "workflow.yaml",
+  "workflow.yml",
+  "workflow.json"
+];
+function flowDefinitionToWorkflowConfig(def) {
+  const nodes = collectWorkflowStepIds([...def.steps, ...def.checks]);
+  const seen = new Set(nodes);
+  for (const id of [
+    ...def.guards?.approvalNodes ?? [],
+    ...def.guards?.prGateAfter ?? []
+  ]) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      nodes.push(id);
+    }
+  }
+  const parsed = workflowConfigSchema.safeParse({
+    version: 1,
+    nodes: nodes.length > 0 ? nodes : ["work"],
+    approvalNodes: def.guards?.approvalNodes ?? [],
+    allowBeforeGo: def.guards?.allowBeforeApproval ?? [],
+    gateBeforeGo: def.guards?.gateBeforeApproval ?? [],
+    prGateAfter: def.guards?.prGateAfter ?? [],
+    ...def.tabs ? { tabs: def.tabs } : {},
+    ...def.defaultTab ? { defaultTab: def.defaultTab } : {}
+  });
+  if (!parsed.success) {
+    throw new Error(`invalid workflow config: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  return parsed.data;
+}
+async function readBundledWorkflowYaml(workflowName) {
+  if (!WORKFLOW_NAME_RE.test(workflowName))
+    return null;
+  const here = dirname2(fileURLToPath2(import.meta.url));
+  let assetsDir;
+  try {
+    assetsDir = resolveAssetsDir(here);
+  } catch {
+    return null;
+  }
+  const dir = join4(assetsDir, "workflows");
+  for (const ext of ["yaml", "yml"]) {
+    const filePath = join4(dir, `${workflowName}.${ext}`);
+    if (existsSync3(filePath))
+      return readFile2(filePath, "utf8");
+  }
+  return null;
+}
+async function loadNamedYamlWorkflowConfig(repoRoot, workflowName) {
+  if (!WORKFLOW_NAME_RE.test(workflowName)) {
+    throw new Error(`invalid workflow name: ${workflowName}`);
+  }
+  const dir = join4(canonicalRepoRoot(repoRoot), ".nosta", "workflows");
+  for (const ext of ["yaml", "yml"]) {
+    const filePath = join4(dir, `${workflowName}.${ext}`);
+    if (toRepoRelativePath(repoRoot, filePath) === null) {
+      throw new Error(`workflow config escapes repository root: .nosta/workflows/${workflowName}.${ext}`);
+    }
+    try {
+      const text = await readFile2(filePath, "utf8");
+      const parsed = parseWorkflowYaml(text);
+      if (typeof parsed === "string") {
+        throw new Error(`invalid .nosta/workflows/${workflowName}.${ext}: ${parsed}`);
+      }
+      return flowDefinitionToWorkflowConfig(parsed);
+    } catch (error) {
+      if (error.code === "ENOENT")
+        continue;
+      throw error;
+    }
+  }
+  const bundled = await readBundledWorkflowYaml(workflowName);
+  if (bundled !== null) {
+    const parsed = parseWorkflowYaml(bundled);
+    if (typeof parsed === "string") {
+      throw new Error(`invalid bundled workflow ${workflowName}: ${parsed}`);
+    }
+    return flowDefinitionToWorkflowConfig(parsed);
+  }
+  throw new Error(`workflow_not_found:${workflowName}`);
+}
+async function loadWorkflowConfig(repoRoot, workflowName) {
+  if (workflowName)
+    return loadNamedYamlWorkflowConfig(repoRoot, workflowName);
+  const baseDir = join4(canonicalRepoRoot(repoRoot), ".nosta");
   let fileName = null;
   let filePath = "";
   let text = "";
   for (const candidate of WORKFLOW_CONFIG_FILES) {
-    const candidatePath = join5(baseDir, candidate);
+    const candidatePath = join4(baseDir, candidate);
+    if (toRepoRelativePath(repoRoot, candidatePath) === null) {
+      throw new Error(`workflow config escapes repository root: .nosta/${candidate}`);
+    }
     try {
-      text = await readFile3(candidatePath, "utf8");
+      text = await readFile2(candidatePath, "utf8");
       fileName = candidate;
       filePath = candidatePath;
       break;
@@ -14482,14 +16236,603 @@ async function loadWorkflowConfig(repoRoot) {
   }
   return parsed.data;
 }
+var GITHUB_ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/(\d+)(?:[/?#].*)?$/;
+function parseGitHubIssueUrl(ticketUrl) {
+  const match = GITHUB_ISSUE_URL_RE.exec(ticketUrl.trim());
+  if (!match?.[1] || !match[2])
+    return null;
+  return { repo: match[1], number: match[2] };
+}
+async function fetchGitHubIssueBody(ticketUrl) {
+  const issue = parseGitHubIssueUrl(ticketUrl);
+  if (!issue)
+    return null;
+  try {
+    const { stdout } = await execFileAsync("gh", [
+      "issue",
+      "view",
+      issue.number,
+      "--repo",
+      issue.repo,
+      "--json",
+      "body",
+      "--jq",
+      ".body"
+    ], { timeout: 5000 });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (error) {
+    console.error("[gate] fetchGitHubIssueBody failed", {
+      repo: issue.repo,
+      number: issue.number,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
 function toRepoRelativePath(repoRoot, targetPath) {
   const root = canonicalRepoRoot(repoRoot);
-  const absTarget = isAbsolute(targetPath) ? resolve3(targetPath) : resolve3(root, targetPath);
+  const absTarget = isAbsolute(targetPath) ? resolve2(targetPath) : resolve2(root, targetPath);
   const realTarget = resolveRealPath(absTarget);
   const rel = relative(root, realTarget);
   if (rel.startsWith("..") || isAbsolute(rel))
     return null;
   return rel.split(sep).join("/");
+}
+
+// src/flows/validate.ts
+var validateFlowInputSchema = object({
+  path: string2().trim().min(1).optional().describe("Path to a workflow YAML file (absolute or relative to repoRoot)."),
+  workflow: string2().trim().min(1).optional().describe("Workflow name under .nosta/workflows/<name>.yaml."),
+  yaml: string2().min(1).optional().describe("Inline YAML text to validate without reading from disk."),
+  repoRoot: string2().trim().min(1).optional().describe("Git repository root for resolving relative skills, references, and workflows."),
+  checkSecrets: boolean2().optional().describe("When true (default), verify declared secret names against backend /api/secrets.")
+}).superRefine((data, ctx) => {
+  const sources = [
+    data.path !== undefined,
+    data.workflow !== undefined,
+    data.yaml !== undefined
+  ].filter(Boolean).length;
+  if (sources !== 1) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide exactly one of { path }, { workflow }, or { yaml }"
+    });
+  }
+});
+function collectLeafPrimitives(step, acc) {
+  if ("outputs" in step && step.outputs) {
+    const count = Array.isArray(step.outputs) ? step.outputs.length : Object.keys(step.outputs).length;
+    if (count > 0)
+      acc.hasOutputs = true;
+  }
+  if ("secrets" in step) {
+    for (const s of step.secrets ?? [])
+      acc.secrets.add(s);
+  }
+  if (step.kind === "restricted_agent") {
+    for (const s of step.skills ?? [])
+      acc.skills.add(s);
+    for (const r of step.references ?? [])
+      acc.references.add(r);
+    for (const hook of step.hooks ?? []) {
+      for (const s of hook.secrets ?? [])
+        acc.secrets.add(s);
+    }
+  }
+}
+function collectDefinitionPrimitives(def) {
+  const acc = {
+    skills: new Set,
+    references: new Set,
+    secrets: new Set,
+    hasOutputs: false
+  };
+  for (const env of def.environment) {
+    for (const s of env.secrets ?? [])
+      acc.secrets.add(s);
+  }
+  const all = [
+    ...def.conditions,
+    ...def.prepare,
+    ...def.steps,
+    ...def.checks,
+    ...def.record,
+    ...def.alerts
+  ];
+  for (const { step } of walkSteps(all)) {
+    if ("when" in step && step.when)
+      collectLeafPrimitives(step.when, acc);
+    if (isLeafStep(step))
+      collectLeafPrimitives(step, acc);
+    else if (step.kind === "flow") {
+      for (const s of step.secrets ?? [])
+        acc.secrets.add(s);
+    }
+  }
+  return {
+    skills: Array.from(acc.skills),
+    references: Array.from(acc.references),
+    secrets: Array.from(acc.secrets),
+    hasOutputs: acc.hasOutputs
+  };
+}
+async function resolveOptionalRepoRoot(explicit) {
+  if (explicit)
+    return canonicalRepoRoot(explicit);
+  try {
+    const resolved = await resolveRepoBranch({});
+    return resolved.repoRoot;
+  } catch {
+    return null;
+  }
+}
+async function readWorkflowSource(input) {
+  if (input.args.yaml !== undefined)
+    return { ok: true, text: input.args.yaml };
+  if (input.args.workflow !== undefined) {
+    const name = input.args.workflow;
+    if (!WORKFLOW_NAME_RE.test(name))
+      return { ok: false, error: `invalid workflow name: ${name}` };
+    if (input.repoRoot) {
+      const dir = join5(input.repoRoot, ".nosta", "workflows");
+      for (const ext of ["yaml", "yml"]) {
+        const candidate = join5(dir, `${name}.${ext}`);
+        if (toRepoRelativePath(input.repoRoot, candidate) === null) {
+          return {
+            ok: false,
+            error: `workflow escapes repository root: .nosta/workflows/${name}.${ext}`
+          };
+        }
+        try {
+          return { ok: true, text: await readFile3(candidate, "utf8") };
+        } catch (error) {
+          if (error.code === "ENOENT")
+            continue;
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+    }
+    const bundled = await readBundledWorkflowYaml(name);
+    if (bundled !== null)
+      return { ok: true, text: bundled };
+    return { ok: false, error: `workflow_not_found:${name}` };
+  }
+  const rawPath = input.args.path;
+  const target = isAbsolute2(rawPath) ? resolve3(rawPath) : input.repoRoot ? resolve3(input.repoRoot, rawPath) : resolve3(rawPath);
+  if (input.repoRoot && toRepoRelativePath(input.repoRoot, target) === null) {
+    return {
+      ok: false,
+      error: `workflow path escapes repository root: ${rawPath}`
+    };
+  }
+  try {
+    return { ok: true, text: await readFile3(target, "utf8") };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+async function checkRepoFiles(input) {
+  const resolved = [];
+  for (const rel of input.paths) {
+    const abs = resolve3(input.repoRoot, rel);
+    if (toRepoRelativePath(input.repoRoot, abs) === null) {
+      input.errors.push(`${input.kind}_escapes_repo:${rel}`);
+      continue;
+    }
+    try {
+      const info = await stat(abs);
+      if (!info.isFile())
+        input.errors.push(`${input.kind}_not_a_file:${rel}`);
+      else
+        resolved.push(rel);
+    } catch {
+      input.errors.push(`missing_${input.kind}:${rel}`);
+    }
+  }
+  return resolved;
+}
+async function findMissingSecrets(input) {
+  if (!input.backend || input.required.length === 0)
+    return [];
+  const raw = await input.backend.request(getListSecretsUrl());
+  const parsed = parseJsonResponse({
+    raw,
+    schema: secretListReplySchema,
+    label: "/api/secrets"
+  });
+  const available = new Set(parsed.names);
+  return input.required.filter((name) => !available.has(name));
+}
+async function validateFlow(input) {
+  const repoRoot = await resolveOptionalRepoRoot(input.args.repoRoot);
+  const source = await readWorkflowSource({ args: input.args, repoRoot });
+  if (!source.ok) {
+    return {
+      ok: false,
+      errors: [source.error],
+      warnings: [],
+      resolvedSkills: [],
+      resolvedReferences: [],
+      missingSecrets: [],
+      hasEvidence: false,
+      stepPlan: []
+    };
+  }
+  const parsed = parseWorkflowYaml(source.text);
+  if (typeof parsed === "string") {
+    return {
+      ok: false,
+      errors: [parsed],
+      warnings: [],
+      resolvedSkills: [],
+      resolvedReferences: [],
+      missingSecrets: [],
+      hasEvidence: false,
+      stepPlan: []
+    };
+  }
+  const errors = [];
+  const warnings = [];
+  const prims = collectDefinitionPrimitives(parsed);
+  let resolvedSkills = [];
+  let resolvedReferences = [];
+  if (repoRoot) {
+    resolvedSkills = await checkRepoFiles({
+      repoRoot,
+      paths: prims.skills,
+      kind: "skill",
+      errors
+    });
+    resolvedReferences = await checkRepoFiles({
+      repoRoot,
+      paths: prims.references,
+      kind: "reference",
+      errors
+    });
+  } else if (prims.skills.length > 0 || prims.references.length > 0) {
+    errors.push("repo_root_required_for_skills_or_references");
+  }
+  const hasEvidence = Boolean(parsed.evidence && (parsed.evidence.artifacts.length > 0 || parsed.evidence.checks.length > 0) || parsed.checks.length > 0 || prims.hasOutputs);
+  if (!hasEvidence) {
+    if (parsed.evidence?.required)
+      errors.push("evidence_required_but_none_declared");
+    else
+      warnings.push("workflow declares no evidence checks, artifacts, or step outputs");
+  }
+  const missingSecrets = input.args.checkSecrets === false ? [] : await findMissingSecrets({
+    backend: input.backend,
+    required: prims.secrets
+  });
+  for (const name of missingSecrets)
+    errors.push(`missing_secret:${name}`);
+  const stepPlan = collectWorkflowStepIds([...parsed.steps, ...parsed.checks]);
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    resolvedSkills,
+    resolvedReferences,
+    missingSecrets,
+    hasEvidence,
+    stepPlan
+  };
+}
+
+// src/gate/index.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/transport.ts
+import { randomUUID } from "node:crypto";
+var flowIdReplySchema = object({ flow: object({ id: string2() }) });
+function validateBaseUrl(rawUrl) {
+  const normalized = rawUrl.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  return normalized;
+}
+
+class TransportHttpError extends Error {
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+async function sendText(cfg, req) {
+  const init = req.init ?? {};
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${cfg.token}`);
+  if (cfg.actor && !headers.has("x-nosta-actor"))
+    headers.set("x-nosta-actor", cfg.actor);
+  const method = (init.method ?? "GET").toUpperCase();
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    ...init,
+    headers,
+    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
+  });
+  const text = await res.text();
+  if (!res.ok)
+    throw new TransportHttpError(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`, res.status);
+  return text;
+}
+async function sendJson(cfg, req) {
+  const headers = {
+    authorization: `Bearer ${cfg.token}`,
+    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
+    ...req.body !== undefined ? { "content-type": "application/json" } : {},
+    ...req.headers ?? {}
+  };
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    method: req.method,
+    headers,
+    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
+    signal: AbortSignal.timeout(cfg.timeoutMs)
+  });
+  if (req.allow404 && res.status === 404)
+    return null;
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : {};
+}
+function bundleHeaders(input) {
+  return {
+    "content-type": "application/gzip",
+    "x-bundle-sha256": input.sha256,
+    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
+    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
+    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
+  };
+}
+function createNostaTransport(config) {
+  const cfg = {
+    baseUrl: validateBaseUrl(config.baseUrl),
+    token: config.token,
+    actor: config.actor,
+    timeoutMs: config.timeoutMs ?? 120000,
+    fetch: config.fetch ?? fetch
+  };
+  return {
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    streamUrl(path) {
+      return `${cfg.baseUrl}${path}`;
+    },
+    request(path, init) {
+      return sendText(cfg, { path, init });
+    },
+    requestJson(req) {
+      return sendJson(cfg, req);
+    },
+    async getLatestBundle(workspace) {
+      const raw = await sendJson(cfg, {
+        method: "GET",
+        path: `/api/bundles/${encodeURIComponent(workspace)}/latest`,
+        allow404: true
+      });
+      return raw === null ? null : bundlePointerSchema.parse(raw);
+    },
+    async putBundle(input) {
+      const text = await sendText(cfg, {
+        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
+        init: {
+          method: "PUT",
+          headers: bundleHeaders(input),
+          body: Buffer.from(input.bytes)
+        }
+      });
+      return bundlePointerSchema.parse(JSON.parse(text));
+    },
+    async createLocalFlow(input) {
+      return flowIdReplySchema.parse(await sendJson(cfg, {
+        method: "POST",
+        path: "/api/flow",
+        body: { mode: "local", ...input }
+      }));
+    },
+    async reportFlow(input) {
+      const { flowId, ...body } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, {
+        method: "POST",
+        path: `/api/flow/${encodeURIComponent(flowId)}/report`,
+        body
+      }));
+    },
+    async runCloudStep(input) {
+      const { flowId, ...body } = input;
+      const raw = await sendJson(cfg, {
+        method: "POST",
+        path: getRunCloudStepUrl(encodeURIComponent(flowId)),
+        body
+      });
+      return cloudStepReplySchema.parse(raw);
+    },
+    async startYamlFlow(input) {
+      const { idempotencyKey, ...rest } = input;
+      return flowIdReplySchema.parse(await sendJson(cfg, {
+        method: "POST",
+        path: "/api/flow",
+        body: { mode: "yaml", ...rest },
+        headers: { "Idempotency-Key": idempotencyKey }
+      }));
+    },
+    async getFlow(flowId) {
+      return await sendJson(cfg, {
+        method: "GET",
+        path: `/api/flow/${encodeURIComponent(flowId)}`
+      });
+    },
+    listFlowEvents(flowId) {
+      return sendText(cfg, {
+        path: getListFlowEventsUrl(encodeURIComponent(flowId))
+      });
+    },
+    approveFlow(input) {
+      const { flowId, ...rest } = input;
+      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID();
+      const body = { ...rest, decisionId };
+      return sendText(cfg, {
+        path: getApproveFlowUrl(encodeURIComponent(flowId)),
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "Idempotency-Key": decisionId
+          },
+          body: JSON.stringify(body)
+        }
+      });
+    }
+  };
+}
+function publishPage(backend, page) {
+  const body = {
+    ticket: page.ticket,
+    name: page.name,
+    title: page.title,
+    stepId: page.stepId ?? "",
+    html: page.html,
+    ...page.slot ? { slot: page.slot } : {},
+    ...page.flowId ? { flowId: page.flowId } : {},
+    ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
+  };
+  return backend.request("/api/pages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+function transportFromEnv(env = process.env) {
+  return createNostaTransport({
+    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
+    token: env.NOSTA_PLUGIN_TOKEN ?? "",
+    timeoutMs: 30000
+  });
+}
+
+// src/store.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { realpathSync as realpathSync2 } from "node:fs";
+import { mkdir as mkdir3, readFile as readFile4, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { join as join6, resolve as resolve4 } from "node:path";
+function canonicalRoot(repoRoot) {
+  const abs = resolve4(repoRoot);
+  try {
+    return realpathSync2(abs);
+  } catch {
+    return abs;
+  }
+}
+function branchIndexKey(repoRoot, branch) {
+  return `${canonicalRoot(repoRoot)}::${branch.trim()}`;
+}
+function flowsDir(stateDir) {
+  const root = stateDir ?? process.env.NOSTA_STATE_DIR ?? join6(homedir2(), ".nosta");
+  return join6(root, "flows");
+}
+function safeFlowFile(flowId) {
+  return `${flowId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
+}
+async function readJsonFile(filePath) {
+  try {
+    const raw = await readFile4(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+async function writeJsonAtomic(filePath, value) {
+  const tmp = `${filePath}.${process.pid}.${randomUUID2()}.tmp`;
+  await writeFile2(tmp, `${JSON.stringify(value, null, 2)}
+`, "utf8");
+  await rename2(tmp, filePath);
+}
+async function readFlowIndex(stateDir) {
+  const loaded = await readJsonFile(join6(flowsDir(stateDir), "index.json"));
+  return {
+    byBranch: loaded?.byBranch ? { ...loaded.byBranch } : {},
+    byTicket: loaded?.byTicket ? { ...loaded.byTicket } : {}
+  };
+}
+async function readLocalFlow(flowId, stateDir) {
+  const loaded = await readJsonFile(join6(flowsDir(stateDir), safeFlowFile(flowId)));
+  if (!loaded || typeof loaded.flowId !== "string")
+    return null;
+  return {
+    ...loaded,
+    docs: Array.isArray(loaded.docs) ? loaded.docs : [],
+    evidence: Array.isArray(loaded.evidence) ? loaded.evidence : [],
+    diffSummary: loaded.diffSummary ?? null,
+    ship: loaded.ship ?? null
+  };
+}
+async function resolveIndexedFlowId(input) {
+  const index = await readFlowIndex(input.stateDir);
+  if (input.repoRoot && input.branch) {
+    const hit = index.byBranch[branchIndexKey(input.repoRoot, input.branch)];
+    if (hit)
+      return hit;
+  }
+  if (input.ticket) {
+    const hit = index.byTicket[input.ticket.trim()];
+    if (hit)
+      return hit;
+  }
+  return null;
+}
+async function saveLocalFlow(state, stateDir) {
+  const dir = flowsDir(stateDir);
+  await mkdir3(dir, { recursive: true });
+  const normalized = {
+    ...state,
+    ...state.repoRoot ? { repoRoot: canonicalRoot(state.repoRoot) } : {}
+  };
+  await writeJsonAtomic(join6(dir, safeFlowFile(normalized.flowId)), normalized);
+  const index = await readFlowIndex(stateDir);
+  if (normalized.repoRoot && normalized.branch) {
+    index.byBranch[branchIndexKey(normalized.repoRoot, normalized.branch)] = normalized.flowId;
+  }
+  if (normalized.ticket) {
+    index.byTicket[normalized.ticket.trim()] = normalized.flowId;
+  }
+  await writeJsonAtomic(join6(dir, "index.json"), index);
+  return normalized;
+}
+function emptyLocalFlow(input) {
+  return {
+    flowId: input.flowId,
+    ...input.repoRoot ? { repoRoot: canonicalRoot(input.repoRoot) } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.base ? { base: input.base } : {},
+    ...input.ticket ? { ticket: input.ticket } : {},
+    ...input.title ? { title: input.title } : {},
+    ...input.workflow ? { workflow: input.workflow } : {},
+    ...input.tabs !== undefined ? { tabs: input.tabs } : {},
+    ...input.defaultTab !== undefined ? { defaultTab: input.defaultTab } : {},
+    docs: [],
+    evidence: [],
+    diffSummary: null,
+    ship: null,
+    updatedAt: input.now ?? Date.now()
+  };
 }
 
 // src/gate/stream.ts
@@ -14628,10 +16971,12 @@ function connectFlowStream(options) {
 }
 
 // src/gate/index.ts
+var ACTIVE_FLOW_STATES = new Set(["running", "queued", "waiting"]);
 var hydratedFlowResponseSchema = object({
   flow: object({
     id: string2().min(1),
     mode: string2().optional(),
+    state: string2().optional(),
     workspace: string2().nullable().optional(),
     branch: string2().nullable().optional(),
     values: record(string2(), string2()).optional(),
@@ -14662,37 +17007,57 @@ class WorkflowGate {
   }
   async start(input) {
     const { repoRoot, branch } = await resolveRepoBranch(input);
-    const config = await loadWorkflowConfig(repoRoot);
-    if (!config)
-      throw new Error(`no .nosta/workflow.yaml or .nosta/workflow.json found in ${repoRoot}`);
-    const workspace = basename3(repoRoot) || "workspace";
+    if (!input.forceNew) {
+      const existing = await this.lookupReusableBinding(repoRoot, branch);
+      if (existing && (!input.workflow || existing.workflowName === input.workflow)) {
+        const tabs = input.tabs ?? existing.config.tabs;
+        const defaultTab = input.defaultTab ?? existing.config.defaultTab;
+        return {
+          flow: {
+            id: existing.flowId,
+            mode: "local",
+            state: existing.flowState ?? "running"
+          },
+          binding: existing,
+          ...tabs ? { tabs } : {},
+          ...defaultTab ? { defaultTab } : {},
+          nextAction: describeNextAction(existing),
+          reused: true
+        };
+      }
+    }
+    const config = await loadWorkflowConfig(repoRoot, input.workflow) ?? BLANK_SLATE_CONFIG;
+    const workspace = await resolveWorkspaceName(repoRoot);
     const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
     const tabs = input.tabs ?? config.tabs;
-    const body = {
-      mode: "local",
-      ...input.parentId ? { parentId: input.parentId } : {},
+    const defaultTab = input.defaultTab ?? config.defaultTab;
+    const body = await this.buildLocalStartBody({
+      input,
       name,
       workspace,
-      repo: workspace,
-      ...input.base ? { base: input.base } : {},
       branch,
-      ticket: input.ticket ?? null,
-      ticketUrl: input.ticketUrl ?? null,
-      ...tabs ? { tabs } : {},
-      ...input.endState ? { endState: input.endState } : {},
-      ...input.spec ? { spec: input.spec } : {},
-      ...input.values ? { values: input.values } : {}
-    };
-    const raw = await this.backend.request("/api/flow", {
-      method: "POST",
-      headers: { "content-type": "application/json", "Idempotency-Key": randomUUID2() },
-      body: JSON.stringify(body)
+      tabs,
+      defaultTab
     });
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(await this.backend.request("/api/flow", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "Idempotency-Key": randomUUID3()
+      },
+      body: JSON.stringify(body)
+    }));
     const flowId = parsed.flow?.id;
     if (!flowId)
       throw new Error("backend did not return flow.id");
-    const binding = this.attachBinding({ repoRoot, branch, flowId, config });
+    const binding = this.attachBinding({
+      repoRoot,
+      branch,
+      flowId,
+      config,
+      workflowName: input.workflow,
+      flowState: parsed.flow?.state ?? "running"
+    });
     const existing = await readLocalFlow(flowId);
     await saveLocalFlow(existing ?? emptyLocalFlow({
       flowId,
@@ -14701,10 +17066,18 @@ class WorkflowGate {
       base: input.base,
       ticket: input.ticket,
       title: name,
+      ...input.workflow ? { workflow: input.workflow } : {},
       ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
       now: this.now()
     }));
-    return { flow: parsed.flow, binding, ...tabs ? { tabs } : {}, nextAction: describeNextAction(binding) };
+    return {
+      flow: parsed.flow,
+      binding,
+      ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
+      nextAction: describeNextAction(binding)
+    };
   }
   async status(input) {
     if (input.flowId) {
@@ -14712,18 +17085,28 @@ class WorkflowGate {
       const payload = JSON.parse(raw);
       const binding = this.getByFlowId(input.flowId);
       const tabs = binding?.config.tabs;
-      return binding ? { ...payload, binding, ...tabs ? { tabs } : {}, nextAction: describeNextAction(binding) } : payload;
+      return binding ? {
+        ...payload,
+        binding,
+        ...tabs ? { tabs } : {},
+        nextAction: describeNextAction(binding)
+      } : payload;
     }
     const binding = await this.resolveBinding(input);
     const raw = await this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}`);
     const payload = JSON.parse(raw);
     const tabs = binding.config.tabs;
-    return { ...payload, binding, ...tabs ? { tabs } : {}, nextAction: describeNextAction(binding) };
+    return {
+      ...payload,
+      binding,
+      ...tabs ? { tabs } : {},
+      nextAction: describeNextAction(binding)
+    };
   }
   async advance(input) {
     const binding = await this.resolveBinding(input);
     if (binding.config.approvalNodes.includes(input.node)) {
-      throw new Error(`node "${input.node}" requires owner approval via nosta_flow_approve`);
+      throw new Error(`node "${input.node}" requires owner approval via approve_flow`);
     }
     if (binding.currentNode !== input.node) {
       throw new Error(`cannot advance "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
@@ -14752,12 +17135,16 @@ class WorkflowGate {
       state.updatedAt = now;
       advanceCurrentNode(draft, now);
     });
-    return { flowId: updated.flowId, binding: updated, nextAction: describeNextAction(updated) };
+    return {
+      flowId: updated.flowId,
+      binding: updated,
+      nextAction: describeNextAction(updated)
+    };
   }
   async approve(input) {
     const binding = await this.resolveBinding(input);
     if (!binding.config.approvalNodes.includes(input.node)) {
-      throw new Error(`node "${input.node}" is not an approval node; use nosta_flow_advance instead`);
+      throw new Error(`node "${input.node}" is not an approval node; use advance_flow instead`);
     }
     if (binding.currentNode !== input.node) {
       throw new Error(`cannot approve "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
@@ -14778,7 +17165,12 @@ class WorkflowGate {
         advanceCurrentNode(draft, now);
       }
     });
-    return { flowId: updated.flowId, decision, binding: updated, nextAction: describeNextAction(updated) };
+    return {
+      flowId: updated.flowId,
+      decision,
+      binding: updated,
+      nextAction: describeNextAction(updated)
+    };
   }
   async bypass(input) {
     const reason = input.reason.trim();
@@ -14788,14 +17180,17 @@ class WorkflowGate {
     const minutes = Math.min(240, Math.max(1, Math.floor(input.durationMinutes ?? 30)));
     const now = this.now();
     const until = now + minutes * 60000;
-    this.bypasses.set(bindingKey(target.repoRoot, target.branch), { until, reason });
+    this.bypasses.set(bindingKey(target.repoRoot, target.branch), {
+      until,
+      reason
+    });
     const binding = this.bindings.get(bindingKey(target.repoRoot, target.branch)) ?? null;
     if (binding) {
       binding.bypassUntil = until;
       binding.bypassReason = reason;
       binding.updatedAt = now;
       binding.observed.push({
-        id: randomUUID2(),
+        id: randomUUID3(),
         node: binding.currentNode,
         kind: "bypass",
         summary: `bypass enabled for ${minutes}m: ${reason}`,
@@ -14803,29 +17198,37 @@ class WorkflowGate {
       });
       this.flushReportAsync(binding);
     }
-    return { bypassed: true, flowId: binding?.flowId ?? null, repoRoot: target.repoRoot, branch: target.branch, bypassUntil: until, reason };
+    return {
+      bypassed: true,
+      flowId: binding?.flowId ?? null,
+      repoRoot: target.repoRoot,
+      branch: target.branch,
+      bypassUntil: until,
+      reason
+    };
   }
   async context(input) {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
     const binding = await this.lookupOrRehydrate(repoRoot, branch);
     const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
-    if (!config) {
-      return {
-        enforced: false,
-        bound: false,
-        repoRoot,
-        branch,
-        flowId: null,
-        currentNode: null,
-        nodes: {},
-        bypassActive: false,
-        bypassUntil: null,
-        nextAction: "Repository has no .nosta/workflow.yaml or .nosta/workflow.json; workflow gate is inactive."
-      };
-    }
+    const enforced = config !== null && isEnforcedConfig(config);
     const bypass = this.activeBypass(repoRoot, branch);
     if (!binding) {
+      if (!enforced) {
+        return {
+          enforced: false,
+          bound: false,
+          repoRoot,
+          branch,
+          flowId: null,
+          currentNode: null,
+          nodes: {},
+          bypassActive: false,
+          bypassUntil: null,
+          nextAction: "Repository has no workflow guards configured; workflow gate is inactive."
+        };
+      }
       return {
         enforced: true,
         bound: false,
@@ -14836,11 +17239,11 @@ class WorkflowGate {
         nodes: {},
         bypassActive: bypass !== null,
         bypassUntil: bypass?.until ?? null,
-        nextAction: `No active flow bound for (${repoRoot}, ${branch}). Call nosta_flow_start({ repoRoot: "${repoRoot}", branch: "${branch}" }) first.`
+        nextAction: `No active flow bound for (${repoRoot}, ${branch}). Call start_flow({ repoRoot: "${repoRoot}", branch: "${branch}" }) first.`
       };
     }
     return {
-      enforced: true,
+      enforced,
       bound: true,
       repoRoot,
       branch,
@@ -14856,9 +17259,19 @@ class WorkflowGate {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
     const binding = await this.lookupOrRehydrate(repoRoot, branch);
-    const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
-    if (!config)
-      return { decision: "allow", reason: "repo is not workflow-enforced" };
+    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
+    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
+    if (!loaded.ok) {
+      return { decision: "deny", reason: loaded.error };
+    }
+    const config = loaded.config;
+    if (!config || !isEnforcedConfig(config)) {
+      return {
+        decision: "allow",
+        reason: "repo is not workflow-enforced",
+        ...binding ? { flowId: binding.flowId, currentNode: binding.currentNode } : {}
+      };
+    }
     const bypass = this.activeBypass(repoRoot, branch);
     if (bypass) {
       return {
@@ -14871,7 +17284,7 @@ class WorkflowGate {
     if (!binding) {
       return {
         decision: "deny",
-        reason: `Workflow enforcement active for ${repoRoot} (${branch}), but no Flow is bound. Start one with nosta_flow_start.`
+        reason: indexedWorkflow ? `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed. Retry once the backend is reachable or start a new Flow.` : `Workflow enforcement active for ${repoRoot} (${branch}), but no Flow is bound. Start one with start_flow.`
       };
     }
     return evaluatePolicy({
@@ -14889,7 +17302,7 @@ class WorkflowGate {
       return { recorded: false };
     const now = this.now();
     const event = {
-      id: randomUUID2(),
+      id: randomUUID3(),
       node: binding.currentNode,
       kind: input.kind,
       summary: input.summary,
@@ -14904,9 +17317,27 @@ class WorkflowGate {
     const repoRoot = canonicalRepoRoot(input.repoRoot);
     const branch = input.branch.trim();
     const binding = await this.lookupOrRehydrate(repoRoot, branch);
-    const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
-    if (!config || !binding)
+    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
+    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
+    if (!loaded.ok) {
+      return { decision: "deny", reason: loaded.error };
+    }
+    const config = loaded.config;
+    if (!config || !isEnforcedConfig(config)) {
       return { decision: "allow", reason: "no active enforced flow binding" };
+    }
+    if (!binding) {
+      if (this.activeBypass(repoRoot, branch) !== null) {
+        return { decision: "allow", reason: "temporary bypass active" };
+      }
+      if (indexedWorkflow) {
+        return {
+          decision: "deny",
+          reason: `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed.`
+        };
+      }
+      return { decision: "allow", reason: "no active enforced flow binding" };
+    }
     return evaluateStopDecision({
       binding,
       config,
@@ -14917,6 +17348,28 @@ class WorkflowGate {
     for (const handle of this.streams.values())
       handle.close();
     this.streams.clear();
+  }
+  async buildLocalStartBody(params) {
+    const { input, name, workspace, branch, tabs, defaultTab } = params;
+    const ticketBody = input.ticketBody ?? (input.ticketUrl ? await fetchGitHubIssueBody(input.ticketUrl) ?? undefined : undefined);
+    const values = input.workflow ? { ...input.values ?? {}, workflow: input.workflow } : input.values;
+    return {
+      mode: "local",
+      ...input.parentId ? { parentId: input.parentId } : {},
+      name,
+      workspace,
+      repo: workspace,
+      ...input.base ? { base: input.base } : {},
+      branch,
+      ticket: input.ticket ?? null,
+      ticketUrl: input.ticketUrl ?? null,
+      ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
+      ...input.endState ? { endState: input.endState } : {},
+      ...ticketBody ? { ticketBody } : {},
+      ...input.spec ? { spec: input.spec } : {},
+      ...values ? { values } : {}
+    };
   }
   getByFlowId(flowId) {
     const key = this.flowIndex.get(flowId);
@@ -14933,6 +17386,88 @@ class WorkflowGate {
     }
     return resolveRepoBranch(input);
   }
+  async loadGateConfig(repoRoot, workflowName) {
+    try {
+      return {
+        ok: true,
+        config: await loadWorkflowConfig(repoRoot, workflowName)
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("[gate] loadWorkflowConfig failed", {
+        repoRoot,
+        workflowName,
+        error: detail
+      });
+      return { ok: false, error: `Workflow config error: ${detail}` };
+    }
+  }
+  async lookupIndexedWorkflowName(repoRoot, branch) {
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (!indexedFlowId)
+      return;
+    const localState = await readLocalFlow(indexedFlowId);
+    return localState?.workflow;
+  }
+  isReusableBinding(binding) {
+    if (binding.currentNode === null)
+      return false;
+    if (binding.flowState && !ACTIVE_FLOW_STATES.has(binding.flowState))
+      return false;
+    return !Object.values(binding.nodes).some((n) => n.status === "errored" || n.status === "rejected");
+  }
+  detachBinding(input) {
+    const key = bindingKey(input.repoRoot, input.branch);
+    this.bindings.delete(key);
+    this.flowIndex.delete(input.flowId);
+    const stream = this.streams.get(input.flowId);
+    if (stream) {
+      stream.close();
+      this.streams.delete(input.flowId);
+    }
+  }
+  async fetchHydratedFlow(flowId) {
+    let raw;
+    try {
+      raw = await this.backend.request(`/api/flow/${encodeURIComponent(flowId)}`);
+    } catch (error) {
+      if (error instanceof TransportHttpError && error.status === 404)
+        return null;
+      throw error;
+    }
+    const parsed = hydratedFlowResponseSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) {
+      throw new Error(`invalid flow response while rehydrating "${flowId}"`);
+    }
+    return parsed.data.flow;
+  }
+  async lookupReusableBinding(repoRoot, branch) {
+    const cached = this.bindings.get(bindingKey(repoRoot, branch));
+    const flowId = cached?.flowId ?? await resolveIndexedFlowId({ repoRoot, branch });
+    if (!flowId)
+      return null;
+    const flow = await this.fetchHydratedFlow(flowId);
+    if (!flow || flow.state && !ACTIVE_FLOW_STATES.has(flow.state)) {
+      this.detachBinding({ repoRoot, branch, flowId });
+      return null;
+    }
+    if (cached) {
+      this.applyHydratedFlow(cached, flow);
+      if (this.isReusableBinding(cached))
+        return cached;
+      this.detachBinding({ repoRoot, branch, flowId });
+      return null;
+    }
+    const hydrated = await this.hydrateValidatedFlow({
+      flow,
+      repoRoot,
+      branch
+    });
+    if (this.isReusableBinding(hydrated))
+      return hydrated;
+    this.detachBinding({ repoRoot, branch, flowId });
+    return null;
+  }
   async lookupOrRehydrate(repoRoot, branch) {
     const existing = this.bindings.get(bindingKey(repoRoot, branch));
     if (existing)
@@ -14941,8 +17476,18 @@ class WorkflowGate {
     if (!indexedFlowId)
       return null;
     try {
-      return await this.rehydrateByFlowId({ flowId: indexedFlowId, repoRoot, branch });
-    } catch {
+      return await this.rehydrateByFlowId({
+        flowId: indexedFlowId,
+        repoRoot,
+        branch
+      });
+    } catch (error) {
+      console.error("[gate] rehydrateByFlowId failed", {
+        flowId: indexedFlowId,
+        repoRoot,
+        branch,
+        error: error instanceof Error ? error.message : String(error)
+      });
       return null;
     }
   }
@@ -14951,7 +17496,11 @@ class WorkflowGate {
       const byId = this.getByFlowId(input.flowId);
       if (byId)
         return byId;
-      return this.rehydrateByFlowId({ flowId: input.flowId, repoRoot: input.repoRoot, branch: input.branch });
+      return this.rehydrateByFlowId({
+        flowId: input.flowId,
+        repoRoot: input.repoRoot,
+        branch: input.branch
+      });
     }
     const { repoRoot, branch } = await this.resolveTarget(input);
     const binding = this.bindings.get(bindingKey(repoRoot, branch));
@@ -14959,40 +17508,66 @@ class WorkflowGate {
       return binding;
     const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
     if (indexedFlowId)
-      return this.rehydrateByFlowId({ flowId: indexedFlowId, repoRoot, branch });
+      return this.rehydrateByFlowId({
+        flowId: indexedFlowId,
+        repoRoot,
+        branch
+      });
     throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
   }
   async rehydrateByFlowId(input) {
-    const raw = await this.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}`);
-    const parsed = hydratedFlowResponseSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) {
-      throw new Error(`invalid flow response while rehydrating "${input.flowId}"`);
-    }
-    const flow = parsed.data.flow;
+    const flow = await this.fetchHydratedFlow(input.flowId);
+    if (!flow)
+      throw new Error(`flow "${input.flowId}" not found`);
+    return this.hydrateValidatedFlow({
+      flow,
+      repoRoot: input.repoRoot,
+      branch: input.branch
+    });
+  }
+  async hydrateValidatedFlow(input) {
+    const { flow } = input;
     if (flow.mode !== "local") {
-      throw new Error(`cannot bind flow "${input.flowId}": expected mode "local", got "${flow.mode ?? "unknown"}"`);
+      throw new Error(`cannot bind flow "${flow.id}": expected mode "local", got "${flow.mode ?? "unknown"}"`);
     }
     const requestedBranch = input.branch?.trim();
     if (requestedBranch && flow.branch && requestedBranch !== flow.branch) {
       throw new Error(`flow "${flow.id}" is bound to branch "${flow.branch}", not "${requestedBranch}"`);
     }
-    const { repoRoot, branch } = await resolveRepoBranch({ repoRoot: input.repoRoot, branch: requestedBranch || flow.branch || undefined });
-    const repoName = basename3(repoRoot);
+    const { repoRoot, branch } = await resolveRepoBranch({
+      repoRoot: input.repoRoot,
+      branch: requestedBranch || flow.branch || undefined
+    });
+    const repoName = await resolveWorkspaceName(repoRoot);
     if (flow.workspace && repoName !== flow.workspace) {
       throw new Error(`flow "${flow.id}" belongs to workspace "${flow.workspace}", not "${repoName}"`);
     }
-    const config = await loadWorkflowConfig(repoRoot);
-    if (!config)
-      throw new Error(`no .nosta/workflow.yaml or .nosta/workflow.json found in ${repoRoot}`);
-    const binding = this.attachBinding({ repoRoot, branch, flowId: flow.id, config });
+    const localState = await readLocalFlow(flow.id);
+    const workflowName = localState?.workflow ?? flow.values?.workflow;
+    const config = await loadWorkflowConfig(repoRoot, workflowName) ?? BLANK_SLATE_CONFIG;
+    const binding = this.attachBinding({
+      repoRoot,
+      branch,
+      flowId: flow.id,
+      config,
+      workflowName
+    });
     const hydrated = this.applyHydratedFlow(binding, flow);
-    if (!await readLocalFlow(flow.id)) {
-      await saveLocalFlow(emptyLocalFlow({ flowId: flow.id, repoRoot, branch, now: this.now() }));
+    if (!localState) {
+      await saveLocalFlow(emptyLocalFlow({
+        flowId: flow.id,
+        repoRoot,
+        branch,
+        ...workflowName ? { workflow: workflowName } : {},
+        now: this.now()
+      }));
     }
     return hydrated;
   }
   applyHydratedFlow(binding, flow) {
     const now = this.now();
+    if (flow.state)
+      binding.flowState = flow.state;
     if (flow.values && Object.keys(flow.values).length > 0) {
       binding.values = { ...flow.values };
     }
@@ -15015,12 +17590,18 @@ class WorkflowGate {
     const now = this.now();
     const nodes = {};
     input.config.nodes.forEach((id, idx) => {
-      nodes[id] = { id, status: idx === 0 ? "active" : "pending", updatedAt: now };
+      nodes[id] = {
+        id,
+        status: idx === 0 ? "active" : "pending",
+        updatedAt: now
+      };
     });
     const binding = {
       repoRoot: input.repoRoot,
       branch: input.branch,
       flowId: input.flowId,
+      ...input.flowState ? { flowState: input.flowState } : {},
+      ...input.workflowName ? { workflowName: input.workflowName } : {},
       config: input.config,
       currentNode: input.config.nodes[0] ?? null,
       nodes,
@@ -15150,102 +17731,13 @@ class WorkflowGate {
 }
 
 // src/packet.ts
-import { readFile as readFile4, realpath, stat } from "node:fs/promises";
-import { basename as basename4, relative as relative2, sep as sep2 } from "node:path";
-
-// ../../packages/shared/src/runtime/hybrid.ts
-var MAX_STEP_ARTIFACTS = 64;
-var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
-var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-var SHA256_HEX = /^[0-9a-f]{64}$/;
-var COMMIT_HEX = /^[0-9a-f]{40}$/;
-var SECRET_SUFFIXES = [".key", ".pem", ".p12", ".p8", ".pfx"];
-var SECRET_BASENAMES = new Set(["secrets", ".dev.vars", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]);
-function normalizeRelativePath(raw) {
-  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
-}
-function isSafeRelativePath(raw) {
-  if (!raw || raw.includes("\x00"))
-    return false;
-  const slash = raw.replaceAll("\\", "/");
-  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
-    return false;
-  const cleaned = normalizeRelativePath(slash);
-  if (!cleaned || cleaned === ".")
-    return false;
-  const parts = cleaned.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-function isSafeMountPath(raw) {
-  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
-  if (cleaned === "" || cleaned === "." || cleaned === "./")
-    return true;
-  return isSafeRelativePath(cleaned);
-}
-function isSecretPath(raw) {
-  const cleaned = normalizeRelativePath(raw);
-  if (!cleaned)
-    return false;
-  const parts = cleaned.split("/");
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env"))
-      return true;
-  }
-  const base = (parts[parts.length - 1] ?? "").toLowerCase();
-  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
-}
-var bundleRepoManifestSchema = object({
-  name: string2().regex(REPO_NAME),
-  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
-  commitSha: string2().regex(COMMIT_HEX).optional(),
-  branch: string2().min(1).max(200).optional(),
-  dirty: boolean2(),
-  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
-  patchApplied: boolean2().optional(),
-  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
-  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
-});
-var bundleManifestSchema = object({
-  version: literal(1),
-  workspace: string2().regex(WORKSPACE_NAME),
-  primaryRepo: string2().regex(REPO_NAME),
-  repos: array(bundleRepoManifestSchema).min(1).max(32)
-});
-var bundlePointerSchema = object({
-  workspace: string2().regex(WORKSPACE_NAME),
-  sha: string2().regex(SHA256_HEX),
-  commitSha: string2(),
-  bytes: number2().int().min(1),
-  createdAt: number2().int().min(0),
-  dirty: boolean2().optional(),
-  repoCount: number2().int().min(1).optional()
-});
-var stepArtifactSchema = object({
-  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
-  contentBase64: string2(),
-  bytes: number2().int().min(0),
-  sha256: string2().regex(SHA256_HEX)
-});
-var cloudStepRequestSchema = object({
-  workspace: string2().min(1).max(64),
-  workflowName: string2().min(1).max(64),
-  stepId: string2().min(1).max(64),
-  bundleSha: string2().regex(SHA256_HEX),
-  force: boolean2().optional(),
-  values: record(string2(), string2()).optional(),
-  pullOutputs: boolean2().optional(),
-  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
-});
-var cloudStepReplySchema = stepRecordSchema.and(object({
-  values: record(string2(), string2()).optional(),
-  artifacts: array(stepArtifactSchema).optional()
-}));
-
-// src/packet.ts
+import { readFile as readFile5, realpath, stat as stat2 } from "node:fs/promises";
+import { basename as basename3, relative as relative2, sep as sep2 } from "node:path";
 async function assertReadableWorkspaceFile(filePath, rootDir = process.env.NOSTA_WORKSPACE_ROOT || process.cwd()) {
-  const [resolvedRoot, resolvedFile] = await Promise.all([realpath(rootDir), realpath(filePath)]);
+  const [resolvedRoot, resolvedFile] = await Promise.all([
+    realpath(rootDir),
+    realpath(filePath)
+  ]);
   const rel = relative2(resolvedRoot, resolvedFile);
   if (!rel || rel.startsWith("..") || rel.startsWith(sep2)) {
     throw new Error(`path outside workspace root is not allowed: ${filePath}`);
@@ -15273,7 +17765,7 @@ async function buildPacket(args) {
   let totalBytes = 0;
   for (const path of paths) {
     const resolved = await assertReadableWorkspaceFile(path);
-    totalBytes += (await stat(resolved)).size;
+    totalBytes += (await stat2(resolved)).size;
     if (totalBytes > MAX_PACKET_BYTES) {
       throw new Error("packet exceeds 256 KiB");
     }
@@ -15282,8 +17774,8 @@ async function buildPacket(args) {
   const files = [];
   for (const path of safePaths) {
     files.push({
-      name: basename4(path),
-      content: await readFile4(path, "utf8")
+      name: basename3(path),
+      content: await readFile5(path, "utf8")
     });
   }
   const result = validatePacket({ title: args.title, files });
@@ -15294,170 +17786,69 @@ async function buildPacket(args) {
 
 // src/sync.ts
 import { createHash } from "node:crypto";
-import { readFile as readFile5 } from "node:fs/promises";
-import { basename as basename5 } from "node:path";
+import { readFile as readFile6 } from "node:fs/promises";
+import { basename as basename4 } from "node:path";
 
-// src/transport.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-
-// ../../packages/shared/src/security.ts
-function isLoopbackHost(hostname) {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
-  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
-}
-
-// src/transport.ts
-var flowIdReplySchema = object({ flow: object({ id: string2() }) });
-function validateBaseUrl(rawUrl) {
-  const normalized = rawUrl.replace(/\/+$/, "");
-  let parsed;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  return normalized;
-}
-async function sendText(cfg, req) {
-  const init = req.init ?? {};
-  const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${cfg.token}`);
-  if (cfg.actor && !headers.has("x-nosta-actor"))
-    headers.set("x-nosta-actor", cfg.actor);
-  const method = (init.method ?? "GET").toUpperCase();
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    ...init,
-    headers,
-    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
-  });
-  const text = await res.text();
-  if (!res.ok)
-    throw new Error(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
-  return text;
-}
-async function sendJson(cfg, req) {
-  const headers = {
-    authorization: `Bearer ${cfg.token}`,
-    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
-    ...req.body !== undefined ? { "content-type": "application/json" } : {},
-    ...req.headers ?? {}
-  };
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    method: req.method,
-    headers,
-    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
-    signal: AbortSignal.timeout(cfg.timeoutMs)
-  });
-  if (req.allow404 && res.status === 404)
+// ../../packages/shared/src/storage/pages.ts
+var MAX_PAGE_BYTES = 1500000;
+var MAX_PAGE_TITLE = 200;
+var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
+var PAGE_SLOT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var pageSlotSchema = string2().regex(PAGE_SLOT);
+var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
+var MEDIA_CONTENT_TYPES = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8"
+};
+function mediaContentType(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0)
     return null;
-  const text = await res.text();
-  if (!res.ok)
-    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
+  return MEDIA_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null;
 }
-function bundleHeaders(input) {
-  return {
-    "content-type": "application/gzip",
-    "x-bundle-sha256": input.sha256,
-    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
-    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
-    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
-  };
+function isDocumentKey(value) {
+  const parts = value.split("/");
+  const ticket = parts[0] ?? "";
+  const name = parts[1] ?? "";
+  return parts.length === 2 && PAGE_TICKET.test(ticket) && PAGE_NAME.test(name);
 }
-function createNostaTransport(config) {
-  const cfg = {
-    baseUrl: validateBaseUrl(config.baseUrl),
-    token: config.token,
-    actor: config.actor,
-    timeoutMs: config.timeoutMs ?? 120000,
-    fetch: config.fetch ?? fetch
-  };
-  return {
-    baseUrl: cfg.baseUrl,
-    token: cfg.token,
-    streamUrl(path) {
-      return `${cfg.baseUrl}${path}`;
-    },
-    request(path, init) {
-      return sendText(cfg, { path, init });
-    },
-    requestJson(req) {
-      return sendJson(cfg, req);
-    },
-    async getLatestBundle(workspace) {
-      const raw = await sendJson(cfg, { method: "GET", path: `/api/bundles/${encodeURIComponent(workspace)}/latest`, allow404: true });
-      return raw === null ? null : bundlePointerSchema.parse(raw);
-    },
-    async putBundle(input) {
-      const text = await sendText(cfg, {
-        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
-        init: { method: "PUT", headers: bundleHeaders(input), body: Buffer.from(input.bytes) }
-      });
-      return bundlePointerSchema.parse(JSON.parse(text));
-    },
-    async createLocalFlow(input) {
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "local", ...input } }));
-    },
-    async reportFlow(input) {
-      const { flowId, ...body } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: `/api/flow/${encodeURIComponent(flowId)}/report`, body }));
-    },
-    async runCloudStep(input) {
-      const { flowId, ...body } = input;
-      const raw = await sendJson(cfg, { method: "POST", path: getRunCloudStepUrl(encodeURIComponent(flowId)), body });
-      return cloudStepReplySchema.parse(raw);
-    },
-    async startYamlFlow(input) {
-      const { idempotencyKey, ...rest } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, { method: "POST", path: "/api/flow", body: { mode: "yaml", ...rest }, headers: { "Idempotency-Key": idempotencyKey } }));
-    },
-    async getFlow(flowId) {
-      return await sendJson(cfg, { method: "GET", path: `/api/flow/${encodeURIComponent(flowId)}` });
-    },
-    listFlowEvents(flowId) {
-      return sendText(cfg, { path: getListFlowEventsUrl(encodeURIComponent(flowId)) });
-    },
-    approveFlow(input) {
-      const { flowId, ...rest } = input;
-      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID3();
-      const body = { ...rest, decisionId };
-      return sendText(cfg, {
-        path: getApproveFlowUrl(encodeURIComponent(flowId)),
-        init: { method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": decisionId }, body: JSON.stringify(body) }
-      });
-    }
-  };
-}
-function publishPage(backend, page) {
-  const body = {
-    ticket: page.ticket,
-    name: page.name,
-    title: page.title,
-    stepId: page.stepId ?? "",
-    html: page.html,
-    ...page.slot ? { slot: page.slot } : {},
-    ...page.flowId ? { flowId: page.flowId } : {},
-    ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
-  };
-  return backend.request("/api/pages", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-}
-function transportFromEnv(env = process.env) {
-  return createNostaTransport({
-    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
-    token: env.NOSTA_PLUGIN_TOKEN ?? "",
-    timeoutMs: 30000
-  });
-}
+var pageRowSchema = object({
+  ticket: string2().regex(PAGE_TICKET),
+  name: string2().regex(PAGE_NAME),
+  title: string2().min(1),
+  stepId: string2(),
+  bytes: number2(),
+  created: string2().min(1),
+  kind: _enum(["html", "diff", "media"]).optional(),
+  slot: pageSlotSchema.optional(),
+  storage: _enum(["cloud", "local"]).optional(),
+  localPath: string2().min(1).max(1000).optional(),
+  localHost: string2().min(1).max(200).optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  linkedTo: array(string2().refine(isDocumentKey)).optional()
+});
+var localMediaInputSchema = object({
+  localPath: string2().trim().min(1).max(1000),
+  bytes: number2().int().min(0),
+  title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
+  stepId: string2().trim().max(128).optional(),
+  slot: pageSlotSchema.optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  localHost: string2().trim().min(1).max(200).optional()
+});
+var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
+  nextCursor: string2().nullable().optional()
+});
 
 // src/sync.ts
 var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
@@ -15512,15 +17903,21 @@ var flowSyncInputSchema = object({
   ticket: string2().optional().describe("Ticket identifier for artifact storage and index lookup."),
   status: _enum(["running", "complete", "errored"]).optional().describe("Flow report status (default running)."),
   tabs: array(flowTabSchema).max(16).optional().describe("Optional custom modular Flow tabs for this flow."),
+  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
   docs: array(syncDocInputSchema).max(64).optional().describe("HTML documents to upload (by sha256) and attach to flow.docs."),
   evidence: array(syncEvidenceInputSchema).max(64).optional().describe("Media or HTML evidence files to upload and attach to flow.evidence."),
   checks: array(syncCheckInputSchema).max(64).optional().describe("Timed command gate runs recorded as kind=command steps."),
   review: syncReviewInputSchema.optional().describe("Review run recorded as kind=agent, role=review step."),
   diff: syncDiffOptionSchema.optional().describe("Compute and upload git diff + summary (files, migrations, +/- counts) in repoRoot."),
-  pr: object({ url: string2().url(), number: number2().int().positive(), base: string2().min(1) }).optional(),
+  pr: object({
+    url: string2().url(),
+    number: number2().int().positive(),
+    base: string2().min(1)
+  }).optional(),
   ship: flowShipMetaSchema.partial().optional().describe("Optional ship risk, deployOrder, and notes."),
   values: record(string2(), string2()).optional().describe("Optional string metadata merged into flow.values."),
   endState: string2().optional(),
+  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab."),
   spec: string2().optional()
 });
 function sha256Of(data) {
@@ -15550,7 +17947,10 @@ function truncateDiff(raw) {
   const encoded = Buffer.from(raw, "utf8");
   if (encoded.byteLength <= MAX_SYNC_DIFF_BYTES)
     return { text: raw, truncated: false };
-  return { text: encoded.subarray(0, MAX_SYNC_DIFF_BYTES).toString("utf8"), truncated: true };
+  return {
+    text: encoded.subarray(0, MAX_SYNC_DIFF_BYTES).toString("utf8"),
+    truncated: true
+  };
 }
 async function resolveTargetFlowId(input) {
   let repoRoot = input.args.repoRoot;
@@ -15562,14 +17962,23 @@ async function resolveTargetFlowId(input) {
       branch = resolved.branch;
     } catch {}
   }
-  const flowId = input.args.flowId ?? await resolveIndexedFlowId({ repoRoot, branch, ticket: input.args.ticket, stateDir: input.stateDir });
+  const flowId = input.args.flowId ?? await resolveIndexedFlowId({
+    repoRoot,
+    branch,
+    ticket: input.args.ticket,
+    stateDir: input.stateDir
+  });
   if (!flowId) {
-    throw new Error("no flow bound for this repo/branch or ticket; pass flowId or start a flow with nosta_flow_start");
+    throw new Error("no flow bound for this repo/branch or ticket; pass flowId or start a flow with start_flow");
   }
   return { flowId, repoRoot, branch };
 }
 async function publishMediaBytes(input) {
-  const qs = new URLSearchParams({ title: input.title, flowId: input.flowId, slot: input.slot });
+  const qs = new URLSearchParams({
+    title: input.title,
+    flowId: input.flowId,
+    slot: input.slot
+  });
   if (input.stepId)
     qs.set("stepId", input.stepId);
   await input.backend.request(`/api/media/${encodeURIComponent(input.ticket)}/${encodeURIComponent(input.name)}?${qs.toString()}`, {
@@ -15583,15 +17992,20 @@ async function readDocPayload(doc, repoRoot) {
     const rawBytes = new TextEncoder().encode(doc.html);
     if (rawBytes.byteLength === 0)
       throw new Error(`doc "${doc.id}" requires non-empty content`);
-    return { rawBytes, name: slugOf(doc.name ?? doc.id, "doc"), kind: "html", contentType: "text/html; charset=utf-8" };
+    return {
+      rawBytes,
+      name: slugOf(doc.name ?? doc.id, "doc"),
+      kind: "html",
+      contentType: "text/html; charset=utf-8"
+    };
   }
   if (!doc.sourcePath)
     throw new Error(`doc "${doc.id}" requires either html or sourcePath`);
   const safePath = await assertReadableWorkspaceFile(doc.sourcePath, repoRoot);
-  const rawBytes = new Uint8Array(await readFile5(safePath));
+  const rawBytes = new Uint8Array(await readFile6(safePath));
   if (rawBytes.byteLength === 0)
     throw new Error(`doc "${doc.id}" requires non-empty content`);
-  const sourceBase = basename5(safePath);
+  const sourceBase = basename4(safePath);
   const name = slugOf(doc.name ?? sourceBase, "doc");
   const lowerSource = sourceBase.toLowerCase();
   const detected = lowerSource.endsWith(".html") || lowerSource.endsWith(".htm") ? null : mediaContentType(sourceBase);
@@ -15657,8 +18071,8 @@ async function syncEvidence(input) {
   const refs = [];
   for (const item of input.evidence) {
     const safePath = await assertReadableWorkspaceFile(item.sourcePath, input.state.repoRoot);
-    const raw = await readFile5(safePath);
-    const name = slugOf(item.name ?? basename5(safePath), "evidence.txt");
+    const raw = await readFile6(safePath);
+    const name = slugOf(item.name ?? basename4(safePath), "evidence.txt");
     const isHtml = name.toLowerCase().endsWith(".html") || name.toLowerCase().endsWith(".htm");
     const contentType = isHtml ? "text/html; charset=utf-8" : mediaContentType(name);
     if (!contentType)
@@ -15728,11 +18142,20 @@ function parseNumstat(numstat) {
     if (Number.isFinite(del))
       deletions += del;
   }
-  return { files: files.slice(0, 500), migrations: migrations.slice(0, 200), additions, deletions };
+  return {
+    files: files.slice(0, 500),
+    migrations: migrations.slice(0, 200),
+    additions,
+    deletions
+  };
 }
 async function computeDiff(input) {
   const mergeBase = await runGit(input.repoRoot, ["merge-base", input.base, input.head]) ?? input.base;
-  const numstat = await runGit(input.repoRoot, ["diff", "--numstat", `${mergeBase}..${input.head}`]) ?? "";
+  const numstat = await runGit(input.repoRoot, [
+    "diff",
+    "--numstat",
+    `${mergeBase}..${input.head}`
+  ]) ?? "";
   const headSha = await runGit(input.repoRoot, ["rev-parse", input.head]) ?? input.head;
   const sha256 = sha256Of(`${mergeBase}:${headSha}:${numstat}`);
   const stats = parseNumstat(numstat);
@@ -15791,7 +18214,9 @@ function mergeShip(existing, incoming) {
   return {
     risk: incoming.risk ?? existing?.risk ?? null,
     deployOrder: incoming.deployOrder ?? existing?.deployOrder ?? null,
-    notes: [...new Set([...existing?.notes ?? [], ...incoming.notes ?? []])]
+    notes: [
+      ...new Set([...existing?.notes ?? [], ...incoming.notes ?? []])
+    ]
   };
 }
 function mergeRefs(existing, incoming) {
@@ -15809,7 +18234,12 @@ async function resolveComputedDiff(input) {
   const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
   const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
   const head = diffOpts.head ?? "HEAD";
-  return computeDiff({ repoRoot, base, head, uploadedDiffSha256: input.existing.diffUploadedSha256 });
+  return computeDiff({
+    repoRoot,
+    base,
+    head,
+    uploadedDiffSha256: input.existing.diffUploadedSha256
+  });
 }
 async function attachPublishedArtifact(input) {
   const now = input.now ?? Date.now();
@@ -15861,18 +18291,45 @@ async function attachPublishedArtifact(input) {
 }
 async function syncFlow(input) {
   const now = (input.now ?? Date.now)();
-  const resolved = await resolveTargetFlowId({ args: input.args, stateDir: input.stateDir });
-  const existing = await readLocalFlow(resolved.flowId, input.stateDir) ?? emptyLocalFlow({ flowId: resolved.flowId, repoRoot: resolved.repoRoot, branch: resolved.branch, base: input.args.base, ticket: input.args.ticket, now });
+  const resolved = await resolveTargetFlowId({
+    args: input.args,
+    stateDir: input.stateDir
+  });
+  const existing = await readLocalFlow(resolved.flowId, input.stateDir) ?? emptyLocalFlow({
+    flowId: resolved.flowId,
+    repoRoot: resolved.repoRoot,
+    branch: resolved.branch,
+    base: input.args.base,
+    ticket: input.args.ticket,
+    now
+  });
   const ticket = input.args.ticket ?? existing.ticket ?? resolved.flowId;
-  const docOut = input.args.docs ? await syncDocs({ state: existing, docs: input.args.docs, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
-  const evOut = input.args.evidence ? await syncEvidence({ state: existing, evidence: input.args.evidence, ticket, backend: input.backend, now }) : { refs: [], uploaded: 0 };
-  const computedDiff = await resolveComputedDiff({ args: input.args, existing, repoRoot: resolved.repoRoot });
+  const docOut = input.args.docs ? await syncDocs({
+    state: existing,
+    docs: input.args.docs,
+    ticket,
+    backend: input.backend,
+    now
+  }) : { refs: [], uploaded: 0 };
+  const evOut = input.args.evidence ? await syncEvidence({
+    state: existing,
+    evidence: input.args.evidence,
+    ticket,
+    backend: input.backend,
+    now
+  }) : { refs: [], uploaded: 0 };
+  const computedDiff = await resolveComputedDiff({
+    args: input.args,
+    existing,
+    repoRoot: resolved.repoRoot
+  });
   const diffSummary = computedDiff ? computedDiff.summary : existing.diffSummary;
   const diffSummaryChanged = Boolean(computedDiff && (computedDiff.uploadDiff || JSON.stringify(computedDiff.summary) !== JSON.stringify(existing.diffSummary)));
   const ship = mergeShip(existing.ship, input.args.ship);
   const steps = buildSteps(input.args, now);
   const status = input.args.status ?? "running";
   const tabs = input.args.tabs !== undefined ? input.args.tabs : existing.tabs;
+  const defaultTab = input.args.defaultTab !== undefined ? input.args.defaultTab : existing.defaultTab;
   await input.backend.request(`/api/flow/${encodeURIComponent(resolved.flowId)}/report`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -15883,12 +18340,17 @@ async function syncFlow(input) {
       ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
       ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
       ...computedDiff && diffSummaryChanged ? { diffSummary: computedDiff.summary } : {},
-      ...computedDiff?.uploadDiff ? { diff: computedDiff.diff, diffTruncated: computedDiff.diffTruncated } : {},
+      ...computedDiff?.uploadDiff ? {
+        diff: computedDiff.diff,
+        diffTruncated: computedDiff.diffTruncated
+      } : {},
       ...input.args.tabs !== undefined ? { tabs: input.args.tabs } : {},
+      ...input.args.defaultTab !== undefined ? { defaultTab: input.args.defaultTab } : {},
       ...input.args.ship ? { ship } : {},
       ...input.args.pr ? { pr: input.args.pr } : {},
       ...input.args.values ? { values: input.args.values } : {},
       ...input.args.endState !== undefined ? { endState: input.args.endState } : {},
+      ...input.args.ticketBody !== undefined ? { ticketBody: input.args.ticketBody } : {},
       ...input.args.spec !== undefined ? { spec: input.args.spec } : {},
       ...resolved.branch ? { branch: resolved.branch } : {}
     })
@@ -15900,6 +18362,7 @@ async function syncFlow(input) {
     ...resolved.branch ? { branch: resolved.branch } : {},
     ...input.args.base ? { base: input.args.base } : {},
     ...tabs !== undefined ? { tabs } : {},
+    ...defaultTab !== undefined ? { defaultTab } : {},
     ...diffUploadedSha256 !== undefined ? { diffUploadedSha256 } : {},
     ticket,
     docs: mergeRefs(existing.docs, docOut.refs),
@@ -15916,6 +18379,7 @@ async function syncFlow(input) {
     stepsReported: steps.length,
     diffSummary,
     ...tabs !== undefined ? { tabs } : {},
+    ...defaultTab !== undefined ? { defaultTab } : {},
     flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(resolved.flowId)}`
   };
 }
@@ -15927,7 +18391,7 @@ function trimmed(value) {
   const clean = value.trim();
   return clean.length > 0 ? clean : undefined;
 }
-var flowStartInputSchema = object({
+var flowStartInputSchema2 = object({
   mode: _enum(["spec", "review", "local"]).optional().describe("Optional explicit flow mode."),
   path: string2().optional().describe("Absolute path of a local spec file (spec mode)."),
   baseSha: string2().optional().describe("40-hex Git SHA from the caller's checkout (spec mode)."),
@@ -15935,29 +18399,48 @@ var flowStartInputSchema = object({
   paths: array(string2()).optional().describe("Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."),
   title: string2().optional().describe("Optional flow title (review or local mode)."),
   parentId: string2().optional().describe("Optional parent flow ID to attach this local flow to."),
-  repoRoot: string2().optional().describe("Git repository root containing .nosta/workflow.yaml (or .nosta/workflow.json) for local mode."),
+  repoRoot: string2().optional().describe("Git repository root containing .nosta/workflows/<name>.yaml (or .nosta/workflow.yaml) for local mode."),
   branch: string2().optional().describe("Git branch name to bind (local mode; defaults to current branch)."),
   base: string2().optional().describe("Optional base branch name (local mode)."),
+  workflow: string2().optional().describe("Optional YAML workflow name in .nosta/workflows/<name>.yaml (local mode)."),
+  forceNew: boolean2().optional().describe("Start a fresh local flow instead of reusing an active (repoRoot, branch) binding."),
   ticket: string2().optional().describe("Optional ticket key/identifier (local mode)."),
   endState: string2().optional().describe("Optional target end state summary (local mode)."),
+  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab (auto-fetched from GitHub when ticketUrl is an issue URL)."),
   spec: string2().optional().describe("Optional inline spec markdown text (local mode)."),
   tabs: array(flowTabSchema).max(16).optional().describe("Optional Flow tabs overriding the workflow YAML tabs."),
+  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
   values: record(string2(), string2()).optional().describe("Optional string key/value metadata map (local mode).")
 }).superRefine((data, ctx) => {
   const hasSpec = data.path !== undefined;
   const hasReview = data.paths !== undefined;
-  const isLocal = data.mode === "local" || !hasSpec && !hasReview && (data.repoRoot !== undefined || data.branch !== undefined);
+  const isLocal = data.mode === "local" || !hasSpec && !hasReview && (data.repoRoot !== undefined || data.branch !== undefined || data.workflow !== undefined || data.forceNew !== undefined);
   if (hasSpec && hasReview) {
-    ctx.addIssue({ code: "custom", message: "provide either { path, baseSha, ticketUrl } or { paths }, not both" });
+    ctx.addIssue({
+      code: "custom",
+      message: "provide either { path, baseSha, ticketUrl } or { paths }, not both"
+    });
     return;
   }
   if (data.mode !== "local" && hasSpec) {
     if (!data.path)
-      ctx.addIssue({ code: "custom", path: ["path"], message: "path must be a string" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: "path must be a string"
+      });
     if (!data.baseSha)
-      ctx.addIssue({ code: "custom", path: ["baseSha"], message: "baseSha must be a string" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseSha"],
+        message: "baseSha must be a string"
+      });
     if (!data.ticketUrl)
-      ctx.addIssue({ code: "custom", path: ["ticketUrl"], message: "ticketUrl must be a string" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["ticketUrl"],
+        message: "ticketUrl must be a string"
+      });
     return;
   }
   if (!isLocal && !hasSpec && !hasReview) {
@@ -15968,12 +18451,12 @@ var flowStartInputSchema = object({
   }
 });
 var flowStatusInputSchema = object({
-  flowId: string2().optional().describe("ID from nosta_flow_start."),
+  flowId: string2().optional().describe("ID from start_flow."),
   repoRoot: string2().optional().describe("Git repository root to look up a bound local Ticket Flow."),
   branch: string2().optional().describe("Git branch to look up a bound local Ticket Flow.")
 });
 var flowLogInputSchema = object({
-  flowId: string2().min(1).describe("ID from nosta_flow_start.")
+  flowId: string2().min(1).describe("ID from start_flow.")
 });
 var flowAdvanceInputSchema = object({
   node: string2().min(1).describe("Name of the active non-approval node to complete."),
@@ -16011,14 +18494,51 @@ var flowApproveInputSchema = object({
   }
   if (!node) {
     if (!data.flowId)
-      ctx.addIssue({ code: "custom", path: ["flowId"], message: "flowId must be a string" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["flowId"],
+        message: "flowId must be a string"
+      });
     if (!data.decision)
-      ctx.addIssue({ code: "custom", path: ["decision"], message: "decision must be approve or reject" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["decision"],
+        message: "decision must be approve or reject"
+      });
     if (data.version === undefined)
-      ctx.addIssue({ code: "custom", path: ["version"], message: "version must be a positive integer" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["version"],
+        message: "version must be a positive integer"
+      });
     if (data.attempt === undefined)
-      ctx.addIssue({ code: "custom", path: ["attempt"], message: "attempt must be a positive integer" });
+      ctx.addIssue({
+        code: "custom",
+        path: ["attempt"],
+        message: "attempt must be a positive integer"
+      });
   }
+});
+var flowListInputSchema = object({
+  definition: string2().trim().min(1).optional().describe("Optional workflow definition name filter."),
+  limit: number2().int().min(1).max(100).optional().describe("Maximum flows to return."),
+  view: string2().trim().min(1).optional().describe("Optional saved view key."),
+  showAll: boolean2().optional().describe("Include hidden/archived flows when true.")
+});
+var flowSignalInputSchema2 = object({
+  flowId: string2().trim().min(1).describe("Flow ID waiting on a signal."),
+  type: string2().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, "signal type must match [a-z0-9][a-z0-9_-]{0,63}").describe("Signal name declared in the workflow wait step."),
+  payload: record(string2(), string2()).optional().describe("Optional string payload merged into flow values."),
+  dedupeKey: string2().trim().min(1).max(128).optional().describe("Optional caller idempotency key.")
+});
+var flowRetryInputSchema = object({
+  flowId: string2().trim().min(1).describe("Flow ID to start or retry."),
+  stackBase: string2().trim().min(1).optional().describe("Optional stack base branch."),
+  awaitMergeReady: boolean2().optional().describe("Optional wait-for-merge-ready flag.")
+});
+var flowCancelInputSchema = object({
+  flowId: string2().trim().min(1).describe("Flow ID to cancel."),
+  reason: string2().trim().min(1).optional().describe("Optional cancellation reason.")
 });
 var flowBypassInputSchema = object({
   reason: string2().min(1).describe("Mandatory explanation for the temporary workflow bypass."),
@@ -16052,39 +18572,69 @@ function toMcpInputSchema(schema) {
 }
 var FLOW_TOOLS = [
   {
-    name: "nosta_flow_start",
-    description: "Start one Nosta flow. Pass { path, baseSha, ticketUrl } for a spec flow, { paths, title? } for a 1-step review flow, or { mode: 'local', repoRoot?, branch?, title?, ticket?, ticketUrl? } to start a local workflow-enforced Ticket Flow.",
-    inputSchema: toMcpInputSchema(flowStartInputSchema)
+    name: "start_flow",
+    description: "Start one Nosta flow. Pass { workflow?, repoRoot?, branch?, title?, ticket?, ticketUrl?, forceNew? } for a YAML/local flow, { path, baseSha, ticketUrl } for a spec flow, or { paths, title? } for a 1-step review flow.",
+    inputSchema: toMcpInputSchema(flowStartInputSchema2)
   },
   {
-    name: "nosta_flow_status",
+    name: "validate_flow",
+    description: "Validate a workflow YAML file or inline YAML locally: syntax, primitives, repo-relative skills/references, evidence declarations, and backend secret availability.",
+    inputSchema: toMcpInputSchema(validateFlowInputSchema)
+  },
+  {
+    name: "list_flows",
+    description: "List Nosta flows with optional definition, view, and limit filters.",
+    inputSchema: toMcpInputSchema(flowListInputSchema)
+  },
+  {
+    name: "get_flow",
     description: "Get one flow with its direct steps, child flow records, and local gate binding status.",
     inputSchema: toMcpInputSchema(flowStatusInputSchema)
   },
   {
-    name: "nosta_flow_log",
+    name: "get_flow_log",
     description: "Get one flow's ordered step events.",
     inputSchema: toMcpInputSchema(flowLogInputSchema)
   },
   {
-    name: "nosta_flow_advance",
+    name: "get_flow_history",
+    description: "Aggregate recent run history for one workflow definition: pass/fail counts, failing steps with median duration, HITL pauses, and missing evidence.",
+    inputSchema: toMcpInputSchema(flowHistoryInputSchema)
+  },
+  {
+    name: "advance_flow",
     description: "Mark the current non-approval node of a bound local Ticket Flow complete with evidence and report progress to Nosta. Rejects approval nodes and out-of-order jumps.",
     inputSchema: toMcpInputSchema(flowAdvanceInputSchema)
   },
   {
-    name: "nosta_flow_approve",
+    name: "sync_flow",
+    description: "Sync local docs, evidence files, command checks, review verdicts, git diff summary, PR link, and ship metadata into the bound Flow object (~/.nosta/flows/) and cloud Flow DO in one idempotent call.",
+    inputSchema: toMcpInputSchema(flowSyncInputSchema)
+  },
+  {
+    name: "signal_flow",
+    description: "Send a named signal with optional string payload to a waiting Nosta flow.",
+    inputSchema: toMcpInputSchema(flowSignalInputSchema2)
+  },
+  {
+    name: "retry_flow",
+    description: "Start or retry an existing Nosta flow.",
+    inputSchema: toMcpInputSchema(flowRetryInputSchema)
+  },
+  {
+    name: "cancel_flow",
+    description: "Cancel a running or waiting Nosta flow.",
+    inputSchema: toMcpInputSchema(flowCancelInputSchema)
+  },
+  {
+    name: "approve_flow",
     description: "Approve or reject a cloud flow merge gate ({ flowId, decision, version, attempt }) or record owner approval for an approval node in a bound local Ticket Flow ({ node, decision?, flowId?, repoRoot?, branch?, summary? }).",
     inputSchema: toMcpInputSchema(flowApproveInputSchema)
   },
   {
-    name: "nosta_flow_bypass",
+    name: "bypass_flow",
     description: "Temporarily unlock gated writes for a (repoRoot, branch) for a bounded duration with a mandatory reason. Always requires explicit owner confirmation.",
     inputSchema: toMcpInputSchema(flowBypassInputSchema)
-  },
-  {
-    name: "nosta_flow_sync",
-    description: "Sync local docs, evidence files, command checks, review verdicts, git diff summary, PR link, and ship metadata into the bound Flow object (~/.nosta/flows/) and cloud Flow DO in one idempotent call.",
-    inputSchema: toMcpInputSchema(flowSyncInputSchema)
   }
 ];
 function formatZodError(error) {
@@ -16099,25 +18649,48 @@ function parseToolArgs(schema, args) {
     throw new Error(formatZodError(parsed.error));
   return parsed.data;
 }
+var FLOW_HANDLERS = {
+  start_flow: (ctx) => startFlow({
+    args: parseToolArgs(flowStartInputSchema2, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  validate_flow: async (ctx) => JSON.stringify(await validateFlow({
+    args: parseToolArgs(validateFlowInputSchema, ctx.args),
+    backend: ctx.backend
+  })),
+  list_flows: (ctx) => listFlows(parseToolArgs(flowListInputSchema, ctx.args), ctx.backend),
+  get_flow: (ctx) => statusFlow({
+    args: parseToolArgs(flowStatusInputSchema, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  get_flow_log: (ctx) => readLog(parseToolArgs(flowLogInputSchema, ctx.args), ctx.backend),
+  get_flow_history: async (ctx) => JSON.stringify(await getFlowHistory({
+    args: parseToolArgs(flowHistoryInputSchema, ctx.args),
+    backend: ctx.backend
+  })),
+  advance_flow: (ctx) => advanceLocal(parseToolArgs(flowAdvanceInputSchema, ctx.args), ctx.gate),
+  sync_flow: async (ctx) => JSON.stringify(await syncFlow({
+    args: parseToolArgs(flowSyncInputSchema, ctx.args),
+    backend: ctx.backend
+  })),
+  signal_flow: (ctx) => signalFlow(parseToolArgs(flowSignalInputSchema2, ctx.args), ctx.backend),
+  retry_flow: (ctx) => retryFlow(parseToolArgs(flowRetryInputSchema, ctx.args), ctx.backend),
+  cancel_flow: (ctx) => cancelFlow(parseToolArgs(flowCancelInputSchema, ctx.args), ctx.backend),
+  approve_flow: (ctx) => approveFlow({
+    args: parseToolArgs(flowApproveInputSchema, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  bypass_flow: (ctx) => bypassLocal(parseToolArgs(flowBypassInputSchema, ctx.args), ctx.gate)
+};
 async function callFlowTool(input) {
+  const handler = FLOW_HANDLERS[input.name];
+  if (!handler)
+    return null;
   const gate = input.gate ?? new WorkflowGate({ backend: input.backend, enableStream: false });
-  if (input.name === "nosta_flow_start")
-    return startFlow({ args: parseToolArgs(flowStartInputSchema, input.args), backend: input.backend, gate });
-  if (input.name === "nosta_flow_status")
-    return statusFlow({ args: parseToolArgs(flowStatusInputSchema, input.args), backend: input.backend, gate });
-  if (input.name === "nosta_flow_log")
-    return readLog(parseToolArgs(flowLogInputSchema, input.args), input.backend);
-  if (input.name === "nosta_flow_advance")
-    return advanceLocal(parseToolArgs(flowAdvanceInputSchema, input.args), gate);
-  if (input.name === "nosta_flow_approve")
-    return approveFlow({ args: parseToolArgs(flowApproveInputSchema, input.args), backend: input.backend, gate });
-  if (input.name === "nosta_flow_bypass")
-    return bypassLocal(parseToolArgs(flowBypassInputSchema, input.args), gate);
-  if (input.name === "nosta_flow_sync") {
-    const result = await syncFlow({ args: parseToolArgs(flowSyncInputSchema, input.args), backend: input.backend });
-    return JSON.stringify(result);
-  }
-  return null;
+  return handler({ args: input.args, backend: input.backend, gate });
 }
 function enrichFlowReply(raw, baseUrl) {
   let parsed;
@@ -16131,7 +18704,7 @@ function enrichFlowReply(raw, baseUrl) {
     return raw;
   const record2 = parsed;
   const flowObj = record2.flow && typeof record2.flow === "object" ? record2.flow : null;
-  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record2.id === "string" ? record2.id : null;
+  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record2.flowId === "string" ? record2.flowId : typeof record2.id === "string" ? record2.id : null;
   if (!flowId)
     return raw;
   return JSON.stringify({
@@ -16144,8 +18717,15 @@ async function resolveReviewParentId(args) {
   if (explicit)
     return explicit;
   try {
-    const { repoRoot, branch } = await resolveRepoBranch({ repoRoot: trimmed(args.repoRoot), branch: trimmed(args.branch) });
-    return await resolveIndexedFlowId({ repoRoot, branch, ticket: trimmed(args.ticket) }) ?? undefined;
+    const { repoRoot, branch } = await resolveRepoBranch({
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch)
+    });
+    return await resolveIndexedFlowId({
+      repoRoot,
+      branch,
+      ticket: trimmed(args.ticket)
+    }) ?? undefined;
   } catch {
     return trimmed(args.ticket) ? await resolveIndexedFlowId({ ticket: trimmed(args.ticket) }) ?? undefined : undefined;
   }
@@ -16155,17 +18735,25 @@ async function startReviewFlow(args, backend) {
   const parentId = await resolveReviewParentId(args);
   const raw = await backend.request("/api/flow", {
     method: "POST",
-    headers: { "content-type": "application/json", "Idempotency-Key": randomUUID4() },
-    body: JSON.stringify({ mode: "review", title: packet.title, files: packet.files, ...parentId ? { parentId } : {} })
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": randomUUID4()
+    },
+    body: JSON.stringify({
+      mode: "review",
+      title: packet.title,
+      files: packet.files,
+      ...parentId ? { parentId } : {}
+    })
   });
   return enrichFlowReply(raw, backend.baseUrl);
 }
 async function startSpecFlow(args, backend) {
   const safePath = await assertReadableWorkspaceFile(args.path);
-  if ((await stat2(safePath)).size > MAX_PACKET_BYTES) {
+  if ((await stat3(safePath)).size > MAX_PACKET_BYTES) {
     throw new Error("spec exceeds 256 KiB");
   }
-  const spec = await readFile6(safePath, "utf8");
+  const spec = await readFile7(safePath, "utf8");
   const baseSha = args.baseSha;
   const ticketUrl = args.ticketUrl;
   const key = createHash2("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
@@ -16180,19 +18768,23 @@ async function startFlow(input) {
   const { args, backend, gate } = input;
   const hasSpec = args.path !== undefined;
   const hasReview = args.paths !== undefined;
-  const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined);
+  const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined || args.workflow !== undefined || args.forceNew !== undefined);
   if (isLocal) {
     const raw = JSON.stringify(await gate.start({
       parentId: trimmed(args.parentId),
       repoRoot: trimmed(args.repoRoot),
       branch: trimmed(args.branch),
       base: trimmed(args.base),
+      workflow: trimmed(args.workflow),
+      forceNew: args.forceNew,
       title: trimmed(args.title),
       ticket: trimmed(args.ticket),
       ticketUrl: trimmed(args.ticketUrl),
       endState: trimmed(args.endState),
+      ticketBody: trimmed(args.ticketBody),
       spec: trimmed(args.spec),
       tabs: args.tabs,
+      defaultTab: trimmed(args.defaultTab),
       values: args.values
     }));
     return enrichFlowReply(raw, backend.baseUrl);
@@ -16200,6 +18792,48 @@ async function startFlow(input) {
   if (hasReview)
     return startReviewFlow(args, backend);
   return startSpecFlow(args, backend);
+}
+function listFlows(args, backend) {
+  return backend.request(getListFlowsUrl({
+    ...args.definition ? { definition: args.definition } : {},
+    ...args.limit !== undefined ? { limit: args.limit } : {},
+    ...args.view ? { view: args.view } : {},
+    ...args.showAll !== undefined ? { showAll: args.showAll } : {}
+  }));
+}
+async function signalFlow(args, backend) {
+  const body = {
+    type: args.type,
+    payload: args.payload ?? {},
+    ...args.dedupeKey ? { dedupeKey: args.dedupeKey } : {}
+  };
+  const raw = await backend.request(getSignalFlowUrl(encodeURIComponent(args.flowId)), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
+}
+async function retryFlow(args, backend) {
+  const body = {
+    ...args.stackBase ? { stackBase: args.stackBase } : {},
+    ...args.awaitMergeReady !== undefined ? { awaitMergeReady: args.awaitMergeReady } : {}
+  };
+  const raw = await backend.request(getStartFlowUrl(encodeURIComponent(args.flowId)), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
+}
+async function cancelFlow(args, backend) {
+  const body = args.reason ? { reason: args.reason } : {};
+  const raw = await backend.request(getCancelFlowUrl(encodeURIComponent(args.flowId)), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
 }
 function readLog(args, backend) {
   return backend.request(getListFlowEventsUrl(encodeURIComponent(args.flowId)));
@@ -16250,7 +18884,10 @@ async function approveFlow(input) {
   };
   const raw = await backend.request(getApproveFlowUrl(encodeURIComponent(args.flowId)), {
     method: "POST",
-    headers: { "content-type": "application/json", "Idempotency-Key": decisionId },
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": decisionId
+    },
     body: JSON.stringify(body)
   });
   return enrichFlowReply(raw, backend.baseUrl);
@@ -16265,11 +18902,24 @@ async function bypassLocal(args, gate) {
   }));
 }
 
+// src/server.ts
+import { createInterface } from "node:readline";
+
+// src/artifacts/index.ts
+import { mkdir as mkdir4, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
+
 // src/artifacts/guides.ts
-var ARTIFACT_GUIDE_MODULES = ["spec", "diagram", "diagnostics", "chart", "interactive"];
+var ARTIFACT_GUIDE_MODULES = [
+  "spec",
+  "diagram",
+  "diagnostics",
+  "chart",
+  "interactive"
+];
 var CORE_GUIDE = `# Nosta Artifact Design System (Core)
 
-You are authoring fragments for \`nosta_artifact_publish\`. The host shell automatically wraps your tabs to match \`app.nosta.dev\`'s calm monochrome warm-neutral palette, Inter + JetBrains Mono typography, dark/light theme sync, and tab-hash persistence.
+You are authoring fragments for \`publish_artifact\`. The host shell automatically wraps your tabs to match \`app.nosta.dev\`'s calm monochrome warm-neutral palette, Inter + JetBrains Mono typography, dark/light theme sync, and tab-hash persistence.
 
 ## Hard Rules
 - Pass **inner HTML fragments only** per tab. Never include \`<!doctype>\`, \`<html>\`, \`<head>\`, or \`<body>\`.
@@ -16453,7 +19103,11 @@ function measureSequence(body) {
       actors.add(msg[2]);
     }
   }
-  return { kind: "sequenceDiagram", direction: "horizontal", columns: actors.size };
+  return {
+    kind: "sequenceDiagram",
+    direction: "horizontal",
+    columns: actors.size
+  };
 }
 function measureFlowchart(kind, dirToken, body) {
   const isHorizontal = dirToken === "LR" || dirToken === "RL";
@@ -16482,7 +19136,11 @@ function measureFlowchart(kind, dirToken, body) {
     }
   }
   const { maxDepth, maxBreadth } = computeGraphDimensions(nodes, edges);
-  return { kind, direction: isHorizontal ? "horizontal" : "vertical", columns: isHorizontal ? maxDepth : maxBreadth };
+  return {
+    kind,
+    direction: isHorizontal ? "horizontal" : "vertical",
+    columns: isHorizontal ? maxDepth : maxBreadth
+  };
 }
 function measureState(kind, body) {
   let isHorizontal = false;
@@ -16504,7 +19162,11 @@ function measureState(kind, body) {
       edges.push([match[1], match[2]]);
   }
   const { maxDepth, maxBreadth } = computeGraphDimensions(nodes, edges);
-  return { kind, direction: isHorizontal ? "horizontal" : "vertical", columns: isHorizontal ? maxDepth : maxBreadth };
+  return {
+    kind,
+    direction: isHorizontal ? "horizontal" : "vertical",
+    columns: isHorizontal ? maxDepth : maxBreadth
+  };
 }
 function measureRelations(kind, body) {
   const nodes = new Set;
@@ -16561,7 +19223,11 @@ function validateMermaidHtml(tabId, html) {
 }
 
 // src/artifacts/tokens.ts
-var ARTIFACT_STYLES = ["nosta-editorial", "nosta-diagnostic", "nosta-blueprint"];
+var ARTIFACT_STYLES = [
+  "nosta-editorial",
+  "nosta-diagnostic",
+  "nosta-blueprint"
+];
 var ARTIFACT_THEMES = ["auto", "dark", "light"];
 var FONTSOURCE_STYLESHEETS = [
   "https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.2.5/index.min.css",
@@ -16626,10 +19292,21 @@ function buildEchartsTheme(mode) {
   return {
     backgroundColor: "transparent",
     color: [p.accentText, p.good, p.stone, p.warn, p.bad, p.info],
-    textStyle: { color: p.ink2, fontFamily: '"Inter Variable", Inter, system-ui, sans-serif', fontSize: 12 },
-    title: { textStyle: { color: p.ink, fontWeight: 600 }, subtextStyle: { color: p.muted } },
+    textStyle: {
+      color: p.ink2,
+      fontFamily: '"Inter Variable", Inter, system-ui, sans-serif',
+      fontSize: 12
+    },
+    title: {
+      textStyle: { color: p.ink, fontWeight: 600 },
+      subtextStyle: { color: p.muted }
+    },
     legend: { textStyle: { color: p.ink2 } },
-    tooltip: { backgroundColor: p.panel, borderColor: p.lineStrong, textStyle: { color: p.ink, fontSize: 12 } },
+    tooltip: {
+      backgroundColor: p.panel,
+      borderColor: p.lineStrong,
+      textStyle: { color: p.ink, fontSize: 12 }
+    },
     categoryAxis: {
       axisLine: { lineStyle: { color: p.lineStrong } },
       axisTick: { lineStyle: { color: p.lineStrong } },
@@ -17029,7 +19706,12 @@ svg.svg-diagram .tm { fill: var(--ink-2); font-size: 11.5px; font-family: var(--
 `.trim();
 
 // src/artifacts/shell.ts
-var ARTIFACT_LIBS = ["echarts", "mermaid", "lucide", "highlight"];
+var ARTIFACT_LIBS = [
+  "echarts",
+  "mermaid",
+  "lucide",
+  "highlight"
+];
 var LIB_CDN = {
   echarts: "https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js",
   mermaid: "https://cdn.jsdelivr.net/npm/mermaid@11.6.0/dist/mermaid.min.js",
@@ -17446,11 +20128,15 @@ ${runtime}
 }
 
 // src/artifacts/index.ts
-var ALLOWED_EXTERNAL_HOSTS = new Set(["cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com"]);
+var ALLOWED_EXTERNAL_HOSTS = new Set([
+  "cdn.jsdelivr.net",
+  "unpkg.com",
+  "cdnjs.cloudflare.com"
+]);
 var FORBIDDEN_DOC_WRAPPER = /<(?:!doctype|html|head|body)\b/i;
 var EXTERNAL_ASSET_RE = /<(?:script|link)\b[^>]*(?:src|href)\s*=\s*["']([^"']+)["']/gi;
 var artifactGuideInputSchema = object({
-  modules: array(_enum(ARTIFACT_GUIDE_MODULES)).min(1).describe("Design modules to load before calling nosta_artifact_publish.")
+  modules: array(_enum(ARTIFACT_GUIDE_MODULES)).min(1).describe("Design modules to load before calling publish_artifact.")
 });
 var artifactTabSchema = object({
   id: string2().regex(PAGE_TAB, "tab id must match [A-Za-z0-9_-]{1,64}").describe("URL hash & tab key, e.g. 'overview'."),
@@ -17473,7 +20159,7 @@ var artifactPublishInputSchema = object({
   branch: string2().trim().min(1).optional().describe("Optional git branch for auto-resolving the bound flow."),
   stepId: string2().trim().max(128).optional().describe("Optional step ID."),
   linkedTo: array(string2().refine(isDocumentKey, "linkedTo entries must be ticket/name")).optional().describe("Optional related document keys (ticket/name)."),
-  guideRead: literal(true).describe("Must be true; requires calling nosta_artifact_guide first in this session."),
+  guideRead: literal(true).describe("Must be true; requires calling guide_artifact first in this session."),
   dryRunPath: string2().trim().min(1).optional().describe("Optional absolute local file path to write HTML without uploading.")
 });
 function createArtifactSessionState() {
@@ -17481,12 +20167,12 @@ function createArtifactSessionState() {
 }
 var ARTIFACT_TOOLS = [
   {
-    name: "nosta_artifact_guide",
-    description: "Load Nosta's warm editorial design tokens, 6 semantic ramps, layout primitives, and recipes for the requested artifact modules before calling nosta_artifact_publish.",
+    name: "guide_artifact",
+    description: "Load Nosta's warm editorial design tokens, 6 semantic ramps, layout primitives, and recipes for the requested artifact modules before calling publish_artifact.",
     inputSchema: toMcpInputSchema(artifactGuideInputSchema)
   },
   {
-    name: "nosta_artifact_publish",
+    name: "publish_artifact",
     description: "Validate, wrap in Nosta's native monochrome warm-neutral shell (Inter + JetBrains Mono, auto theme sync, tab persistence, optional ECharts/Mermaid/Lucide/Highlight.js), publish a tabbed HTML artifact to Nosta, and sync it into the bound Flow object under the requested tab slot.",
     inputSchema: toMcpInputSchema(artifactPublishInputSchema)
   }
@@ -17530,21 +20216,26 @@ async function resolveBoundFlowId(input) {
       branch = resolved.branch;
     } catch {}
   }
-  const indexed = await resolveIndexedFlowId({ repoRoot, branch, ticket: input.ticket, stateDir: input.stateDir });
+  const indexed = await resolveIndexedFlowId({
+    repoRoot,
+    branch,
+    ticket: input.ticket,
+    stateDir: input.stateDir
+  });
   return indexed ?? undefined;
 }
 async function callArtifactTool(input) {
-  if (input.name === "nosta_artifact_guide") {
+  if (input.name === "guide_artifact") {
     const parsed = parseToolArgs(artifactGuideInputSchema, input.args);
     for (const mod of parsed.modules) {
       input.session.readModules.add(mod);
     }
     return renderArtifactGuide(parsed.modules);
   }
-  if (input.name !== "nosta_artifact_publish")
+  if (input.name !== "publish_artifact")
     return null;
   if (input.session.readModules.size === 0) {
-    throw new Error("call nosta_artifact_guide with the modules you need (spec, diagram, diagnostics, chart, interactive) before calling nosta_artifact_publish");
+    throw new Error("call guide_artifact with the modules you need (spec, diagram, diagnostics, chart, interactive) before calling publish_artifact");
   }
   const parsed = parseToolArgs(artifactPublishInputSchema, input.args);
   validateTabFragments(parsed.tabs);
@@ -17577,7 +20268,11 @@ async function callArtifactTool(input) {
   if (parsed.dryRunPath) {
     await mkdir4(dirname3(parsed.dryRunPath), { recursive: true });
     await writeFile3(parsed.dryRunPath, html, "utf8");
-    return JSON.stringify({ dryRun: true, path: parsed.dryRunPath, ...summary });
+    return JSON.stringify({
+      dryRun: true,
+      path: parsed.dryRunPath,
+      ...summary
+    });
   }
   const flowId = await resolveBoundFlowId({
     explicitFlowId: parsed.flowId,
@@ -17612,19 +20307,32 @@ async function callArtifactTool(input) {
   }
   return JSON.stringify({
     ...summary,
-    ...flowId ? { flowId, flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(flowId)}` } : {},
+    ...flowId ? {
+      flowId,
+      flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(flowId)}`
+    } : {},
     url: `${input.backend.baseUrl}${route}`
   });
 }
 
 // src/gate/ipc.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
-import { chmod, lstat, mkdir as mkdir5, readFile as readFile7, rename as rename3, rm, writeFile as writeFile4 } from "node:fs/promises";
-import { createServer } from "node:http";
+import {
+  chmod,
+  lstat,
+  mkdir as mkdir5,
+  readFile as readFile8,
+  rename as rename3,
+  rm,
+  writeFile as writeFile4
+} from "node:fs/promises";
+import {
+  createServer
+} from "node:http";
 import { homedir as homedir3 } from "node:os";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 function defaultGateDir(env = process.env) {
-  return env.NOSTA_GATE_DIR || join6(homedir3(), ".nosta", "gate");
+  return env.NOSTA_GATE_DIR || join7(homedir3(), ".nosta", "gate");
 }
 function constantTimeTokenMatch(given, expected) {
   const a = Buffer.from(given, "utf8");
@@ -17697,8 +20405,8 @@ async function startGateIpcServer(options) {
   const gateDir = options.gateDir ?? defaultGateDir();
   const pid = options.pid ?? process.pid;
   const token = randomBytes2(32).toString("hex");
-  const socketPath = join6(gateDir, `${pid}.sock`);
-  const discoveryPath = join6(gateDir, "current.json");
+  const socketPath = join7(gateDir, `${pid}.sock`);
+  const discoveryPath = join7(gateDir, "current.json");
   const startedAt = new Date().toISOString();
   await prepareGateDir(gateDir);
   await rm(socketPath, { force: true });
@@ -17716,9 +20424,12 @@ async function startGateIpcServer(options) {
     return;
   });
   const session = { pid, socketPath, token, startedAt };
-  const tmpPath = join6(gateDir, `current.${pid}.tmp`);
+  const tmpPath = join7(gateDir, `current.${pid}.tmp`);
   await writeFile4(tmpPath, `${JSON.stringify(session, null, 2)}
-`, { encoding: "utf8", mode: 384 });
+`, {
+    encoding: "utf8",
+    mode: 384
+  });
   await chmod(tmpPath, 384).catch(() => {
     return;
   });
@@ -17733,7 +20444,7 @@ async function startGateIpcServer(options) {
       return;
     });
     try {
-      const raw = await readFile7(discoveryPath, "utf8");
+      const raw = await readFile8(discoveryPath, "utf8");
       const current = JSON.parse(raw);
       if (current.pid === pid && current.token === token) {
         await rm(discoveryPath, { force: true });
@@ -17795,10 +20506,17 @@ async function handleRequest(input) {
   }
   try {
     const url = new URL(input.req.url ?? "/", "http://localhost");
-    const result = await dispatchRoute({ method: input.req.method ?? "GET", url, req: input.req, gate: input.gate });
+    const result = await dispatchRoute({
+      method: input.req.method ?? "GET",
+      url,
+      req: input.req,
+      gate: input.gate
+    });
     writeJson(input.res, result.status, result.payload);
   } catch (error) {
-    writeJson(input.res, 400, { error: error instanceof Error ? error.message : String(error) });
+    writeJson(input.res, 400, {
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 }
 
@@ -17808,29 +20526,57 @@ var PROMPTS = [
     name: "start_flow",
     description: "Start one Nosta flow from a local spec file, poll until completion or a merge gate, and stop for human approval.",
     arguments: [
-      { name: "path", description: "Absolute path to the spec file.", required: true },
-      { name: "ticketUrl", description: "HTTPS URL of the ticket this flow runs for.", required: true },
-      { name: "baseSha", description: "Optional 40-hex Git SHA; resolves from git rev-parse HEAD if omitted." }
+      {
+        name: "path",
+        description: "Absolute path to the spec file.",
+        required: true
+      },
+      {
+        name: "ticketUrl",
+        description: "HTTPS URL of the ticket this flow runs for.",
+        required: true
+      },
+      {
+        name: "baseSha",
+        description: "Optional 40-hex Git SHA; resolves from git rev-parse HEAD if omitted."
+      }
     ]
   },
   {
     name: "review_flow",
     description: "Inspect one Nosta flow's status and step log with read-only calls only.",
-    arguments: [{ name: "flowId", description: "Flow ID returned by nosta_flow_start.", required: true }]
+    arguments: [
+      {
+        name: "flowId",
+        description: "Flow ID returned by start_flow.",
+        required: true
+      }
+    ]
   },
   {
     name: "approve_flow",
     description: "Read fresh flow state and approve or reject a flow at its merge gate after explicit confirmation.",
     arguments: [
-      { name: "flowId", description: "Flow ID waiting at its merge gate.", required: true },
-      { name: "decision", description: "Optional decision: approve or reject. Omit to inspect and ask first." }
+      {
+        name: "flowId",
+        description: "Flow ID waiting at its merge gate.",
+        required: true
+      },
+      {
+        name: "decision",
+        description: "Optional decision: approve or reject. Omit to inspect and ask first."
+      }
     ]
   },
   {
     name: "review_files",
-    description: "Run a fresh 1-step Nosta file review via nosta_flow_start and poll nosta_flow_status until complete.",
+    description: "Run a fresh 1-step Nosta file review via start_flow and poll get_flow until complete.",
     arguments: [
-      { name: "paths", description: "Absolute file paths to review (comma- or space-separated).", required: true },
+      {
+        name: "paths",
+        description: "Absolute file paths to review (comma- or space-separated).",
+        required: true
+      },
       { name: "title", description: "Optional title for the review flow." }
     ]
   }
@@ -17865,11 +20611,11 @@ function renderStartFlow(args) {
     `Ticket URL: ${ticketUrl}`,
     shaLine,
     "Steps:",
-    "1. Call `nosta_flow_start` once with `path`, `baseSha`, and `ticketUrl`.",
-    "2. Poll `nosta_flow_status` until every child flow finishes, blocks, errors, or reaches its merge gate.",
-    "3. On any blocked, errored, or failed step, call `nosta_flow_log` and report the exact failure cause.",
+    "1. Call `start_flow` once with `path`, `baseSha`, and `ticketUrl`.",
+    "2. Poll `get_flow` until every child flow finishes, blocks, errors, or reaches its merge gate.",
+    "3. On any blocked, errored, or failed step, call `get_flow_log` and report the exact failure cause.",
     "4. At any merge gate, show the PR link and summary, then stop and ask the user for an explicit decision.",
-    "Never call `nosta_flow_approve` without the user's explicit word in this session."
+    "Never call `approve_flow` without the user's explicit word in this session."
   ].join(`
 `);
 }
@@ -17878,7 +20624,7 @@ function renderReviewFlow(args) {
   return [
     `Inspect Nosta flow: ${flowId}`,
     "Steps:",
-    "1. Call `nosta_flow_status` and `nosta_flow_log` for this `flowId`.",
+    "1. Call `get_flow` and `get_flow_log` for this `flowId`.",
     "2. Summarize the flow's state, outcome, child flows, PR links, and any findings or step errors.",
     "3. Make no writes, no approvals, and no rejections."
   ].join(`
@@ -17892,15 +20638,15 @@ function renderApproveFlow(args) {
   }
   const decisionSteps = decision === null ? [
     "2. Show the flow's current state, PR link, version, and attempt to the user.",
-    "3. Ask the user whether to `approve` or `reject`, then stop without calling `nosta_flow_approve`."
+    "3. Ask the user whether to `approve` or `reject`, then stop without calling `approve_flow`."
   ] : [
     `2. Confirm the user explicitly requested \`${decision}\` in this session (never infer approval from an earlier turn).`,
-    `3. Call \`nosta_flow_approve\` with \`flowId\`, \`decision: "${decision}"\`, and the fresh \`version\` and \`attempt\` just read.`
+    `3. Call \`approve_flow\` with \`flowId\`, \`decision: "${decision}"\`, and the fresh \`version\` and \`attempt\` just read.`
   ];
   return [
     `Handle merge gate for flow ${flowId}.`,
     "Steps:",
-    "1. Call `nosta_flow_status` immediately to read the flow's fresh `version`, `attempt`, and PR link.",
+    "1. Call `get_flow` immediately to read the flow's fresh `version`, `attempt`, and PR link.",
     ...decisionSteps
   ].join(`
 `);
@@ -17913,8 +20659,8 @@ function renderReviewFiles(args) {
     `Run a Nosta code review on these absolute file paths: ${paths}`,
     titleLine,
     "Steps:",
-    "1. Call `nosta_flow_start` with `paths` (array of absolute paths) and optional `title`.",
-    "2. Poll `nosta_flow_status` with the returned `flowId` until `state` is `idle` (check `outcome` and the review step's verdict/findings).",
+    "1. Call `start_flow` with `paths` (array of absolute paths) and optional `title`.",
+    "2. Poll `get_flow` with the returned `flowId` until `state` is `idle` (check `outcome` and the review step's verdict/findings).",
     "3. Report each finding with file, line, severity, and concrete remedy; do not invent out-of-spec requirements."
   ].join(`
 `);
@@ -17955,7 +20701,12 @@ async function callTool(name, args) {
   const flow = await callFlowTool({ name, args, backend, gate });
   if (flow !== null)
     return flow;
-  const artifact = await callArtifactTool({ name, args, backend, session: artifactSession });
+  const artifact = await callArtifactTool({
+    name,
+    args,
+    backend,
+    session: artifactSession
+  });
   if (artifact !== null)
     return artifact;
   throw new Error(`unknown tool: ${name}`);
@@ -17988,7 +20739,7 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.5.2" }
+        serverInfo: { name: "nosta", version: "0.5.3" }
       });
     } else if (method === "ping") {
       sendResult(id, {});
@@ -18005,7 +20756,10 @@ async function handle(message) {
       sendResult(id, { prompts: listPrompts() });
     } else if (method === "prompts/get") {
       try {
-        const result = getPrompt({ name: params?.name ?? "", args: params?.arguments ?? {} });
+        const result = getPrompt({
+          name: params?.name ?? "",
+          args: params?.arguments ?? {}
+        });
         sendResult(id, result);
       } catch (error) {
         sendError(id, -32602, errorText(error));
@@ -18065,7 +20819,7 @@ async function readStdinText() {
   }
   return Buffer.concat(chunks).toString("utf8");
 }
-async function runFlowSyncCli(args) {
+async function readJsonPayload(args) {
   let rawJson = null;
   for (let i = 0;i < args.length; i += 1) {
     const arg = args[i];
@@ -18079,14 +20833,43 @@ async function runFlowSyncCli(args) {
       const filePath = args[i + 1];
       if (!filePath)
         throw new Error("--file requires a path argument");
-      rawJson = await readFile8(filePath, "utf8");
+      rawJson = await readFile9(filePath, "utf8");
       i += 1;
     }
   }
   const text = rawJson ?? await readStdinText();
-  const parsed = flowSyncInputSchema.parse(JSON.parse(text));
+  return JSON.parse(text);
+}
+async function runFlowSyncCli(args) {
+  const parsed = flowSyncInputSchema.parse(await readJsonPayload(args));
   const result = await syncFlow({ args: parsed, backend: transportFromEnv() });
   process.stdout.write(`${JSON.stringify(result)}
+`);
+}
+var CLI_TOOL_ALIASES = {
+  validate: "validate_flow",
+  list: "list_flows",
+  history: "get_flow_history",
+  start: "start_flow",
+  get: "get_flow",
+  log: "get_flow_log",
+  advance: "advance_flow",
+  signal: "signal_flow",
+  retry: "retry_flow",
+  cancel: "cancel_flow",
+  approve: "approve_flow",
+  bypass: "bypass_flow"
+};
+async function runToolCli(toolName, args) {
+  const payload = args.length === 0 && process.stdin.isTTY ? {} : await readJsonPayload(args);
+  const out = await callFlowTool({
+    name: toolName,
+    args: payload,
+    backend: transportFromEnv()
+  });
+  if (out === null)
+    throw new Error(`unknown flow tool: ${toolName}`);
+  process.stdout.write(`${out}
 `);
 }
 async function main() {
@@ -18107,8 +20890,13 @@ async function main() {
     process.stdout.write(formatInstallSummary(result));
     return;
   }
-  if (command === "flow" && args[1] === "sync") {
-    await runFlowSyncCli(args.slice(2));
+  if (command === "sync" || command === "flow" && args[1] === "sync") {
+    await runFlowSyncCli(command === "sync" ? args.slice(1) : args.slice(2));
+    return;
+  }
+  const toolName = CLI_TOOL_ALIASES[command];
+  if (toolName) {
+    await runToolCli(toolName, args.slice(1));
     return;
   }
   throw new Error(`unknown command: ${command}

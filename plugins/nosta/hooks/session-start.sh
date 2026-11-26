@@ -10,7 +10,14 @@ context_parts=()
 if [ "$skills_mode" = "off" ] || [ "$skills_mode" = "none" ]; then
   context_parts+=("Nosta plugin skills are disabled by NOSTA_PLUGIN_SKILLS=${skills_mode}; ignore bundled nosta:* skills and defer to workspace skills.")
 elif [ "$skills_mode" = "flow-only" ]; then
-  context_parts+=("Nosta plugin skill mode is flow-only (NOSTA_PLUGIN_SKILLS=flow-only); use nosta:running-nosta-flows only and ignore bundled nosta:* engineering skills in favor of workspace skills.")
+  context_parts+=("Nosta plugin skill mode is flow-only (NOSTA_PLUGIN_SKILLS=flow-only); use nosta:use-flow only and ignore other bundled nosta:* skills in favor of workspace skills.")
+fi
+
+if [ -d ".nosta/workflows" ]; then
+  wf_list="$(ls -1 .nosta/workflows/*.yaml 2>/dev/null | xargs -I{} basename {} .yaml | paste -sd ',' - || true)"
+  if [ -n "$wf_list" ]; then
+    context_parts+=("Repo YAML workflows available: ${wf_list}.")
+  fi
 fi
 
 if [ -n "$backend_url" ] || [ -n "$plugin_token" ]; then

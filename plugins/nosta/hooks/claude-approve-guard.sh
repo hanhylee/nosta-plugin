@@ -30,7 +30,7 @@ else
   tool_name="__INVALID_JSON__"
 fi
 
-if [ "$tool_name" = "__INVALID_JSON__" ] || [[ "$tool_name" == *nosta_flow_approve ]] || [[ "$tool_name" == *nosta_flow_bypass ]]; then
+if [ "$tool_name" = "__INVALID_JSON__" ] || [[ "$tool_name" == *approve_flow ]] || [[ "$tool_name" == *bypass_flow ]]; then
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Confirm flow approval, rejection, or workflow bypass explicitly with the user in this session."}}\n'
   exit 0
 fi
