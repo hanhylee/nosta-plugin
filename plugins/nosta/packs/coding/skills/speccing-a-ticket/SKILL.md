@@ -19,7 +19,10 @@ description: Ground a ticket or feature idea in code, align on scope and decisio
 2. Read the repository's `AGENTS.md` (or contributing guide) and existing architecture docs first.
 3. Read the ticket and the real call sites, types, and pathways in the codebase. Prove every claim from code, logs, or a local run — never ask the owner a question the codebase can answer.
 4. Search for existing utilities, endpoints, or libraries in the repo that already solve part of the problem before proposing new abstractions.
-5. For bug fixes, identify the observed root cause and targeted fix before designing an end state.
+5. For bug fixes (or any ticket with reported faults), run a pre-alignment verification spike before writing alignment or planning a long-term solution:
+   - Form an explicit hypothesis for whether each reported bug is actually real and what causes it.
+   - Design and run an experiment / reproduction spike against the real code path, runtime, or stack to test that hypothesis.
+   - Prove with observed output whether the bug is real, then identify the observed root cause and targeted fix before moving into alignment or designing an end state.
 
 ### 2. Align on scope and decisions
 

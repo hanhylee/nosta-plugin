@@ -9,7 +9,7 @@ evidence:
 steps:
   - id: align
     kind: agent
-    prompt: Research the codebase, identify open design decisions, and align with the owner one decision at a time.
+    prompt: Research the codebase, prove any reported bug is real with a hypothesis-and-experiment spike against the real code path or stack before alignment, identify open design decisions, and align with the owner one decision at a time.
   - id: approve_alignment
     kind: wait
     signal: alignment_approved

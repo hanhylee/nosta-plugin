@@ -1,6 +1,6 @@
 {
   "name": "nosta",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
   "author": {
     "name": "hanhylee"

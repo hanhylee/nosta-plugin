@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/identity.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/identity.js
 var require_identity = __commonJS(function(exports) {
   var ALIAS = Symbol.for("yaml.alias");
   var DOC = Symbol.for("yaml.document");
@@ -57,7 +57,7 @@ var require_identity = __commonJS(function(exports) {
   exports.isSeq = isSeq;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/visit.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/visit.js
 var require_visit = __commonJS(function(exports) {
   var identity = require_identity();
   var BREAK = Symbol("break visit");
@@ -212,7 +212,7 @@ var require_visit = __commonJS(function(exports) {
   exports.visitAsync = visitAsync;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/directives.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/directives.js
 var require_directives = __commonJS(function(exports) {
   var identity = require_identity();
   var visit = require_visit();
@@ -364,7 +364,7 @@ var require_directives = __commonJS(function(exports) {
   exports.Directives = Directives;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/anchors.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/anchors.js
 var require_anchors = __commonJS(function(exports) {
   var identity = require_identity();
   var visit = require_visit();
@@ -426,7 +426,7 @@ var require_anchors = __commonJS(function(exports) {
   exports.findNewAnchor = findNewAnchor;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/applyReviver.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/applyReviver.js
 var require_applyReviver = __commonJS(function(exports) {
   function applyReviver(reviver, obj, key, val) {
     if (val && typeof val === "object") {
@@ -473,7 +473,7 @@ var require_applyReviver = __commonJS(function(exports) {
   exports.applyReviver = applyReviver;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/toJS.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/toJS.js
 var require_toJS = __commonJS(function(exports) {
   var identity = require_identity();
   function toJS(value, arg, ctx) {
@@ -500,7 +500,7 @@ var require_toJS = __commonJS(function(exports) {
   exports.toJS = toJS;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Node.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Node.js
 var require_Node = __commonJS(function(exports) {
   var applyReviver = require_applyReviver();
   var identity = require_identity();
@@ -537,7 +537,7 @@ var require_Node = __commonJS(function(exports) {
   exports.NodeBase = NodeBase;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Alias.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Alias.js
 var require_Alias = __commonJS(function(exports) {
   var anchors = require_anchors();
   var visit = require_visit();
@@ -649,7 +649,7 @@ var require_Alias = __commonJS(function(exports) {
   exports.Alias = Alias;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Scalar.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Scalar.js
 var require_Scalar = __commonJS(function(exports) {
   var identity = require_identity();
   var Node = require_Node();
@@ -677,7 +677,7 @@ var require_Scalar = __commonJS(function(exports) {
   exports.isScalarValue = isScalarValue;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/createNode.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/createNode.js
 var require_createNode = __commonJS(function(exports) {
   var Alias = require_Alias();
   var identity = require_identity();
@@ -749,7 +749,7 @@ var require_createNode = __commonJS(function(exports) {
   exports.createNode = createNode;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Collection.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Collection.js
 var require_Collection = __commonJS(function(exports) {
   var createNode = require_createNode();
   var identity = require_identity();
@@ -864,7 +864,7 @@ var require_Collection = __commonJS(function(exports) {
   exports.isEmptyPath = isEmptyPath;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyComment.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyComment.js
 var require_stringifyComment = __commonJS(function(exports) {
   var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
   function indentComment(comment, indent) {
@@ -881,7 +881,7 @@ var require_stringifyComment = __commonJS(function(exports) {
   exports.stringifyComment = stringifyComment;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/foldFlowLines.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/foldFlowLines.js
 var require_foldFlowLines = __commonJS(function(exports) {
   var FOLD_FLOW = "flow";
   var FOLD_BLOCK = "block";
@@ -1018,7 +1018,7 @@ ${indent}${text.slice(fold + 1, end)}`;
   exports.foldFlowLines = foldFlowLines;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyString.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyString.js
 var require_stringifyString = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var foldFlowLines = require_foldFlowLines();
@@ -1316,7 +1316,7 @@ ${indent}`);
   exports.stringifyString = stringifyString;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringify.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringify.js
 var require_stringify = __commonJS(function(exports) {
   var anchors = require_anchors();
   var identity = require_identity();
@@ -1437,7 +1437,7 @@ ${ctx.indent}${str}`;
   exports.stringify = stringify;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyPair.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyPair.js
 var require_stringifyPair = __commonJS(function(exports) {
   var identity = require_identity();
   var Scalar = require_Scalar();
@@ -1573,7 +1573,7 @@ ${ctx.indent}`;
   exports.stringifyPair = stringifyPair;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/log.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/log.js
 var require_log = __commonJS(function(exports) {
   var node_process = __require("process");
   function debug(logLevel, ...messages) {
@@ -1592,7 +1592,7 @@ var require_log = __commonJS(function(exports) {
   exports.warn = warn;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/merge.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/merge.js
 var require_merge = __commonJS(function(exports) {
   var identity = require_identity();
   var Scalar = require_Scalar();
@@ -1649,7 +1649,7 @@ var require_merge = __commonJS(function(exports) {
   exports.merge = merge;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/addPairToJSMap.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/addPairToJSMap.js
 var require_addPairToJSMap = __commonJS(function(exports) {
   var log = require_log();
   var merge = require_merge();
@@ -1710,7 +1710,7 @@ var require_addPairToJSMap = __commonJS(function(exports) {
   exports.addPairToJSMap = addPairToJSMap;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Pair.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/Pair.js
 var require_Pair = __commonJS(function(exports) {
   var createNode = require_createNode();
   var stringifyPair = require_stringifyPair();
@@ -1748,7 +1748,7 @@ var require_Pair = __commonJS(function(exports) {
   exports.createPair = createPair;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyCollection.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyCollection.js
 var require_stringifyCollection = __commonJS(function(exports) {
   var identity = require_identity();
   var stringify = require_stringify();
@@ -1900,7 +1900,7 @@ ${indent}${end}`;
   exports.stringifyCollection = stringifyCollection;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/YAMLMap.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/YAMLMap.js
 var require_YAMLMap = __commonJS(function(exports) {
   var stringifyCollection = require_stringifyCollection();
   var addPairToJSMap = require_addPairToJSMap();
@@ -2027,7 +2027,7 @@ var require_YAMLMap = __commonJS(function(exports) {
   exports.findPair = findPair;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/map.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/map.js
 var require_map = __commonJS(function(exports) {
   var identity = require_identity();
   var YAMLMap = require_YAMLMap();
@@ -2046,7 +2046,7 @@ var require_map = __commonJS(function(exports) {
   exports.map = map;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/YAMLSeq.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/nodes/YAMLSeq.js
 var require_YAMLSeq = __commonJS(function(exports) {
   var createNode = require_createNode();
   var stringifyCollection = require_stringifyCollection();
@@ -2139,7 +2139,7 @@ var require_YAMLSeq = __commonJS(function(exports) {
   exports.YAMLSeq = YAMLSeq;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/seq.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/seq.js
 var require_seq = __commonJS(function(exports) {
   var identity = require_identity();
   var YAMLSeq = require_YAMLSeq();
@@ -2158,7 +2158,7 @@ var require_seq = __commonJS(function(exports) {
   exports.seq = seq;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/string.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/string.js
 var require_string = __commonJS(function(exports) {
   var stringifyString = require_stringifyString();
   var string = {
@@ -2174,7 +2174,7 @@ var require_string = __commonJS(function(exports) {
   exports.string = string;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/null.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/common/null.js
 var require_null = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var nullTag = {
@@ -2189,7 +2189,7 @@ var require_null = __commonJS(function(exports) {
   exports.nullTag = nullTag;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/bool.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/bool.js
 var require_bool = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var boolTag = {
@@ -2210,7 +2210,7 @@ var require_bool = __commonJS(function(exports) {
   exports.boolTag = boolTag;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyNumber.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyNumber.js
 var require_stringifyNumber = __commonJS(function(exports) {
   function stringifyNumber({ format, minFractionDigits, tag, value }) {
     if (typeof value === "bigint")
@@ -2234,7 +2234,7 @@ var require_stringifyNumber = __commonJS(function(exports) {
   exports.stringifyNumber = stringifyNumber;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/float.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/float.js
 var require_float = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var stringifyNumber = require_stringifyNumber();
@@ -2277,7 +2277,7 @@ var require_float = __commonJS(function(exports) {
   exports.floatNaN = floatNaN;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/int.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/int.js
 var require_int = __commonJS(function(exports) {
   var stringifyNumber = require_stringifyNumber();
   var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
@@ -2319,7 +2319,7 @@ var require_int = __commonJS(function(exports) {
   exports.intOct = intOct;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/schema.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/core/schema.js
 var require_schema = __commonJS(function(exports) {
   var map = require_map();
   var _null = require_null();
@@ -2344,7 +2344,7 @@ var require_schema = __commonJS(function(exports) {
   exports.schema = schema;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/json/schema.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/json/schema.js
 var require_schema2 = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var map = require_map();
@@ -2408,7 +2408,7 @@ var require_schema2 = __commonJS(function(exports) {
   exports.schema = schema;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/binary.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/binary.js
 var require_binary = __commonJS(function(exports) {
   var node_buffer = __require("buffer");
   var Scalar = require_Scalar();
@@ -2463,7 +2463,7 @@ var require_binary = __commonJS(function(exports) {
   exports.binary = binary;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/pairs.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/pairs.js
 var require_pairs = __commonJS(function(exports) {
   var identity = require_identity();
   var Pair = require_Pair();
@@ -2538,7 +2538,7 @@ ${cn.comment}` : item.comment;
   exports.resolvePairs = resolvePairs;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/omap.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/omap.js
 var require_omap = __commonJS(function(exports) {
   var identity = require_identity();
   var toJS = require_toJS();
@@ -2610,7 +2610,7 @@ var require_omap = __commonJS(function(exports) {
   exports.omap = omap;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/bool.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/bool.js
 var require_bool2 = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   function boolStringify({ value, source }, ctx) {
@@ -2639,7 +2639,7 @@ var require_bool2 = __commonJS(function(exports) {
   exports.trueTag = trueTag;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/float.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/float.js
 var require_float2 = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var stringifyNumber = require_stringifyNumber();
@@ -2685,7 +2685,7 @@ var require_float2 = __commonJS(function(exports) {
   exports.floatNaN = floatNaN;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/int.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/int.js
 var require_int2 = __commonJS(function(exports) {
   var stringifyNumber = require_stringifyNumber();
   var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
@@ -2761,7 +2761,7 @@ var require_int2 = __commonJS(function(exports) {
   exports.intOct = intOct;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/set.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/set.js
 var require_set = __commonJS(function(exports) {
   var identity = require_identity();
   var Pair = require_Pair();
@@ -2844,7 +2844,7 @@ var require_set = __commonJS(function(exports) {
   exports.set = set;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/timestamp.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/timestamp.js
 var require_timestamp = __commonJS(function(exports) {
   var stringifyNumber = require_stringifyNumber();
   function parseSexagesimal(str, asBigInt) {
@@ -2926,7 +2926,7 @@ var require_timestamp = __commonJS(function(exports) {
   exports.timestamp = timestamp;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/schema.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/yaml-1.1/schema.js
 var require_schema3 = __commonJS(function(exports) {
   var map = require_map();
   var _null = require_null();
@@ -2967,7 +2967,7 @@ var require_schema3 = __commonJS(function(exports) {
   exports.schema = schema;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/tags.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/tags.js
 var require_tags = __commonJS(function(exports) {
   var map = require_map();
   var _null = require_null();
@@ -3058,7 +3058,7 @@ var require_tags = __commonJS(function(exports) {
   exports.getTags = getTags;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/Schema.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/schema/Schema.js
 var require_Schema = __commonJS(function(exports) {
   var identity = require_identity();
   var map = require_map();
@@ -3088,7 +3088,7 @@ var require_Schema = __commonJS(function(exports) {
   exports.Schema = Schema;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyDocument.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/stringify/stringifyDocument.js
 var require_stringifyDocument = __commonJS(function(exports) {
   var identity = require_identity();
   var stringify = require_stringify();
@@ -3168,7 +3168,7 @@ var require_stringifyDocument = __commonJS(function(exports) {
   exports.stringifyDocument = stringifyDocument;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/Document.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/doc/Document.js
 var require_Document = __commonJS(function(exports) {
   var Alias = require_Alias();
   var Collection = require_Collection();
@@ -3403,7 +3403,7 @@ var require_Document = __commonJS(function(exports) {
   exports.Document = Document;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/errors.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/errors.js
 var require_errors = __commonJS(function(exports) {
   class YAMLError extends Error {
     constructor(name, pos, code, message) {
@@ -3468,7 +3468,7 @@ ${pointer}
   exports.prettifyError = prettifyError;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-props.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-props.js
 var require_resolve_props = __commonJS(function(exports) {
   function resolveProps(tokens, { flow, indicator, next, offset, onError, parentIndent, startOnNewline }) {
     let spaceBefore = false;
@@ -3598,7 +3598,7 @@ var require_resolve_props = __commonJS(function(exports) {
   exports.resolveProps = resolveProps;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-contains-newline.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-contains-newline.js
 var require_util_contains_newline = __commonJS(function(exports) {
   function containsNewline(key) {
     if (!key)
@@ -3638,7 +3638,7 @@ var require_util_contains_newline = __commonJS(function(exports) {
   exports.containsNewline = containsNewline;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-flow-indent-check.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-flow-indent-check.js
 var require_util_flow_indent_check = __commonJS(function(exports) {
   var utilContainsNewline = require_util_contains_newline();
   function flowIndentCheck(indent, fc, onError) {
@@ -3653,7 +3653,7 @@ var require_util_flow_indent_check = __commonJS(function(exports) {
   exports.flowIndentCheck = flowIndentCheck;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-map-includes.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-map-includes.js
 var require_util_map_includes = __commonJS(function(exports) {
   var identity = require_identity();
   function mapIncludes(ctx, items, search) {
@@ -3666,7 +3666,7 @@ var require_util_map_includes = __commonJS(function(exports) {
   exports.mapIncludes = mapIncludes;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-map.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-map.js
 var require_resolve_block_map = __commonJS(function(exports) {
   var Pair = require_Pair();
   var YAMLMap = require_YAMLMap();
@@ -3773,7 +3773,7 @@ var require_resolve_block_map = __commonJS(function(exports) {
   exports.resolveBlockMap = resolveBlockMap;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-seq.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-seq.js
 var require_resolve_block_seq = __commonJS(function(exports) {
   var YAMLSeq = require_YAMLSeq();
   var resolveProps = require_resolve_props();
@@ -3821,7 +3821,7 @@ var require_resolve_block_seq = __commonJS(function(exports) {
   exports.resolveBlockSeq = resolveBlockSeq;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-end.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-end.js
 var require_resolve_end = __commonJS(function(exports) {
   function resolveEnd(end, offset, reqSpace, onError) {
     let comment = "";
@@ -3861,7 +3861,7 @@ var require_resolve_end = __commonJS(function(exports) {
   exports.resolveEnd = resolveEnd;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-flow-collection.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-flow-collection.js
 var require_resolve_flow_collection = __commonJS(function(exports) {
   var identity = require_identity();
   var Pair = require_Pair();
@@ -4052,7 +4052,7 @@ var require_resolve_flow_collection = __commonJS(function(exports) {
   exports.resolveFlowCollection = resolveFlowCollection;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-collection.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-collection.js
 var require_compose_collection = __commonJS(function(exports) {
   var identity = require_identity();
   var Scalar = require_Scalar();
@@ -4114,7 +4114,7 @@ var require_compose_collection = __commonJS(function(exports) {
   exports.composeCollection = composeCollection;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-scalar.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-block-scalar.js
 var require_resolve_block_scalar = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   function resolveBlockScalar(ctx, scalar, onError) {
@@ -4307,7 +4307,7 @@ var require_resolve_block_scalar = __commonJS(function(exports) {
   exports.resolveBlockScalar = resolveBlockScalar;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-flow-scalar.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/resolve-flow-scalar.js
 var require_resolve_flow_scalar = __commonJS(function(exports) {
   var Scalar = require_Scalar();
   var resolveEnd = require_resolve_end();
@@ -4523,7 +4523,7 @@ var require_resolve_flow_scalar = __commonJS(function(exports) {
   exports.resolveFlowScalar = resolveFlowScalar;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-scalar.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-scalar.js
 var require_compose_scalar = __commonJS(function(exports) {
   var identity = require_identity();
   var Scalar = require_Scalar();
@@ -4601,7 +4601,7 @@ var require_compose_scalar = __commonJS(function(exports) {
   exports.composeScalar = composeScalar;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-empty-scalar-position.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/util-empty-scalar-position.js
 var require_util_empty_scalar_position = __commonJS(function(exports) {
   function emptyScalarPosition(offset, before, pos) {
     if (before) {
@@ -4628,7 +4628,7 @@ var require_util_empty_scalar_position = __commonJS(function(exports) {
   exports.emptyScalarPosition = emptyScalarPosition;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-node.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-node.js
 var require_compose_node = __commonJS(function(exports) {
   var Alias = require_Alias();
   var identity = require_identity();
@@ -4731,7 +4731,7 @@ var require_compose_node = __commonJS(function(exports) {
   exports.composeNode = composeNode;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-doc.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/compose-doc.js
 var require_compose_doc = __commonJS(function(exports) {
   var Document = require_Document();
   var composeNode = require_compose_node();
@@ -4771,7 +4771,7 @@ var require_compose_doc = __commonJS(function(exports) {
   exports.composeDoc = composeDoc;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/composer.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/compose/composer.js
 var require_composer = __commonJS(function(exports) {
   var node_process = __require("process");
   var directives = require_directives();
@@ -4962,7 +4962,7 @@ ${end.comment}` : end.comment;
   exports.Composer = Composer;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-scalar.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-scalar.js
 var require_cst_scalar = __commonJS(function(exports) {
   var resolveBlockScalar = require_resolve_block_scalar();
   var resolveFlowScalar = require_resolve_flow_scalar();
@@ -5152,7 +5152,7 @@ var require_cst_scalar = __commonJS(function(exports) {
   exports.setScalarValue = setScalarValue;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-stringify.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-stringify.js
 var require_cst_stringify = __commonJS(function(exports) {
   var stringify = (cst) => ("type" in cst) ? stringifyToken(cst) : stringifyItem(cst);
   function stringifyToken(token) {
@@ -5210,7 +5210,7 @@ var require_cst_stringify = __commonJS(function(exports) {
   exports.stringify = stringify;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-visit.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst-visit.js
 var require_cst_visit = __commonJS(function(exports) {
   var BREAK = Symbol("break visit");
   var SKIP = Symbol("skip children");
@@ -5269,7 +5269,7 @@ var require_cst_visit = __commonJS(function(exports) {
   exports.visit = visit;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/cst.js
 var require_cst = __commonJS(function(exports) {
   var cstScalar = require_cst_scalar();
   var cstStringify = require_cst_stringify();
@@ -5370,7 +5370,7 @@ var require_cst = __commonJS(function(exports) {
   exports.tokenType = tokenType;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/lexer.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/lexer.js
 var require_lexer = __commonJS(function(exports) {
   var cst = require_cst();
   function isEmpty(ch) {
@@ -5967,7 +5967,7 @@ var require_lexer = __commonJS(function(exports) {
   exports.Lexer = Lexer;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/line-counter.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/line-counter.js
 var require_line_counter = __commonJS(function(exports) {
   class LineCounter {
     constructor() {
@@ -5995,7 +5995,7 @@ var require_line_counter = __commonJS(function(exports) {
   exports.LineCounter = LineCounter;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/parser.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/parse/parser.js
 var require_parser = __commonJS(function(exports) {
   var node_process = __require("process");
   var cst = require_cst();
@@ -6851,7 +6851,7 @@ var require_parser = __commonJS(function(exports) {
   exports.Parser = Parser;
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/public-api.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/public-api.js
 var require_public_api = __commonJS(function(exports) {
   var composer = require_composer();
   var Document = require_Document();
@@ -6945,14 +6945,14 @@ var require_public_api = __commonJS(function(exports) {
   exports.stringify = stringify;
 });
 
-// src/bin.ts
+// apps/plugin/src/bin.ts
 import { readFile as readFile9 } from "node:fs/promises";
 
-// src/flow.ts
+// apps/plugin/src/flow.ts
 import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
 import { readFile as readFile7, stat as stat3 } from "node:fs/promises";
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
   const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
@@ -7529,7 +7529,7 @@ function constantCatch(value) {
   return fn;
 }
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/core.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/core.js
 var _a;
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
@@ -7647,7 +7647,7 @@ function config(newConfig) {
     Object.assign(globalConfig, newConfig);
   return globalConfig;
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/errors.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
   internals.message ?? (internals.message = JSON.stringify(internals.def, jsonStringifyReplacer, 2));
@@ -7762,7 +7762,7 @@ function formatError(error, mapper = (issue) => issue.message) {
   return fieldErrors;
 }
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/parse.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
@@ -7909,7 +7909,7 @@ var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
 var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/regexes.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/regexes.js
 var cuid = /^[cC][0-9a-z]{6,}$/;
 var cuid2 = /^[0-9a-z]+$/;
 var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
@@ -7968,7 +7968,7 @@ var _null = /^null$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/checks.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/checks.js
 var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
   var _a;
   inst._zod ?? (inst._zod = {});
@@ -8284,7 +8284,7 @@ var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (ins
   };
 });
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/doc.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/doc.js
 class Doc {
   constructor(args = [], closed = {}) {
     this.content = [];
@@ -8326,14 +8326,14 @@ ${content.join(`
   }
 }
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/versions.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
   minor: 6,
   patch: 7
 };
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/schemas.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/schemas.js
 var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   var _a;
   inst ?? (inst = {});
@@ -10003,7 +10003,7 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/memoizer.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/memoizer.js
 class $ZodCyclicError extends Error {
   constructor() {
     super(`Cannot parse a reference cycle that closes through a transform`);
@@ -10272,7 +10272,7 @@ function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
   return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/locales/en.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/locales/en.js
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -10394,7 +10394,7 @@ function en_default() {
     localeError: error()
   };
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/registries.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/registries.js
 var _a2;
 class $ZodRegistry {
   constructor() {
@@ -10441,7 +10441,7 @@ function registry() {
 }
 (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
 var globalRegistry = globalThis.__zod_globalRegistry;
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/api.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
     def.checks = [...def.checks];
@@ -10895,7 +10895,7 @@ function _check(fn, params) {
   ch._zod.check = fn;
   return ch;
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/to-json-schema.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
     for (const key of Reflect.ownKeys(source)) {
@@ -11418,7 +11418,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/json-schema-processors.js
 var narrowMin = (agg, key, value) => {
   if (agg[key] === undefined || value > agg[key])
     agg[key] = value;
@@ -12161,7 +12161,7 @@ function toJSONSchema(input, params) {
   extractDefs(ctx, input);
   return finalize(ctx, input);
 }
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/errors.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
@@ -12206,7 +12206,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefi
   Parent: Error
 });
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/parse.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
@@ -12220,7 +12220,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 
-// ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/schemas.js
+// node_modules/.bun/zod@4.6.7/node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
     config(en_default());
@@ -13140,7 +13140,7 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// ../../packages/shared/src/packet.ts
+// packages/shared/src/packet.ts
 var MAX_FILES = 32;
 var MAX_PACKET_BYTES = 256 * 1024;
 var MAX_SERIALIZED_BYTES = 384 * 1024;
@@ -13215,7 +13215,7 @@ function validatePacket(input) {
   return { ok: true, packet: { title, files, totalBytes } };
 }
 
-// ../../packages/shared/src/schema/primitives.ts
+// packages/shared/src/schema/primitives.ts
 var countSchema = number2().int().min(0);
 var positiveSchema = number2().int().min(1);
 function listOf(key, item) {
@@ -13227,7 +13227,7 @@ function replyOf(key, item) {
   return object(shape);
 }
 
-// ../../packages/shared/src/lifecycle.ts
+// packages/shared/src/lifecycle.ts
 var LIFECYCLE_STATES = ["idle", "queued", "running"];
 var LIFECYCLE_OUTCOMES = [
   "complete",
@@ -13256,7 +13256,7 @@ var BLOCK_REASONS = [
   "checks_after_rebase"
 ];
 
-// ../../packages/shared/src/schema/label.ts
+// packages/shared/src/schema/label.ts
 var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 var MAX_FLOW_LABELS = 200;
 var labelColorSchema = _enum([
@@ -13276,7 +13276,7 @@ var flowLabelsInputSchema = object({
   labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS)
 });
 
-// ../../packages/shared/src/schema/flow.ts
+// packages/shared/src/schema/flow.ts
 var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
 var prioritySchema = _enum(FLOW_PRIORITIES);
 var flowNameSchema = string2().trim().min(1).max(80);
@@ -13288,7 +13288,7 @@ var updateFlowInputSchema = object({
   labels: flowLabelsInputSchema.shape.labels.optional()
 });
 
-// ../../packages/shared/src/schema/runtime/provider.ts
+// packages/shared/src/schema/runtime/provider.ts
 var CLI_DRIVERS = ["claude", "antigravity", "codex"];
 var CLOUD_SESSION_DRIVERS = [
   "anthropic-routine",
@@ -13352,7 +13352,7 @@ function isValidProfileId(value) {
   return ID_PATTERN.test(value);
 }
 
-// ../../packages/shared/src/schema/flow/config.ts
+// packages/shared/src/schema/flow/config.ts
 var childConfigSchema = object({
   tools: array(string2()),
   secrets: array(string2()),
@@ -13372,7 +13372,7 @@ var flowConfigSchema = object({
   vmProfileId: string2().min(1).max(64).optional()
 });
 
-// ../../packages/shared/src/schema/flow/slice.ts
+// packages/shared/src/schema/flow/slice.ts
 var flowTargetSchema = object({
   repo: string2(),
   base: string2(),
@@ -13401,7 +13401,7 @@ var flowSliceSchema = object({
   spec: flowSpecNodeSchema
 });
 
-// ../../packages/shared/src/schema/flow/status.ts
+// packages/shared/src/schema/flow/status.ts
 var flowStatusSchema = _enum([
   "queued",
   "running",
@@ -13427,7 +13427,7 @@ var stepStatusSchema = _enum([
   "rejected"
 ]);
 
-// ../../packages/shared/src/review-report.ts
+// packages/shared/src/review-report.ts
 var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
 var findingSchema = object({
   file: string2(),
@@ -13441,7 +13441,7 @@ var reviewReportSchema = object({
   verdict: _enum(["PASS", "FAIL"])
 });
 
-// ../../packages/shared/src/schema/flow/step/usage.ts
+// packages/shared/src/schema/flow/step/usage.ts
 var MAX_RAW_BYTES = 64 * 1024;
 var usageSchema = object({
   inputTokens: countSchema,
@@ -13456,7 +13456,7 @@ var USAGE_KEYS = new Set([
   "reasoningTokens"
 ]);
 
-// ../../packages/shared/src/schema/flow/step/record.ts
+// packages/shared/src/schema/flow/step/record.ts
 var stepFileRefSchema = object({
   name: string2(),
   sha256: string2(),
@@ -13540,7 +13540,7 @@ function approvalDecisionForStatus(status) {
   return null;
 }
 
-// ../../packages/shared/src/schema/flow/record.ts
+// packages/shared/src/schema/flow/record.ts
 var pullRequestSchema = object({
   url: string2(),
   number: positiveSchema,
@@ -13727,7 +13727,7 @@ var flowRecordSchema = object({
   updatedAt: countSchema
 });
 
-// src/api/generated/nosta.ts
+// apps/plugin/src/api/generated/nosta.ts
 var getGetFlowPageUrl = (id, params) => {
   const normalizedParams = new URLSearchParams;
   Object.entries(params || {}).forEach(([key, value]) => {
@@ -13777,7 +13777,7 @@ var getCancelFlowUrl = (id) => {
   return `/api/flow/${id}/cancel`;
 };
 
-// ../../packages/shared/src/runtime/telemetry.ts
+// packages/shared/src/runtime/telemetry.ts
 var telemetryAgentKindSchema = _enum(["review", "node"]);
 var telemetryDailyRowSchema = object({
   day: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -13790,8 +13790,47 @@ var telemetryDailyRowSchema = object({
 var telemetryDailyResponseSchema = object({
   rows: array(telemetryDailyRowSchema)
 });
+var MAX_CLIENT_PERF_BATCH = 50;
+var CLIENT_PERF_METRICS = [
+  "boot_ms",
+  "nav_ms",
+  "mutation_ms",
+  "sse_patch",
+  "sse_refetch",
+  "optimistic_rollback",
+  "sync_bootstrap_ms",
+  "sync_delta_ms",
+  "sync_reset",
+  "sync_reconnect"
+];
+var clientPerfMetricSchema = _enum(CLIENT_PERF_METRICS);
+var clientPerfSampleSchema = object({
+  metric: clientPerfMetricSchema,
+  route: string2().regex(/^[a-z0-9_/-]{0,64}$/).default(""),
+  durationMs: number2().min(0).max(300000),
+  count: number2().int().min(1).max(1e4).optional(),
+  serverMs: number2().min(0).max(300000).optional()
+});
+var clientPerfBatchSchema = object({
+  samples: array(clientPerfSampleSchema).min(1).max(MAX_CLIENT_PERF_BATCH)
+});
+var clientPerfReplySchema = object({ accepted: countSchema });
+var perfDailyRowSchema = object({
+  day: string2().regex(/^\d{4}-\d{2}-\d{2}$/),
+  metric: clientPerfMetricSchema,
+  route: string2(),
+  samples: countSchema,
+  avgMs: number2().min(0),
+  p50Ms: number2().min(0),
+  p95Ms: number2().min(0),
+  maxMs: number2().min(0),
+  slowCount: countSchema
+});
+var perfDailyResponseSchema = object({
+  rows: array(perfDailyRowSchema)
+});
 
-// ../../packages/shared/src/runtime/insights.ts
+// packages/shared/src/runtime/insights.ts
 var insightsDailyReviewSchema = object({
   day: string2(),
   reviews: countSchema,
@@ -13873,7 +13912,7 @@ function median(values) {
   return Math.round(((ordered[mid - 1] ?? 0) + (ordered[mid] ?? 0)) / 2);
 }
 
-// ../../packages/shared/src/schema/view.ts
+// packages/shared/src/schema/view.ts
 var workflowVisibilitySchema = _enum(["visible", "hidden"]);
 var VIEW_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 var viewKeySchema = string2().regex(VIEW_KEY_RE);
@@ -13890,10 +13929,10 @@ var putViewInputSchema = object({
   config: record(string2(), unknown())
 });
 
-// ../../packages/shared/src/schema/flow/query.ts
+// packages/shared/src/schema/flow/query.ts
 var NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 
-// ../../packages/shared/src/schema/flow/summary.ts
+// packages/shared/src/schema/flow/summary.ts
 var flowSummarySchema = object({
   flowId: string2(),
   parentId: string2().nullable().default(null),
@@ -13916,12 +13955,14 @@ var flowSummarySchema = object({
   flowVersion: positiveSchema.default(1),
   childCount: countSchema,
   stepCount: countSchema.default(0),
+  failedStep: string2().nullable().default(null),
+  errorTail: string2().nullable().default(null),
   clearedAt: countSchema.nullable().default(null),
   createdAt: countSchema,
   updatedAt: countSchema
 });
 
-// ../../packages/shared/src/schema/flow/list.ts
+// packages/shared/src/schema/flow/list.ts
 var flowSortSchema = _enum(["updated", "priority", "due", "name"]);
 var flowClearedFilterSchema = _enum(["all", "exclude", "only"]);
 var flowColumnPageSchema = object({
@@ -13939,7 +13980,7 @@ var flowListSchema = listOf("flows", flowSummarySchema).extend({
   viewConfig: flowsViewConfigSchema.optional()
 });
 
-// ../../packages/shared/src/schema/flow/step/event.ts
+// packages/shared/src/schema/flow/step/event.ts
 var stepEventStatusSchema = _enum([
   ...flowStatusSchema.options,
   "rejected"
@@ -13952,12 +13993,13 @@ var stepEventSchema = object({
   stepId: string2().nullable(),
   kind: stepKindSchema,
   status: stepEventStatusSchema,
+  stepStatus: stepStatusSchema.optional(),
   sourceVersion: countSchema.default(1),
   summary: string2(),
   usage: usageSchema.nullable()
 });
 
-// ../../packages/shared/src/schema/flow/page.ts
+// packages/shared/src/schema/flow/page.ts
 var pageEventSchema = stepEventSchema.omit({ flowId: true });
 var flowPageViewSchema = _enum(["full", "summary"]);
 var flowDiffReplySchema = object({
@@ -13975,10 +14017,11 @@ var flowPageSchema = object({
   events: array(pageEventSchema),
   fetchedAt: countSchema,
   lastEventAt: countSchema.nullable(),
+  lastEventSeq: countSchema.optional(),
   stalled: boolean2()
 });
 
-// ../../packages/shared/src/utils/json.ts
+// packages/shared/src/utils/json.ts
 function parseJsonResponse(input) {
   let decoded;
   try {
@@ -13995,7 +14038,7 @@ function parseJsonResponse(input) {
   return parsed.data;
 }
 
-// src/flows/history.ts
+// apps/plugin/src/flows/history.ts
 var flowHistoryInputSchema = object({
   definition: string2().trim().min(1).describe("Workflow definition name to analyze across recent runs."),
   workspace: string2().trim().min(1).optional().describe("Optional workspace filter."),
@@ -14080,11 +14123,11 @@ async function getFlowHistory(input) {
   };
 }
 
-// src/flows/validate.ts
+// apps/plugin/src/flows/validate.ts
 import { readFile as readFile3, stat } from "node:fs/promises";
 import { isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
 
-// ../../packages/shared/src/security.ts
+// packages/shared/src/security.ts
 function isLoopbackHost(hostname) {
   const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
@@ -14109,7 +14152,7 @@ function isSafeOutboundUrl(raw, options) {
   return true;
 }
 
-// ../../packages/shared/src/schema/secret.ts
+// packages/shared/src/schema/secret.ts
 var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 var MAX_SECRET_VALUE = 32768;
 var MAX_AUDIT_LIMIT = 500;
@@ -14150,10 +14193,6 @@ var secretListReplySchema = object({
   names: array(string2()),
   items: array(secretMetadataSchema)
 });
-var secretValueReplySchema = object({
-  name: string2(),
-  value: string2()
-});
 var secretWriteInputSchema = object({
   value: string2().min(1).max(MAX_SECRET_VALUE),
   binding: secretBindingSchema.optional()
@@ -14190,7 +14229,7 @@ var secretAuditQueryInputSchema = object({
   cursor: string2().optional()
 });
 
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/index.js
+// node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/index.js
 var composer = require_composer();
 var Document = require_Document();
 var Schema = require_Schema();
@@ -14236,7 +14275,7 @@ var $stringify = publicApi.stringify;
 var $visit = visit.visit;
 var $visitAsync = visit.visitAsync;
 
-// ../../packages/shared/src/runtime/hybrid.ts
+// packages/shared/src/runtime/hybrid.ts
 var MAX_STEP_ARTIFACTS = 64;
 var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
 var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -14333,7 +14372,7 @@ var cloudStepReplySchema = stepRecordSchema.and(object({
   artifacts: array(stepArtifactSchema).optional()
 }));
 
-// ../../packages/shared/src/schema/flow/control.ts
+// packages/shared/src/schema/flow/control.ts
 var SIGNAL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 var flowCreateReplySchema = replyOf("flow", flowRecordSchema).extend({
   created: boolean2()
@@ -14389,7 +14428,7 @@ var flowBatchClearReplySchema = object({
   clearedAt: number2().int().min(0)
 });
 
-// ../../packages/shared/src/schema/runtime/cloud-session.ts
+// packages/shared/src/schema/runtime/cloud-session.ts
 var CLOUD_SESSION_ARTIFACTS = [
   "in.tgz",
   "values-in.json",
@@ -14440,7 +14479,7 @@ var cloudSessionUsageSchema = object({
   error: string2().max(2000).nullable().optional()
 });
 
-// ../../packages/shared/src/schema/runtime/vm.ts
+// packages/shared/src/schema/runtime/vm.ts
 var VM_VENDORS = ["boat"];
 var vmVendorSchema = _enum(VM_VENDORS);
 var DEFAULT_VM_MACHINE_TYPE = "small";
@@ -14468,7 +14507,7 @@ var vmProfileListResponseSchema = object({
   vms: array(vmProfileSchema)
 });
 
-// ../../packages/shared/src/schema/schedule.ts
+// packages/shared/src/schema/schedule.ts
 var SCHEDULE_ID_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 var WORKSPACE_SHAPE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 var BUNDLE_SHA_SHAPE = /^[0-9a-f]{64}$/;
@@ -14613,7 +14652,7 @@ var scheduleListSchema = object({
   schedules: array(scheduleRecordSchema)
 });
 
-// ../../packages/shared/src/workflow.ts
+// packages/shared/src/workflow.ts
 var RESERVED_VALUE_KEYS = new Set([
   "flow",
   "run",
@@ -15234,7 +15273,7 @@ function parseWorkflowYaml(raw) {
   return err ?? config;
 }
 
-// src/gate/git.ts
+// apps/plugin/src/gate/git.ts
 import { execFile } from "node:child_process";
 import { existsSync as existsSync3, realpathSync } from "node:fs";
 import { readFile as readFile2 } from "node:fs/promises";
@@ -15250,7 +15289,7 @@ import {
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { promisify } from "node:util";
 
-// src/install/index.ts
+// apps/plugin/src/install/index.ts
 import { randomBytes } from "node:crypto";
 import { existsSync as existsSync2, readFileSync } from "node:fs";
 import { cp as cp2, mkdir as mkdir2, readFile, rename, writeFile } from "node:fs/promises";
@@ -15258,7 +15297,7 @@ import { homedir } from "node:os";
 import { dirname, join as join3, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// src/install/targets.ts
+// apps/plugin/src/install/targets.ts
 import { join } from "node:path";
 var DEFAULT_PACKAGE_NAME = "@nostadev/mcp";
 var HARNESSES = [
@@ -15335,7 +15374,7 @@ function resolveTarget(input) {
   };
 }
 
-// src/install/writers.ts
+// apps/plugin/src/install/writers.ts
 import { existsSync } from "node:fs";
 import { cp, mkdir, readdir } from "node:fs/promises";
 import { join as join2 } from "node:path";
@@ -15489,7 +15528,7 @@ async function copyWorkflowTemplates(input) {
   return copied;
 }
 
-// src/install/index.ts
+// apps/plugin/src/install/index.ts
 function usageText() {
   return [
     "Usage: nosta-mcp install <harness> [--global | --project] [--pack <name>] [--dry-run]",
@@ -15680,7 +15719,7 @@ function formatInstallSummary(result) {
 `;
 }
 
-// src/gate/policy.ts
+// apps/plugin/src/gate/policy.ts
 import { basename } from "node:path";
 var workflowConfigSchema = object({
   version: literal(1),
@@ -16047,7 +16086,7 @@ function evaluateStopDecision(input) {
   };
 }
 
-// src/gate/git.ts
+// apps/plugin/src/gate/git.ts
 var execFileAsync = promisify(execFile);
 function resolveRealPath(targetPath) {
   const abs = resolve2(targetPath);
@@ -16280,7 +16319,7 @@ function toRepoRelativePath(repoRoot, targetPath) {
   return rel.split(sep).join("/");
 }
 
-// src/flows/validate.ts
+// apps/plugin/src/flows/validate.ts
 var validateFlowInputSchema = object({
   path: string2().trim().min(1).optional().describe("Path to a workflow YAML file (absolute or relative to repoRoot)."),
   workflow: string2().trim().min(1).optional().describe("Workflow name under .nosta/workflows/<name>.yaml."),
@@ -16525,10 +16564,10 @@ async function validateFlow(input) {
   };
 }
 
-// src/gate/index.ts
+// apps/plugin/src/gate/index.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
-// src/transport.ts
+// apps/plugin/src/transport.ts
 import { randomUUID } from "node:crypto";
 var flowIdReplySchema = object({ flow: object({ id: string2() }) });
 function validateBaseUrl(rawUrl) {
@@ -16727,7 +16766,7 @@ function transportFromEnv(env = process.env) {
   });
 }
 
-// src/store.ts
+// apps/plugin/src/store.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { realpathSync as realpathSync2 } from "node:fs";
 import { mkdir as mkdir3, readFile as readFile4, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
@@ -16835,7 +16874,7 @@ function emptyLocalFlow(input) {
   };
 }
 
-// src/gate/stream.ts
+// apps/plugin/src/gate/stream.ts
 function parseSseBlock(block) {
   let id = null;
   let event = "message";
@@ -16970,7 +17009,7 @@ function connectFlowStream(options) {
   };
 }
 
-// src/gate/index.ts
+// apps/plugin/src/gate/index.ts
 var ACTIVE_FLOW_STATES = new Set(["running", "queued", "waiting"]);
 var hydratedFlowResponseSchema = object({
   flow: object({
@@ -17730,7 +17769,7 @@ class WorkflowGate {
   }
 }
 
-// src/packet.ts
+// apps/plugin/src/packet.ts
 import { readFile as readFile5, realpath, stat as stat2 } from "node:fs/promises";
 import { basename as basename3, relative as relative2, sep as sep2 } from "node:path";
 async function assertReadableWorkspaceFile(filePath, rootDir = process.env.NOSTA_WORKSPACE_ROOT || process.cwd()) {
@@ -17784,12 +17823,12 @@ async function buildPacket(args) {
   return result.packet;
 }
 
-// src/sync.ts
+// apps/plugin/src/sync.ts
 import { createHash } from "node:crypto";
 import { readFile as readFile6 } from "node:fs/promises";
 import { basename as basename4 } from "node:path";
 
-// ../../packages/shared/src/storage/pages.ts
+// packages/shared/src/storage/pages.ts
 var MAX_PAGE_BYTES = 1500000;
 var MAX_PAGE_TITLE = 200;
 var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -17850,7 +17889,7 @@ var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
   nextCursor: string2().nullable().optional()
 });
 
-// src/sync.ts
+// apps/plugin/src/sync.ts
 var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
 var MAX_SYNC_DIFF_BYTES = 512 * 1024;
 var syncDocInputSchema = object({
@@ -18384,7 +18423,7 @@ async function syncFlow(input) {
   };
 }
 
-// src/flow.ts
+// apps/plugin/src/flow.ts
 function trimmed(value) {
   if (typeof value !== "string")
     return;
@@ -18902,14 +18941,14 @@ async function bypassLocal(args, gate) {
   }));
 }
 
-// src/server.ts
+// apps/plugin/src/server.ts
 import { createInterface } from "node:readline";
 
-// src/artifacts/index.ts
+// apps/plugin/src/artifacts/index.ts
 import { mkdir as mkdir4, writeFile as writeFile3 } from "node:fs/promises";
 import { dirname as dirname3 } from "node:path";
 
-// src/artifacts/guides.ts
+// apps/plugin/src/artifacts/guides.ts
 var ARTIFACT_GUIDE_MODULES = [
   "spec",
   "diagram",
@@ -19005,7 +19044,7 @@ function renderArtifactGuide(modules) {
 `);
 }
 
-// src/artifacts/mermaid.ts
+// apps/plugin/src/artifacts/mermaid.ts
 var MAX_MERMAID_COLUMNS = 4;
 var MAX_SEQUENCE_ACTORS = 3;
 var MERMAID_BLOCK_RE = /<pre\b[^>]*\bclass\s*=\s*["'][^"']*\bmermaid\b[^"']*["'][^>]*>([\s\S]*?)<\/pre>/gi;
@@ -19222,7 +19261,7 @@ function validateMermaidHtml(tabId, html) {
   });
 }
 
-// src/artifacts/tokens.ts
+// apps/plugin/src/artifacts/tokens.ts
 var ARTIFACT_STYLES = [
   "nosta-editorial",
   "nosta-diagnostic",
@@ -19705,7 +19744,7 @@ svg.svg-diagram .ts { fill: var(--muted); font-size: 12px; font-weight: 400; fon
 svg.svg-diagram .tm { fill: var(--ink-2); font-size: 11.5px; font-family: var(--font-mono); }
 `.trim();
 
-// src/artifacts/shell.ts
+// apps/plugin/src/artifacts/shell.ts
 var ARTIFACT_LIBS = [
   "echarts",
   "mermaid",
@@ -20127,7 +20166,7 @@ ${runtime}
 `);
 }
 
-// src/artifacts/index.ts
+// apps/plugin/src/artifacts/index.ts
 var ALLOWED_EXTERNAL_HOSTS = new Set([
   "cdn.jsdelivr.net",
   "unpkg.com",
@@ -20315,7 +20354,7 @@ async function callArtifactTool(input) {
   });
 }
 
-// src/gate/ipc.ts
+// apps/plugin/src/gate/ipc.ts
 import { randomBytes as randomBytes2, timingSafeEqual } from "node:crypto";
 import {
   chmod,
@@ -20520,7 +20559,7 @@ async function handleRequest(input) {
   }
 }
 
-// src/prompts.ts
+// apps/plugin/src/prompts.ts
 var PROMPTS = [
   {
     name: "start_flow",
@@ -20692,7 +20731,7 @@ function getPrompt(input) {
   };
 }
 
-// src/server.ts
+// apps/plugin/src/server.ts
 var backend = transportFromEnv();
 var gate = new WorkflowGate({ backend });
 var artifactSession = createArtifactSessionState();
@@ -20739,7 +20778,7 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.5.3" }
+        serverInfo: { name: "nosta", version: "0.5.4" }
       });
     } else if (method === "ping") {
       sendResult(id, {});
@@ -20811,7 +20850,7 @@ function startServer() {
 }
 if (false) {}
 
-// src/bin.ts
+// apps/plugin/src/bin.ts
 async function readStdinText() {
   const chunks = [];
   for await (const chunk of process.stdin) {
