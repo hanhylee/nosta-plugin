@@ -84,12 +84,12 @@ codex mcp add nosta -- npx -y @nostadev/mcp
 
 - **Quick file review**: run the `review_files` prompt or ask your agent to call `start_flow` with `{ paths: ["/abs/path/to/file.ts"], title: "Quick review" }`.
 - **Spec flow**: run the `start_flow` prompt (or call `start_flow` with `{ path, baseSha, ticketUrl }`) on a spec containing a `### Machine flow` block.
-- **Inspect**: poll `get_flow` and `get_flow_log` (or run `review_flow`), or open [app.nosta.dev/flows](https://app.nosta.dev/flows).
+- **Inspect**: poll `get_flow` and `flows_list_events` (or run `review_flow`), or open [app.nosta.dev/flows](https://app.nosta.dev/flows).
 - **Merge gate**: flows pause at human approval gates; a `PreToolUse` hook requires your explicit confirmation before `approve_flow` runs.
 
 ## What's Included
 
-- **MCP tools**: `start_flow`, `validate_flow`, `list_flows`, `get_flow`, `get_flow_log`, `get_flow_history`, `advance_flow`, `sync_flow`, `signal_flow`, `retry_flow`, `cancel_flow`, `approve_flow`, `bypass_flow`, `guide_artifact`, `publish_artifact`
+- **MCP tools**: auto-generated toolkit catalog (`toolkits_*`, `flows_*`, `labels_*`, `views_*`, `inbox_*`, `schedules_*`) plus local gate/artifact tools (`start_flow`, `validate_flow`, `get_flow`, `get_flow_history`, `advance_flow`, `sync_flow`, `approve_flow`, `bypass_flow`, `guide_artifact`, `publish_artifact`)
 - **MCP prompts**: `start_flow`, `review_flow`, `approve_flow`, `review_files`
 - **Core bundled skills**: `author-flow`, `use-flow`, `improve-flow`, `build-artifact` (plus opt-in `--pack coding` starter pack)
 - **Hooks**: `PreToolUse` approval guard on `approve_flow` and `bypass_flow`, plus fail-open `SessionStart` backend/skill check

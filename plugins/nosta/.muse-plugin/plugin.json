@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "nosta",
   "displayName": "Nosta",
-  "version": "0.5.6",
+  "version": "0.6.0",
   "description": "Nosta MCP tools, prompts, engineering workflow skills, and merge-gate approval guardrails.",
   "compat": {
     "manifestDir": ".muse-plugin"

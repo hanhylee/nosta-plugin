@@ -7,6 +7,8 @@ type ToolBeforeOutput = {
 };
 
 const APPROVE_SUFFIX = "approve_flow";
+const TOOLKIT_APPROVE_SUFFIX = "flows_approve";
+const TOOLKITS_CALL_SUFFIX = "toolkits_call";
 const BYPASS_SUFFIX = "bypass_flow";
 
 function nonEmptyString(value: unknown): boolean {
@@ -17,25 +19,66 @@ function positiveInt(value: unknown): boolean {
   return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
-export function checkApproveGuard(
+function resolveApprovalTarget(
   input: ToolBeforeInput,
   output: ToolBeforeOutput,
-): void {
+): {
+  mode: "bypass" | "approve" | "toolkit_approve";
+  args: Record<string, unknown>;
+} | null {
   const tool = typeof input?.tool === "string" ? input.tool : "";
-  if (!tool.endsWith(APPROVE_SUFFIX) && !tool.endsWith(BYPASS_SUFFIX)) {
-    return;
+  const isToolkitsCall = tool.endsWith(TOOLKITS_CALL_SUFFIX);
+  const isBypass = tool.endsWith(BYPASS_SUFFIX);
+  const isToolkitApprove = tool.endsWith(TOOLKIT_APPROVE_SUFFIX);
+  if (
+    !tool.endsWith(APPROVE_SUFFIX) &&
+    !isToolkitApprove &&
+    !isBypass &&
+    !isToolkitsCall
+  ) {
+    return null;
   }
-
+  const raw = output?.args;
   const args =
-    output?.args && typeof output.args === "object" ? output.args : null;
+    raw && typeof raw === "object" && !Array.isArray(raw) ? raw : null;
   if (!args) {
     throw new Error(
       `Nosta approval guard blocked ${tool}: missing arguments. Confirm flow approval or bypass explicitly with the user.`,
     );
   }
+  if (isBypass) return { mode: "bypass", args };
+  if (!isToolkitsCall) {
+    return { mode: isToolkitApprove ? "toolkit_approve" : "approve", args };
+  }
+  const toolkit = typeof args.toolkit === "string" ? args.toolkit.trim() : "";
+  const targetTool = typeof args.tool === "string" ? args.tool.trim() : "";
+  if (!toolkit || !targetTool) {
+    throw new Error(
+      `Nosta approval guard blocked ${tool}: missing toolkit/tool target.`,
+    );
+  }
+  if (toolkit !== "flows" || targetTool !== "approve") return null;
+  const nested = args.arguments;
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+    throw new Error(
+      "Nosta approval guard blocked approve_flow: missing arguments. Confirm flow approval or bypass explicitly with the user.",
+    );
+  }
+  return {
+    mode: "toolkit_approve",
+    args: nested as Record<string, unknown>,
+  };
+}
 
-  if (tool.endsWith(BYPASS_SUFFIX)) {
-    if (!nonEmptyString(args.reason)) {
+export function checkApproveGuard(
+  input: ToolBeforeInput,
+  output: ToolBeforeOutput,
+): void {
+  const target = resolveApprovalTarget(input, output);
+  if (!target) return;
+
+  if (target.mode === "bypass") {
+    if (!nonEmptyString(target.args.reason)) {
       throw new Error(
         "Nosta approval guard blocked bypass_flow: a non-empty reason and explicit user confirmation are required.",
       );
@@ -43,12 +86,14 @@ export function checkApproveGuard(
     return;
   }
 
-  const isLocalNode = nonEmptyString(args.node);
+  const useToolkitId = target.mode === "toolkit_approve";
+  const isLocalNode = !useToolkitId && nonEmptyString(target.args.node);
+  const flowTarget = useToolkitId ? target.args.id : target.args.flowId;
   const isCloudGate =
-    nonEmptyString(args.flowId) &&
-    (args.decision === "approve" || args.decision === "reject") &&
-    positiveInt(args.version) &&
-    positiveInt(args.attempt);
+    nonEmptyString(flowTarget) &&
+    (target.args.decision === "approve" || target.args.decision === "reject") &&
+    positiveInt(target.args.version) &&
+    positiveInt(target.args.attempt);
 
   if (!isLocalNode && !isCloudGate) {
     throw new Error(

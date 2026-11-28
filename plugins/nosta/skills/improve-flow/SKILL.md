@@ -14,7 +14,7 @@ Use this skill after one or more runs of a workflow to tighten reliability, evid
    - Call `get_flow_history` with `{ definition: "<verb>", limit: 20 }` (and optional `workspace`).
    - Inspect `completeCount`, `failedCount`, `missingEvidenceCount`, `failingSteps` (failures + `medianMs`), `approvalCount`, and `topFailingFlowIds`.
 2. **Inspect concrete failures:**
-   - Call `get_flow` and `get_flow_log` on the top failing flow IDs to find root causes (flaky checks, missing references/skills, overly broad or missing tools, or unclear prompts).
+   - Call `get_flow` and `flows_list_events` on the top failing flow IDs to find root causes (flaky checks, missing references/skills, overly broad or missing tools, or unclear prompts).
 3. **Refine the YAML definition:**
    - Tighten step prompts, add missing `references` or `skills`, add deterministic `checks` to eliminate `missingEvidenceCount`, and remove `approval` gates that no longer need human sign-off.
 4. **Re-validate & verify:**

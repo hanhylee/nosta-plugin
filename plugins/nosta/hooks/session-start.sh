@@ -30,7 +30,7 @@ if [ -n "$backend_url" ] || [ -n "$plugin_token" ]; then
     if [ "$health_code" = "200" ]; then
       reachable=1
     elif [ -n "$plugin_token" ] && [ "$health_code" = "404" ]; then
-      api_code="$(printf 'header = "Authorization: Bearer %s"\n' "$plugin_token" | curl -sS -o /dev/null -w '%{http_code}' --max-time 2 -K - "${base_url}/api/flow" 2>/dev/null || printf '000')"
+      api_code="$(printf 'header = "Authorization: Bearer %s"\n' "$plugin_token" | curl -sS -o /dev/null -w '%{http_code}' --max-time 2 -K - "${base_url}/api/toolkits/flows/list?limit=1" 2>/dev/null || printf '000')"
       if [ "$api_code" = "200" ]; then
         reachable=1
       fi

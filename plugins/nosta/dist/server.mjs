@@ -6948,8 +6948,8 @@ var require_public_api = __commonJS(function(exports) {
 // src/bin.ts
 import { readFile as readFile5 } from "node:fs/promises";
 
-// src/flow.ts
-import { createHash as createHash2, randomUUID as randomUUID4 } from "node:crypto";
+// src/flows/toolkits.ts
+import { randomUUID } from "node:crypto";
 
 // ../../node_modules/.bun/zod@4.6.7/node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -13139,80 +13139,496 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// ../../packages/shared/src/packet.ts
-var MAX_FILES = 32;
-var MAX_PACKET_BYTES = 256 * 1024;
-var MAX_SERIALIZED_BYTES = 384 * 1024;
-var MAX_NAME_CHARS = 200;
-var MAX_TITLE_CHARS = 200;
-var encoder = new TextEncoder;
-function byteLength(text) {
-  return encoder.encode(text).length;
+// ../../packages/shared/src/security.ts
+function isLoopbackHost(hostname) {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
 }
-function isValidFileName(name) {
-  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
-}
-function failure2(error) {
-  return { ok: false, error };
-}
-function readTitle(input) {
-  if (input.title === undefined)
-    return "review";
-  if (typeof input.title !== "string")
-    return null;
-  const title = input.title.trim();
-  if (!title || title.length > MAX_TITLE_CHARS)
-    return null;
-  return title;
-}
-function readFiles(input) {
-  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
-    return `files must list 1..${MAX_FILES} entries`;
+function isSafeOutboundUrl(raw, options) {
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
   }
-  const files = [];
-  const seen = new Set;
-  for (const entry of input.files) {
-    if (!entry || typeof entry !== "object")
-      return "invalid file entry";
-    const file = entry;
-    if (!isValidFileName(file.name)) {
-      return `invalid file name: ${String(file.name)}`;
+  if (parsed.username || parsed.password)
+    return false;
+  const allowPrivate = options?.allowPrivate === true;
+  if (parsed.protocol !== "https:" && !(allowPrivate && parsed.protocol === "http:")) {
+    return false;
+  }
+  if (!parsed.hostname)
+    return false;
+  if (!allowPrivate && isLoopbackHost(parsed.hostname))
+    return false;
+  return true;
+}
+
+// ../../packages/shared/src/schema/secret.ts
+var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var MAX_SECRET_VALUE = 32768;
+var MAX_AUDIT_LIMIT = 500;
+var HEADER_NAME = /^[A-Za-z0-9-]+$/;
+var SECRET_AUDIT_ACTIONS = [
+  "put",
+  "delete",
+  "list",
+  "resolve",
+  "proxy"
+];
+var secretAuditActionSchema = _enum(SECRET_AUDIT_ACTIONS);
+var SECRET_AUDIT_OUTCOMES = [
+  "ok",
+  "missing",
+  "denied",
+  "key_error",
+  "error"
+];
+var secretAuditOutcomeSchema = _enum(SECRET_AUDIT_OUTCOMES);
+var secretBindingSchema = discriminatedUnion("mode", [
+  object({ mode: literal("env") }),
+  object({
+    mode: literal("proxy"),
+    targetBaseUrl: string2().min(1).max(500).refine((raw) => isSafeOutboundUrl(raw, { allowPrivate: true }), "invalid targetBaseUrl"),
+    header: string2().regex(HEADER_NAME).max(100).optional(),
+    prefix: string2().max(100).optional(),
+    urlEnvVar: string2().regex(ENV_NAME).max(100).optional()
+  })
+]);
+var secretMetadataSchema = object({
+  name: string2(),
+  kid: string2(),
+  updatedAt: number2().int().min(0),
+  binding: secretBindingSchema.optional()
+});
+var secretListReplySchema = object({
+  names: array(string2()),
+  items: array(secretMetadataSchema)
+});
+var secretWriteInputSchema = object({
+  value: string2().min(1).max(MAX_SECRET_VALUE),
+  binding: secretBindingSchema.optional()
+});
+var secretDeleteReplySchema = object({
+  deleted: string2()
+});
+var secretAuditEntrySchema = object({
+  id: string2(),
+  at: number2().int().min(0),
+  scopeId: string2(),
+  actor: string2(),
+  action: secretAuditActionSchema,
+  secretName: string2().nullable(),
+  outcome: secretAuditOutcomeSchema,
+  flowId: string2().nullable(),
+  stepId: string2().nullable(),
+  kid: string2().nullable(),
+  targetHost: string2().nullable()
+});
+var secretAuditListSchema = object({
+  items: array(secretAuditEntrySchema),
+  nextCursor: string2().nullable()
+});
+var secretAuditQueryInputSchema = object({
+  scopeId: string2().optional(),
+  allScopes: boolean2().optional(),
+  name: string2().optional(),
+  action: secretAuditActionSchema.optional(),
+  flowId: string2().optional(),
+  from: number2().int().min(0).optional(),
+  to: number2().int().min(0).optional(),
+  limit: number2().int().min(1).max(MAX_AUDIT_LIMIT).optional(),
+  cursor: string2().optional()
+});
+
+// ../../packages/shared/src/utils/query-schema.ts
+var PRIMITIVE_TYPES = new Set([
+  "string",
+  "number",
+  "integer",
+  "boolean",
+  "null"
+]);
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isPrimitiveBranch(schema) {
+  if ("properties" in schema || "items" in schema || "additionalProperties" in schema || "allOf" in schema || "not" in schema || "$ref" in schema) {
+    return false;
+  }
+  const unions = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(unions)) {
+    return unions.length > 0 && unions.every((branch) => isRecord(branch) && isPrimitiveBranch(branch));
+  }
+  if (typeof schema.type === "string") {
+    return PRIMITIVE_TYPES.has(schema.type);
+  }
+  if (Array.isArray(schema.type)) {
+    return schema.type.length > 0 && schema.type.every((entry) => typeof entry === "string" && PRIMITIVE_TYPES.has(entry));
+  }
+  if ("const" in schema) {
+    return schema.const === null || typeof schema.const !== "object";
+  }
+  if (Array.isArray(schema.enum)) {
+    return schema.enum.length > 0 && schema.enum.every((entry) => entry === null || typeof entry !== "object");
+  }
+  return false;
+}
+function isQueryPropertySchema(schema) {
+  if (!isRecord(schema))
+    return false;
+  if (isPrimitiveBranch(schema))
+    return true;
+  if (schema.type === "array" || Array.isArray(schema.type) && schema.type.every((t) => t === "array" || t === "null")) {
+    return isRecord(schema.items) && isPrimitiveBranch(schema.items);
+  }
+  const unions = schema.anyOf ?? schema.oneOf;
+  if (!Array.isArray(unions) || unions.length === 0)
+    return false;
+  let sawArray = false;
+  for (const branch of unions) {
+    if (!isRecord(branch))
+      return false;
+    if (branch.type === "null")
+      continue;
+    if (branch.type === "array" && isRecord(branch.items) && isPrimitiveBranch(branch.items)) {
+      sawArray = true;
+      continue;
     }
-    if (typeof file.content !== "string") {
-      return `invalid file content: ${file.name}`;
+    return false;
+  }
+  return sawArray;
+}
+function isQueryRepresentableSchema(schema) {
+  if (!isRecord(schema))
+    return false;
+  if (schema.type !== "object")
+    return false;
+  if ("anyOf" in schema || "oneOf" in schema || "allOf" in schema || "not" in schema || "patternProperties" in schema || "$ref" in schema) {
+    return false;
+  }
+  if (schema.additionalProperties !== undefined && schema.additionalProperties !== false) {
+    return false;
+  }
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  for (const prop of Object.values(properties)) {
+    if (!isQueryPropertySchema(prop))
+      return false;
+  }
+  return true;
+}
+function isQueryRepresentableInput(schema) {
+  return isQueryRepresentableSchema(toJSONSchema(schema));
+}
+function encodeToolQueryParams(entries) {
+  const params = new URLSearchParams;
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === undefined)
+      continue;
+    if (Array.isArray(value)) {
+      for (const item of value)
+        params.append(key, String(item));
+      continue;
     }
-    if (seen.has(file.name))
-      return `duplicate file name: ${file.name}`;
-    seen.add(file.name);
-    files.push({ name: file.name, content: file.content });
+    params.set(key, value === null ? "null" : String(value));
   }
-  return files;
+  return params;
 }
-function serializedByteLength(value) {
-  return byteLength(JSON.stringify(value) ?? "");
-}
-function validatePacket(input) {
-  if (!input || typeof input !== "object")
-    return failure2("packet must be an object");
-  const record = input;
-  const title = readTitle(record);
-  if (title === null)
-    return failure2("title must be 1..200 characters");
-  const files = readFiles(record);
-  if (typeof files === "string")
-    return failure2(files);
-  let totalBytes = 0;
-  for (const file of files) {
-    totalBytes += byteLength(file.content);
+
+// ../../packages/shared/src/toolkits/types.ts
+var TOOLKITS_ROOT = "/api/toolkits";
+var DEFAULT_MAX_TOOLKIT_BODY_BYTES = 10 * 1024 * 1024;
+var TOOLKIT_NAME_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+var TOOL_NAME_RE = /^[a-z][a-z0-9_-]{0,63}$/;
+var TOOLKIT_ACCESS_LEVELS = [
+  "member",
+  "org_admin",
+  "superadmin"
+];
+var toolkitAccessSchema = _enum(TOOLKIT_ACCESS_LEVELS);
+var TOOL_KINDS = ["read", "write", "destructive"];
+var toolKindSchema = _enum(TOOL_KINDS);
+var TOOL_SURFACES = [
+  "spa",
+  "mcp",
+  "cli",
+  "workflow",
+  "artifactFrame"
+];
+var ALL_TOOL_SURFACES = {
+  spa: true,
+  mcp: true,
+  cli: true,
+  workflow: true,
+  artifactFrame: true
+};
+var WRITE_TOOL_SURFACES = {
+  spa: true,
+  mcp: true,
+  cli: true,
+  workflow: true,
+  artifactFrame: false
+};
+var ADMIN_TOOL_SURFACES = {
+  spa: true,
+  mcp: true,
+  cli: true,
+  workflow: false,
+  artifactFrame: false
+};
+var SPA_CLI_TOOL_SURFACES = {
+  spa: true,
+  mcp: false,
+  cli: true,
+  workflow: false,
+  artifactFrame: false
+};
+var SPA_ONLY_TOOL_SURFACES = {
+  spa: true,
+  mcp: false,
+  cli: false,
+  workflow: false,
+  artifactFrame: false
+};
+var WORKFLOW_ONLY_TOOL_SURFACES = {
+  spa: false,
+  mcp: false,
+  cli: false,
+  workflow: true,
+  artifactFrame: false
+};
+var toolDescriptorSchema = object({
+  toolkit: string2(),
+  name: string2(),
+  id: string2(),
+  mcpName: string2(),
+  version: number2().int().positive(),
+  description: string2(),
+  kind: toolKindSchema,
+  method: _enum(["GET", "POST"]),
+  path: string2(),
+  access: toolkitAccessSchema,
+  annotations: object({
+    readOnlyHint: boolean2(),
+    destructiveHint: boolean2(),
+    idempotentHint: boolean2(),
+    openWorldHint: boolean2()
+  }),
+  inputSchema: record(string2(), unknown()),
+  outputSchema: record(string2(), unknown())
+});
+var toolkitSummarySchema = object({
+  toolkit: string2(),
+  toolCount: number2().int().nonnegative(),
+  tools: array(object({
+    name: string2(),
+    kind: toolKindSchema,
+    description: string2()
+  }))
+});
+var toolkitDescriptorSchema = object({
+  toolkit: string2(),
+  tools: array(toolDescriptorSchema)
+});
+var toolkitErrorSchema = object({
+  ok: literal(false),
+  error: object({
+    code: string2(),
+    message: string2(),
+    retryable: boolean2().optional(),
+    details: unknown().optional()
+  })
+});
+function defaultAnnotationsFor(kind) {
+  if (kind === "read") {
+    return {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    };
   }
-  if (totalBytes > MAX_PACKET_BYTES)
-    return failure2("packet exceeds 256 KiB");
-  const serializedBytes = serializedByteLength({ title, files });
-  if (serializedBytes > MAX_SERIALIZED_BYTES) {
-    return failure2("packet exceeds 384 KiB after JSON encoding");
-  }
-  return { ok: true, packet: { title, files, totalBytes } };
+  return {
+    readOnlyHint: false,
+    destructiveHint: kind === "destructive",
+    idempotentHint: false,
+    openWorldHint: true
+  };
 }
+function defineTool(spec) {
+  if (!TOOLKIT_NAME_RE.test(spec.toolkit)) {
+    throw new Error(`invalid_toolkit_name:${spec.toolkit}`);
+  }
+  if (!TOOL_NAME_RE.test(spec.name)) {
+    throw new Error(`invalid_tool_name:${spec.name}`);
+  }
+  return {
+    toolkit: spec.toolkit,
+    name: spec.name,
+    id: `${spec.toolkit}.${spec.name}`,
+    mcpName: `${spec.toolkit}_${spec.name}`,
+    httpPath: `${TOOLKITS_ROOT}/${spec.toolkit}/${spec.name}`,
+    httpMethod: spec.kind === "read" && isQueryRepresentableInput(spec.input) ? "GET" : "POST",
+    httpExposed: spec.httpExposed ?? Boolean(spec.surfaces.spa || spec.surfaces.mcp || spec.surfaces.cli),
+    version: spec.version ?? 1,
+    description: spec.description,
+    kind: spec.kind,
+    access: spec.access ?? "member",
+    surfaces: spec.surfaces,
+    annotations: spec.annotations ?? defaultAnnotationsFor(spec.kind),
+    idempotency: spec.idempotency ?? "none",
+    approval: spec.approval ?? "none",
+    quota: spec.quota ?? "none",
+    ...spec.timeoutMs !== undefined ? { timeoutMs: spec.timeoutMs } : {},
+    ...spec.maxBodyBytes !== undefined ? { maxBodyBytes: spec.maxBodyBytes } : {},
+    input: spec.input,
+    output: spec.output
+  };
+}
+function toolJsonSchemaOf(schema) {
+  const raw = toJSONSchema(schema, { target: "draft-07" });
+  delete raw.$schema;
+  return raw;
+}
+
+// ../../packages/shared/src/toolkits/core.ts
+var WORKFLOW_ONLY_SURFACES = WORKFLOW_ONLY_TOOL_SURFACES;
+var HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+var MAX_HTTP_TIMEOUT_MS = 300000;
+var DEFAULT_MARGIN_SECONDS = 300;
+var MAX_MARGIN_SECONDS = 3600;
+var OAUTH_CALL_TIMEOUT_MS = 45000;
+var DEFAULT_STATE_INTO = ".nosta/inputs/state.json";
+var DEFAULT_EFFECTS_PATH = "effects.json";
+var httpAuthSchema = object({
+  secret: string2().min(1),
+  scheme: _enum(["bearer", "header"]).default("bearer"),
+  header: string2().min(1).optional()
+});
+var httpRequestInputSchema = object({
+  url: string2().url().refine((value) => value.startsWith("http://") || value.startsWith("https://"), "url must use http or https"),
+  method: _enum(HTTP_METHODS).default("GET"),
+  headers: record(string2(), string2()).optional(),
+  query: record(string2(), union([string2(), number2(), boolean2()])).optional(),
+  body: unknown().optional(),
+  auth: httpAuthSchema.optional(),
+  expectStatus: array(number2().int().min(100).max(599)).min(1).optional(),
+  parseJson: boolean2().optional(),
+  timeoutMs: number2().int().min(100).max(MAX_HTTP_TIMEOUT_MS).optional()
+});
+var httpRequestOutputSchema = object({
+  status: number2().int(),
+  ok: literal(true),
+  headers: record(string2(), string2()),
+  body: unknown()
+});
+var valuesSetInputSchema = object({
+  values: record(string2(), unknown())
+});
+var stateReadInputSchema = object({
+  scopes: array(string2().min(1)).default([]),
+  flows: boolean2().default(false),
+  into: string2().min(1).default(DEFAULT_STATE_INTO)
+});
+var stateReadOutputSchema = object({
+  readAt: number2().int(),
+  into: string2(),
+  scopeCount: number2().int(),
+  flowCount: number2().int()
+});
+var effectsApplyInputSchema = object({
+  from: object({
+    step: string2().min(1),
+    path: string2().min(1).default(DEFAULT_EFFECTS_PATH)
+  })
+});
+var effectsApplyOutputSchema = union([
+  object({
+    effects: literal("applied"),
+    stateCount: number2().int(),
+    flowCount: number2().int(),
+    inboxCount: number2().int()
+  }),
+  object({
+    effects: literal("conflict"),
+    stateCount: number2().int()
+  })
+]);
+var oauthRefreshInputSchema = object({
+  tokenUrl: string2().url().refine((value) => value.startsWith("https://") || value.startsWith("http://"), "tokenUrl must use https or http"),
+  clientId: string2().min(1).max(200),
+  refreshSecret: string2().regex(ENV_NAME, "refreshSecret must be a valid secret name"),
+  accessSecret: string2().regex(ENV_NAME, "accessSecret must be a valid secret name"),
+  marginSeconds: number2().int().min(0).max(MAX_MARGIN_SECONDS).default(DEFAULT_MARGIN_SECONDS),
+  scope: string2().min(1).max(500).optional()
+}).refine((data) => data.refreshSecret !== data.accessSecret, {
+  message: "refreshSecret and accessSecret must be different names",
+  path: ["accessSecret"]
+});
+var oauthRefreshOutputSchema = object({
+  refreshed: boolean2(),
+  rotatedRefresh: boolean2(),
+  expiresAt: number2().int().nullable()
+});
+var coreHttpRequestTool = defineTool({
+  toolkit: "core",
+  name: "http_request",
+  description: "Perform an outbound HTTP request directly in the orchestrator without booting a VM.",
+  kind: "write",
+  access: "member",
+  surfaces: WORKFLOW_ONLY_SURFACES,
+  timeoutMs: MAX_HTTP_TIMEOUT_MS,
+  input: httpRequestInputSchema,
+  output: httpRequestOutputSchema
+});
+var coreValuesSetTool = defineTool({
+  toolkit: "core",
+  name: "values_set",
+  description: "Set workflow state values directly in the orchestrator.",
+  kind: "write",
+  access: "member",
+  surfaces: WORKFLOW_ONLY_SURFACES,
+  input: valuesSetInputSchema,
+  output: record(string2(), unknown())
+});
+var coreStateReadTool = defineTool({
+  toolkit: "core",
+  name: "state_read",
+  description: "Read state scopes and workspace flow statuses into a workspace input file for the next step.",
+  kind: "read",
+  access: "member",
+  surfaces: WORKFLOW_ONLY_SURFACES,
+  input: stateReadInputSchema,
+  output: stateReadOutputSchema
+});
+var coreEffectsApplyTool = defineTool({
+  toolkit: "core",
+  name: "effects_apply",
+  description: "Atomically apply state CAS batch, then flow and inbox effects from a previous step's effects.json.",
+  kind: "write",
+  access: "member",
+  surfaces: WORKFLOW_ONLY_SURFACES,
+  input: effectsApplyInputSchema,
+  output: effectsApplyOutputSchema
+});
+var coreOAuthRefreshTool = defineTool({
+  toolkit: "core",
+  name: "oauth_refresh",
+  description: "Refresh an OAuth2 access token inside SecretStore and atomically store any rotated refresh token.",
+  kind: "write",
+  access: "member",
+  surfaces: WORKFLOW_ONLY_SURFACES,
+  timeoutMs: OAUTH_CALL_TIMEOUT_MS,
+  input: oauthRefreshInputSchema,
+  output: oauthRefreshOutputSchema
+});
+var CORE_TOOLS = [
+  coreHttpRequestTool,
+  coreValuesSetTool,
+  coreStateReadTool,
+  coreEffectsApplyTool,
+  coreOAuthRefreshTool
+];
 
 // ../../packages/shared/src/schema/primitives.ts
 var countSchema = number2().int().min(0);
@@ -13226,58 +13642,19 @@ function replyOf(key, item) {
   return object(shape);
 }
 
-// ../../packages/shared/src/schema/view.ts
-var workflowVisibilitySchema = _enum(["visible", "hidden"]);
-var VIEW_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-var viewKeySchema = string2().regex(VIEW_KEY_RE);
-var flowsViewConfigSchema = object({
-  version: number2().int().min(1).default(1),
-  definitionVisibility: record(string2(), workflowVisibilitySchema).default({})
-}).passthrough();
-var userViewReplySchema = object({
-  viewKey: string2(),
-  config: record(string2(), unknown()),
-  updatedAt: number2().int().min(0).nullable()
+// ../../packages/shared/src/review-report.ts
+var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
+var findingSchema = object({
+  file: string2(),
+  line: number2().int(),
+  evidence: string2(),
+  severity: findingSeveritySchema.optional(),
+  correction: string2().optional()
 });
-var putViewInputSchema = object({
-  config: record(string2(), unknown())
+var reviewReportSchema = object({
+  findings: array(findingSchema),
+  verdict: _enum(["PASS", "FAIL"])
 });
-
-// ../../packages/shared/src/schema/label.ts
-var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
-var MAX_FLOW_LABELS = 200;
-var labelColorSchema = _enum([
-  "slate",
-  "blue",
-  "green",
-  "amber",
-  "red",
-  "violet"
-]);
-var labelSchema = object({
-  name: string2().regex(LABEL_NAME),
-  color: labelColorSchema
-});
-var labelListSchema = object({ labels: array(labelSchema) });
-var flowLabelsInputSchema = object({
-  labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS)
-});
-
-// ../../packages/shared/src/schema/flow.ts
-var RESERVED_FLOW_IDS = new Set([".", "..", "steps", "clear"]);
-var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
-var prioritySchema = _enum(FLOW_PRIORITIES);
-var flowNameSchema = string2().trim().min(1).max(80);
-var flowDueSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
-var updateFlowInputSchema = object({
-  name: flowNameSchema.nullable().optional(),
-  due: flowDueSchema.nullable().optional(),
-  priority: prioritySchema.nullable().optional(),
-  labels: flowLabelsInputSchema.shape.labels.optional()
-});
-
-// ../../packages/shared/src/schema/flow/query.ts
-var NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
 
 // ../../packages/shared/src/schema/flow/status.ts
 var flowStatusSchema = _enum([
@@ -13304,49 +13681,6 @@ var stepStatusSchema = _enum([
   "errored",
   "rejected"
 ]);
-
-// ../../packages/shared/src/lifecycle.ts
-var LIFECYCLE_STATES = ["idle", "queued", "running"];
-var LIFECYCLE_OUTCOMES = [
-  "complete",
-  "blocked",
-  "errored",
-  "terminated"
-];
-var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
-var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
-var FAILING_OUTCOMES = ["errored", "blocked"];
-function isFailingOutcome(outcome) {
-  return outcome !== null && FAILING_OUTCOMES.includes(outcome);
-}
-function isFailingLifecycle(flow) {
-  return flow.state === "idle" && isFailingOutcome(flow.outcome);
-}
-var BLOCK_REASONS = [
-  "spec_failed",
-  "implement_failed",
-  "checks_failed",
-  "standing_findings",
-  "usage_cap",
-  "merge_rejected",
-  "approval_timeout",
-  "merge_ready_timeout",
-  "checks_after_rebase"
-];
-
-// ../../packages/shared/src/review-report.ts
-var findingSeveritySchema = _enum(["P1", "P2", "P3"]);
-var findingSchema = object({
-  file: string2(),
-  line: number2().int(),
-  evidence: string2(),
-  severity: findingSeveritySchema.optional(),
-  correction: string2().optional()
-});
-var reviewReportSchema = object({
-  findings: array(findingSchema),
-  verdict: _enum(["PASS", "FAIL"])
-});
 
 // ../../packages/shared/src/schema/flow/step/usage.ts
 var MAX_RAW_BYTES = 64 * 1024;
@@ -13447,59 +13781,193 @@ function approvalDecisionForStatus(status) {
   return null;
 }
 
-// ../../packages/shared/src/schema/flow/summary.ts
-var flowSummarySchema = object({
-  flowId: string2(),
-  parentId: string2().nullable().default(null),
-  scopeId: string2().default(""),
-  workspace: string2().nullable().default(null),
-  definitionName: string2().nullable().default(null),
-  repo: string2(),
-  base: string2(),
-  ticket: string2().nullable().default(null),
-  labels: flowLabelsInputSchema.shape.labels.default([]),
-  name: string2().max(80).nullable().default(null),
-  due: flowDueSchema.nullable().default(null),
-  priority: prioritySchema.nullable().default(null),
-  scheduleId: string2().nullable().default(null),
-  scheduleCron: string2().nullable().default(null),
-  idempotencyKey: string2().nullable().default(null),
-  state: lifecycleStateSchema,
-  outcome: lifecycleOutcomeSchema.nullable(),
-  status: flowStatusSchema,
-  flowVersion: positiveSchema.default(1),
-  childCount: countSchema,
-  stepCount: countSchema.default(0),
-  failedStep: string2().nullable().default(null),
-  errorTail: string2().nullable().default(null),
-  clearedAt: countSchema.nullable().default(null),
-  createdAt: countSchema,
-  updatedAt: countSchema
+// ../../packages/shared/src/runtime/hybrid.ts
+var MAX_STEP_ARTIFACTS = 64;
+var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
+var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var SHA256_HEX = /^[0-9a-f]{64}$/;
+var COMMIT_HEX = /^[0-9a-f]{40}$/;
+var SECRET_SUFFIXES = [
+  ".key",
+  ".pem",
+  ".p12",
+  ".p8",
+  ".pfx",
+  ".tfvars",
+  ".tfstate",
+  ".tfstate.backup",
+  ".jks",
+  ".keystore",
+  ".kdbx"
+];
+var SECRET_BASENAMES = new Set([
+  "secrets",
+  ".dev.vars",
+  "id_rsa",
+  "id_ed25519",
+  "id_ecdsa",
+  "id_dsa",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  ".git-credentials",
+  "credentials.json",
+  "secrets.json",
+  "secrets.yaml",
+  "secrets.yml",
+  "secrets.toml"
+]);
+var SECRET_PATH_RE = /(?:^|\/)(?:\.git\/config|\.aws\/credentials|\.ssh\/config)$/;
+function normalizeRelativePath(raw) {
+  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+}
+function isSafeRelativePath(raw) {
+  if (!raw || raw.includes("\x00"))
+    return false;
+  const slash = raw.replaceAll("\\", "/");
+  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
+    return false;
+  const cleaned = normalizeRelativePath(slash);
+  if (!cleaned || cleaned === ".")
+    return false;
+  const parts = cleaned.split("/");
+  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+function isSafeMountPath(raw) {
+  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
+  if (cleaned === "" || cleaned === "." || cleaned === "./")
+    return true;
+  return isSafeRelativePath(cleaned);
+}
+function isSecretPath(raw) {
+  const cleaned = normalizeRelativePath(raw);
+  if (!cleaned)
+    return false;
+  if (SECRET_PATH_RE.test(cleaned.toLowerCase()))
+    return true;
+  const parts = cleaned.split("/");
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env") || lower.startsWith(".dev.vars")) {
+      return true;
+    }
+  }
+  const base = (parts[parts.length - 1] ?? "").toLowerCase();
+  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
+}
+var bundleRepoManifestSchema = object({
+  name: string2().regex(REPO_NAME),
+  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
+  commitSha: string2().regex(COMMIT_HEX).optional(),
+  branch: string2().min(1).max(200).optional(),
+  dirty: boolean2(),
+  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
+  patchApplied: boolean2().optional(),
+  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
+  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
+});
+var bundleManifestSchema = object({
+  version: literal(1),
+  workspace: string2().regex(WORKSPACE_NAME),
+  primaryRepo: string2().regex(REPO_NAME),
+  repos: array(bundleRepoManifestSchema).min(1).max(32)
+});
+var bundlePointerSchema = object({
+  workspace: string2().regex(WORKSPACE_NAME),
+  sha: string2().regex(SHA256_HEX),
+  commitSha: string2(),
+  bytes: number2().int().min(1),
+  createdAt: number2().int().min(0),
+  dirty: boolean2().optional(),
+  repoCount: number2().int().min(1).optional()
+});
+var stepArtifactSchema = object({
+  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
+  contentBase64: string2(),
+  bytes: number2().int().min(0),
+  sha256: string2().regex(SHA256_HEX)
+});
+var cloudStepRequestSchema = object({
+  workspace: string2().min(1).max(64),
+  workflowName: string2().min(1).max(64),
+  stepId: string2().min(1).max(64),
+  bundleSha: string2().regex(SHA256_HEX),
+  force: boolean2().optional(),
+  values: record(string2(), string2()).optional(),
+  pullOutputs: boolean2().optional(),
+  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
+});
+var cloudStepReplySchema = stepRecordSchema.and(object({
+  values: record(string2(), string2()).optional(),
+  artifacts: array(stepArtifactSchema).optional()
+}));
+
+// ../../packages/shared/src/schema/label.ts
+var LABEL_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+var MAX_FLOW_LABELS = 200;
+var labelColorSchema = _enum([
+  "slate",
+  "blue",
+  "green",
+  "amber",
+  "red",
+  "violet"
+]);
+var labelSchema = object({
+  name: string2().regex(LABEL_NAME),
+  color: labelColorSchema
+});
+var labelListSchema = object({ labels: array(labelSchema) });
+var flowLabelsInputSchema = object({
+  labels: array(string2().regex(LABEL_NAME)).max(MAX_FLOW_LABELS)
 });
 
-// ../../packages/shared/src/schema/flow/list.ts
-var flowSortSchema = _enum(["updated", "priority", "due", "name"]);
-var flowClearedFilterSchema = _enum(["all", "exclude", "only"]);
-var flowColumnPageSchema = object({
-  status: flowStatusSchema,
-  nextCursor: string2().nullable()
+// ../../packages/shared/src/schema/flow.ts
+var FLOW_ID_SHAPE = /^[A-Za-z0-9:._-]{1,200}$/;
+var RESERVED_FLOW_IDS = new Set([".", "..", "steps", "clear"]);
+function isFlowId(value) {
+  return typeof value === "string" && !RESERVED_FLOW_IDS.has(value) && FLOW_ID_SHAPE.test(value);
+}
+var FLOW_PRIORITIES = ["urgent", "high", "medium", "low"];
+var prioritySchema = _enum(FLOW_PRIORITIES);
+var flowNameSchema = string2().trim().min(1).max(80);
+var flowDueSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
+var updateFlowInputSchema = object({
+  name: flowNameSchema.nullable().optional(),
+  due: flowDueSchema.nullable().optional(),
+  priority: prioritySchema.nullable().optional(),
+  labels: flowLabelsInputSchema.shape.labels.optional()
 });
-var flowDefinitionCountSchema = object({
-  name: string2(),
-  count: number2().int().min(0),
-  defaultHidden: boolean2()
-});
-var flowListInputSchema = object({
-  definition: string2().trim().min(1).optional().describe("Optional workflow definition name filter."),
-  limit: number2().int().min(1).max(100).optional().describe("Maximum flows to return."),
-  view: string2().trim().min(1).optional().describe("Optional saved view key."),
-  showAll: boolean2().optional().describe("Include hidden/archived flows when true.")
-});
-var flowListSchema = listOf("flows", flowSummarySchema).extend({
-  columns: array(flowColumnPageSchema).optional(),
-  definitions: array(flowDefinitionCountSchema).optional(),
-  viewConfig: flowsViewConfigSchema.optional()
-});
+
+// ../../packages/shared/src/lifecycle.ts
+var LIFECYCLE_STATES = ["idle", "queued", "running"];
+var LIFECYCLE_OUTCOMES = [
+  "complete",
+  "blocked",
+  "errored",
+  "terminated"
+];
+var lifecycleStateSchema = _enum(LIFECYCLE_STATES);
+var lifecycleOutcomeSchema = _enum(LIFECYCLE_OUTCOMES);
+var FAILING_OUTCOMES = ["errored", "blocked"];
+function isFailingOutcome(outcome) {
+  return outcome !== null && FAILING_OUTCOMES.includes(outcome);
+}
+function isFailingLifecycle(flow) {
+  return flow.state === "idle" && isFailingOutcome(flow.outcome);
+}
+var BLOCK_REASONS = [
+  "spec_failed",
+  "implement_failed",
+  "checks_failed",
+  "standing_findings",
+  "usage_cap",
+  "merge_rejected",
+  "approval_timeout",
+  "merge_ready_timeout",
+  "checks_after_rebase"
+];
 
 // ../../packages/shared/src/schema/runtime/provider.ts
 var CLI_DRIVERS = ["claude", "antigravity", "codex"];
@@ -13513,7 +13981,22 @@ var PROVIDER_DRIVERS = [
   ...CLI_DRIVERS,
   ...CLOUD_SESSION_DRIVERS
 ];
-var AUTH_MODES = ["api-key", "oauth-file"];
+var AUTH_MODES = [
+  "api-key",
+  "oauth-file",
+  "oauth-token",
+  "oauth-managed"
+];
+var PROVIDER_AUTH_DRIVERS = ["codex", "antigravity"];
+var PROVIDER_AUTH_PHASES = [
+  "starting",
+  "waiting",
+  "verifying",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "expired"
+];
 var STEP_RUNTIMES = [
   "durable",
   "vm",
@@ -13522,6 +14005,8 @@ var STEP_RUNTIMES = [
 ];
 var providerDriverSchema = _enum(PROVIDER_DRIVERS);
 var authModeSchema = _enum(AUTH_MODES);
+var providerAuthDriverSchema = _enum(PROVIDER_AUTH_DRIVERS);
+var providerAuthPhaseSchema = _enum(PROVIDER_AUTH_PHASES);
 var stepRuntimeSchema = _enum(STEP_RUNTIMES);
 var ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 var ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -13530,6 +14015,7 @@ var providerInstanceInputSchema = object({
   provider: providerDriverSchema,
   authKind: authModeSchema.default("api-key"),
   secretName: string2().min(1).max(200).optional(),
+  accountEmail: string2().email().max(200).optional(),
   baseUrl: string2().url().max(500).optional(),
   env: record(string2().regex(ENV_KEY), string2().max(500)).default({}),
   defaultModel: string2().min(1).max(120).optional(),
@@ -13540,6 +14026,44 @@ var providerInstanceInputSchema = object({
 var providerInstanceSchema = providerInstanceInputSchema.extend({
   id: string2().regex(ID_PATTERN),
   updatedAt: number2().int().min(0)
+});
+var providerDeleteReplySchema = object({
+  deleted: string2()
+});
+var providerAuthStartInputSchema = object({
+  driver: providerAuthDriverSchema,
+  instanceId: string2().regex(ID_PATTERN),
+  label: string2().min(1).max(120).optional(),
+  defaultModel: string2().min(1).max(120).optional(),
+  fallbackInstanceId: string2().regex(ID_PATTERN).optional()
+});
+var providerAuthStartReplySchema = object({
+  flowId: string2().min(1).max(120),
+  driver: providerAuthDriverSchema,
+  phase: literal("waiting"),
+  authorizationUrl: string2().url(),
+  redirectUri: string2().url(),
+  expiresAt: number2().int().min(0)
+});
+var providerAuthCompleteInputSchema = object({
+  flowId: string2().min(1).max(120),
+  callbackUrl: string2().min(1).max(16384)
+});
+var providerAuthCancelInputSchema = object({
+  flowId: string2().min(1).max(120)
+});
+var providerAuthCancelReplySchema = object({
+  flowId: string2(),
+  phase: providerAuthPhaseSchema
+});
+var providerConnectInputSchema = object({
+  instanceId: string2().regex(ID_PATTERN),
+  driver: _enum(CLI_DRIVERS),
+  authKind: _enum(["oauth-token", "oauth-file", "api-key"]),
+  credential: string2().min(1).max(MAX_SECRET_VALUE),
+  label: string2().min(1).max(120).optional(),
+  defaultModel: string2().min(1).max(120).optional(),
+  fallbackInstanceId: string2().regex(ID_PATTERN).optional()
 });
 var scopePolicySchema = object({
   scopeId: string2().min(1).max(200),
@@ -13561,9 +14085,38 @@ var providerWithStatusSchema = providerInstanceSchema.extend({
 var providerListResponseSchema = object({
   providers: array(providerWithStatusSchema)
 });
+var providerAuthCompleteReplySchema = object({
+  provider: providerWithStatusSchema,
+  accountEmail: string2().nullable()
+});
 function isValidProfileId(value) {
   return ID_PATTERN.test(value);
 }
+
+// ../../packages/shared/src/schema/runtime/scope.ts
+var DEFAULT_OPERATOR_ACTOR = "owner";
+var OPERATOR_SCOPE = `user:${DEFAULT_OPERATOR_ACTOR}`;
+var PLATFORM_ROLES = ["superadmin", "user"];
+var platformRoleSchema = _enum(PLATFORM_ROLES);
+var ORG_ROLES = ["org_owner", "org_admin", "org_member"];
+var orgRoleSchema = _enum(ORG_ROLES);
+var ORG_BILLING_ACCESS_LEVELS = ["none", "read"];
+var orgBillingAccessLevelSchema = _enum(ORG_BILLING_ACCESS_LEVELS);
+var orgBillingAccessSchema = object({
+  org_admin: orgBillingAccessLevelSchema.default("none"),
+  org_member: orgBillingAccessLevelSchema.default("none")
+});
+var sessionReplySchema = object({
+  email: string2().nullable(),
+  githubEnabled: boolean2().default(false),
+  isOperator: boolean2().optional(),
+  role: platformRoleSchema.nullable().optional(),
+  orgId: string2().nullable().optional(),
+  orgName: string2().nullable().optional(),
+  orgRole: orgRoleSchema.nullable().optional(),
+  billingActive: boolean2().optional(),
+  canViewBilling: boolean2().optional()
+});
 
 // ../../packages/shared/src/schema/flow/config.ts
 var childConfigSchema = object({
@@ -13581,6 +14134,8 @@ var flowConfigSchema = object({
   usageCap: number2().int().positive().nullable(),
   children: record(string2(), childConfigSchema).default({}),
   scopeId: string2().min(1).max(200).optional(),
+  orgRole: orgRoleSchema.nullable().optional(),
+  canViewBilling: boolean2().optional(),
   providerInstanceId: string2().min(1).max(64).optional(),
   vmProfileId: string2().min(1).max(64).optional()
 });
@@ -13801,55 +14356,1116 @@ var flowRecordSchema = object({
   updatedAt: countSchema
 });
 
-// src/api/generated/nosta.ts
-var getGetFlowPageUrl = (id, params) => {
-  const normalizedParams = new URLSearchParams;
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
+// ../../packages/shared/src/schema/flow/step/event.ts
+var stepEventStatusSchema = _enum([
+  ...flowStatusSchema.options,
+  "rejected"
+]);
+var stepEventSchema = object({
+  seq: countSchema,
+  at: countSchema,
+  flowId: string2(),
+  childFlowId: string2().nullable(),
+  stepId: string2().nullable(),
+  kind: stepKindSchema,
+  status: stepEventStatusSchema,
+  stepStatus: stepStatusSchema.optional(),
+  sourceVersion: countSchema.default(1),
+  summary: string2(),
+  usage: usageSchema.nullable()
+});
+
+// ../../packages/shared/src/schema/flow/control.ts
+var SIGNAL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var flowCreateReplySchema = replyOf("flow", flowRecordSchema).extend({
+  created: boolean2()
+});
+var approvalInputSchema = object({
+  decision: _enum(["approve", "reject"]),
+  version: positiveSchema,
+  attempt: positiveSchema,
+  decisionId: string2().min(1).max(200),
+  actor: string2().min(1).max(200).optional()
+});
+var approvalReplySchema = replyOf("flow", flowRecordSchema).extend({
+  pendingDelivery: boolean2().optional()
+});
+var flowStartInputSchema = object({
+  stackBase: string2().optional(),
+  awaitMergeReady: boolean2().optional()
+});
+var flowStartReplySchema = object({
+  instanceId: string2(),
+  attempt: number2().int().min(1)
+});
+var flowEventsReplySchema = listOf("events", stepEventSchema);
+var flowSignalInputSchema = object({
+  type: string2().regex(SIGNAL_NAME),
+  payload: record(string2(), string2()).default({}),
+  dedupeKey: string2().min(1).max(128).optional()
+});
+var flowSignalReplySchema = object({
+  flowId: string2(),
+  type: string2(),
+  attempt: number2().int().min(1),
+  queued: boolean2()
+});
+var flowCancelReplySchema = object({
+  flowId: string2(),
+  canceledFlowIds: array(string2()),
+  alreadyIdleIds: array(string2()),
+  failedTerminations: array(object({ flowId: string2(), error: string2() }))
+});
+var flowClearReplySchema = object({
+  flowId: string2(),
+  clearedAt: number2().int().min(0),
+  alreadyCleared: boolean2()
+});
+var FLOW_BATCH_CLEAR_MAX = 200;
+var flowBatchClearInputSchema = object({
+  flowIds: array(string2().min(1).max(128)).min(1).max(FLOW_BATCH_CLEAR_MAX)
+});
+var flowBatchClearReplySchema = object({
+  clearedIds: array(string2()),
+  alreadyClearedIds: array(string2()),
+  clearedAt: number2().int().min(0)
+});
+
+// ../../packages/shared/src/packet.ts
+var MAX_FILES = 32;
+var MAX_PACKET_BYTES = 256 * 1024;
+var MAX_SERIALIZED_BYTES = 384 * 1024;
+var MAX_NAME_CHARS = 200;
+var MAX_TITLE_CHARS = 200;
+var encoder = new TextEncoder;
+function byteLength(text) {
+  return encoder.encode(text).length;
+}
+function isValidFileName(name) {
+  return typeof name === "string" && name.length > 0 && name.length <= MAX_NAME_CHARS && !name.includes("..") && /^[A-Za-z0-9._/-]+$/.test(name);
+}
+function failure2(error) {
+  return { ok: false, error };
+}
+function readTitle(input) {
+  if (input.title === undefined)
+    return "review";
+  if (typeof input.title !== "string")
+    return null;
+  const title = input.title.trim();
+  if (!title || title.length > MAX_TITLE_CHARS)
+    return null;
+  return title;
+}
+function readFiles(input) {
+  if (!Array.isArray(input.files) || input.files.length === 0 || input.files.length > MAX_FILES) {
+    return `files must list 1..${MAX_FILES} entries`;
+  }
+  const files = [];
+  const seen = new Set;
+  for (const entry of input.files) {
+    if (!entry || typeof entry !== "object")
+      return "invalid file entry";
+    const file = entry;
+    if (!isValidFileName(file.name)) {
+      return `invalid file name: ${String(file.name)}`;
     }
-  });
-  const stringifiedParams = normalizedParams.toString();
-  return stringifiedParams.length > 0 ? `/api/flow/${id}/page?${stringifiedParams}` : `/api/flow/${id}/page`;
-};
-var getListFlowsUrl = (params) => {
-  const normalizedParams = new URLSearchParams;
-  Object.entries(params || {}).forEach(([key, value]) => {
-    const explodeParameters = ["columns", "excludeDefinition"];
-    if (Array.isArray(value) && explodeParameters.includes(key)) {
-      value.forEach((v) => {
-        normalizedParams.append(key, v === null ? "null" : String(v));
-      });
-      return;
+    if (typeof file.content !== "string") {
+      return `invalid file content: ${file.name}`;
     }
-    if (value !== undefined) {
-      normalizedParams.append(key, value === null ? "null" : String(value));
-    }
-  });
-  const stringifiedParams = normalizedParams.toString();
-  return stringifiedParams.length > 0 ? `/api/flow?${stringifiedParams}` : `/api/flow`;
+    if (seen.has(file.name))
+      return `duplicate file name: ${file.name}`;
+    seen.add(file.name);
+    files.push({ name: file.name, content: file.content });
+  }
+  return files;
+}
+function serializedByteLength(value) {
+  return byteLength(JSON.stringify(value) ?? "");
+}
+function validatePacket(input) {
+  if (!input || typeof input !== "object")
+    return failure2("packet must be an object");
+  const record = input;
+  const title = readTitle(record);
+  if (title === null)
+    return failure2("title must be 1..200 characters");
+  const files = readFiles(record);
+  if (typeof files === "string")
+    return failure2(files);
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += byteLength(file.content);
+  }
+  if (totalBytes > MAX_PACKET_BYTES)
+    return failure2("packet exceeds 256 KiB");
+  const serializedBytes = serializedByteLength({ title, files });
+  if (serializedBytes > MAX_SERIALIZED_BYTES) {
+    return failure2("packet exceeds 384 KiB after JSON encoding");
+  }
+  return { ok: true, packet: { title, files, totalBytes } };
+}
+
+// ../../packages/shared/src/schema/flow/report.ts
+var MAX_FLOW_DIFF_BYTES = 1024 * 1024;
+var MAX_FLOW_TEXT_BYTES = 256 * 1024;
+var flowMetadataInputSchema = object({
+  values: record(string2().min(1).max(64), string2().max(4000)).optional(),
+  endState: string2().max(1000).nullable().optional(),
+  ticketBody: string2().refine((value) => byteLength(value) <= MAX_FLOW_TEXT_BYTES, "ticketBody exceeds the 256 KiB cap").nullable().optional(),
+  spec: string2().refine((value) => byteLength(value) <= MAX_FLOW_TEXT_BYTES, "spec exceeds the 256 KiB cap").nullable().optional(),
+  branch: string2().min(1).max(200).nullable().optional()
+});
+var reportPrSchema = pullRequestSchema.extend({ url: string2().url() });
+var flowStepReportSchema = object({
+  id: string2().min(1).max(100),
+  name: string2().min(1).max(160).optional(),
+  kind: _enum(["agent", "command", "approval", "call"]),
+  role: _enum(["review", "spec", "build"]).nullable().optional(),
+  status: _enum(["queued", "running", "complete", "errored", "rejected"]),
+  summary: string2().max(500).optional(),
+  command: string2().max(1000).optional(),
+  durationMs: number2().int().min(0).nullable().optional(),
+  exitCode: number2().int().nullable().optional(),
+  model: string2().min(1).max(120).nullable().optional(),
+  verdict: _enum(["PASS", "FAIL"]).nullable().optional(),
+  findings: array(findingSchema).max(100).optional(),
+  actor: string2().max(160).nullable().optional(),
+  decision: _enum(["approve", "reject"]).nullable().optional(),
+  call: string2().max(128).nullable().optional(),
+  callVersion: number2().int().min(1).nullable().optional(),
+  attempts: number2().int().min(1).nullable().optional(),
+  error: callStepErrorSchema.nullable().optional(),
+  output: string2().default(""),
+  pr: reportPrSchema.nullable().optional(),
+  usage: usageSchema.nullable().optional()
+});
+var flowReportSchema = object({
+  status: _enum(["running", "complete", "errored"]),
+  finishedAt: number2().int().min(0).nullable().optional(),
+  steps: array(flowStepReportSchema).max(64),
+  docs: array(flowDocRefSchema).max(64).optional(),
+  evidence: array(flowEvidenceRefSchema).max(64).optional(),
+  tabs: array(flowTabSchema).max(16).nullable().optional(),
+  defaultTab: flowTabIdSchema.nullable().optional(),
+  diffSummary: flowDiffSummarySchema.nullable().optional(),
+  diff: string2().refine((value) => byteLength(value) <= MAX_FLOW_DIFF_BYTES, "diff exceeds the 1 MiB cap").nullable().optional(),
+  diffTruncated: boolean2().optional(),
+  ship: flowShipMetaSchema.nullable().optional(),
+  ...flowMetadataInputSchema.shape,
+  pr: reportPrSchema.nullable().optional()
+});
+
+// ../../packages/shared/src/schema/flow/create.ts
+var SHA256_HEX2 = /^[0-9a-f]{64}$/;
+var BASE_SHA_HEX = /^[0-9a-f]{40}$/i;
+var COMPONENT_NAME = /^[a-z][a-z0-9-]*$/;
+var flowIdSchema = string2().trim().min(1).max(200).refine(isFlowId, "invalid_flow_id");
+var reviewFileInputSchema = object({
+  name: string2().min(1).max(255),
+  content: string2()
+});
+var componentRefInputSchema = object({
+  name: string2().regex(COMPONENT_NAME),
+  version: number2().int().min(1)
+});
+var specFlowCreateSchema = object({
+  mode: literal("spec"),
+  spec: string2().min(1).refine((value) => byteLength(value) <= MAX_FLOW_TEXT_BYTES, "spec exceeds the 256 KiB cap"),
+  baseSha: string2().regex(BASE_SHA_HEX, "baseSha must be one 40-hex Git SHA"),
+  ticketUrl: string2().url().refine((value) => value.startsWith("https://"), "ticketUrl must use https")
+});
+var reviewFlowCreateSchema = object({
+  mode: literal("review"),
+  title: string2().trim().min(1).max(200).optional(),
+  files: array(reviewFileInputSchema).min(1).max(32).refine((files) => files.reduce((sum, file) => sum + byteLength(file.content), 0) <= MAX_PACKET_BYTES, "review files exceed packet size cap"),
+  component: componentRefInputSchema.nullable().optional(),
+  parentId: flowIdSchema.nullable().optional()
+});
+var yamlFlowCreateSchema = object({
+  mode: literal("yaml"),
+  id: flowIdSchema.optional(),
+  parentId: flowIdSchema.nullable().optional(),
+  rootFlowId: flowIdSchema.optional(),
+  workspace: string2().min(1).max(64),
+  definitionName: string2().regex(SIGNAL_NAME),
+  bundleSha: string2().regex(SHA256_HEX2).nullable().optional(),
+  values: record(string2(), string2()).optional()
+});
+var localFlowCreateSchema = object({
+  mode: literal("local"),
+  id: flowIdSchema.optional(),
+  parentId: flowIdSchema.nullable().optional(),
+  rootFlowId: flowIdSchema.optional(),
+  name: string2().min(1).max(80),
+  workspace: string2().min(1).max(120),
+  bundleSha: string2().regex(SHA256_HEX2).nullable().optional(),
+  repo: string2().min(1).max(200).nullable().optional(),
+  base: string2().min(1).max(200).nullable().optional(),
+  ticket: string2().min(1).max(100).nullable().optional(),
+  ticketUrl: string2().url().nullable().optional(),
+  ...flowMetadataInputSchema.shape,
+  tabs: array(flowTabSchema).max(16).nullable().optional(),
+  defaultTab: flowTabIdSchema.nullable().optional(),
+  labels: flowLabelsInputSchema.shape.labels.optional(),
+  steps: array(stepRecordSchema).max(64).optional()
+});
+var flowCreateInputSchema = discriminatedUnion("mode", [
+  specFlowCreateSchema,
+  reviewFlowCreateSchema,
+  yamlFlowCreateSchema,
+  localFlowCreateSchema
+]);
+var flowDetailReplySchema = object({
+  flow: flowRecordSchema,
+  children: array(flowRecordSchema)
+});
+
+// ../../packages/shared/src/schema/view.ts
+var workflowVisibilitySchema = _enum(["visible", "hidden"]);
+var VIEW_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var viewKeySchema = string2().regex(VIEW_KEY_RE);
+var flowsViewConfigSchema = object({
+  version: number2().int().min(1).default(1),
+  definitionVisibility: record(string2(), workflowVisibilitySchema).default({})
+}).passthrough();
+var userViewReplySchema = object({
+  viewKey: string2(),
+  config: record(string2(), unknown()),
+  updatedAt: number2().int().min(0).nullable()
+});
+var putViewInputSchema = object({
+  config: record(string2(), unknown())
+});
+
+// ../../packages/shared/src/schema/flow/query.ts
+var NO_UPPER_BOUND = Number.MAX_SAFE_INTEGER;
+
+// ../../packages/shared/src/schema/flow/summary.ts
+var flowSummarySchema = object({
+  flowId: string2(),
+  parentId: string2().nullable().default(null),
+  scopeId: string2().default(""),
+  workspace: string2().nullable().default(null),
+  definitionName: string2().nullable().default(null),
+  repo: string2(),
+  base: string2(),
+  ticket: string2().nullable().default(null),
+  labels: flowLabelsInputSchema.shape.labels.default([]),
+  name: string2().max(80).nullable().default(null),
+  due: flowDueSchema.nullable().default(null),
+  priority: prioritySchema.nullable().default(null),
+  scheduleId: string2().nullable().default(null),
+  scheduleCron: string2().nullable().default(null),
+  idempotencyKey: string2().nullable().default(null),
+  state: lifecycleStateSchema,
+  outcome: lifecycleOutcomeSchema.nullable(),
+  status: flowStatusSchema,
+  flowVersion: positiveSchema.default(1),
+  childCount: countSchema,
+  stepCount: countSchema.default(0),
+  failedStep: string2().nullable().default(null),
+  errorTail: string2().nullable().default(null),
+  clearedAt: countSchema.nullable().default(null),
+  createdAt: countSchema,
+  updatedAt: countSchema
+});
+
+// ../../packages/shared/src/schema/flow/list.ts
+var flowSortSchema = _enum(["updated", "priority", "due", "name"]);
+var flowClearedFilterSchema = _enum(["all", "exclude", "only"]);
+var flowColumnPageSchema = object({
+  status: flowStatusSchema,
+  nextCursor: string2().nullable()
+});
+var flowDefinitionCountSchema = object({
+  name: string2(),
+  count: number2().int().min(0),
+  defaultHidden: boolean2()
+});
+var flowListInputSchema = object({
+  definition: string2().trim().min(1).optional().describe("Optional workflow definition name filter."),
+  limit: number2().int().min(1).max(100).optional().describe("Maximum flows to return."),
+  view: string2().trim().min(1).optional().describe("Optional saved view key."),
+  showAll: boolean2().optional().describe("Include hidden/archived flows when true.")
+});
+var flowListSchema = listOf("flows", flowSummarySchema).extend({
+  columns: array(flowColumnPageSchema).optional(),
+  definitions: array(flowDefinitionCountSchema).optional(),
+  viewConfig: flowsViewConfigSchema.optional()
+});
+
+// ../../packages/shared/src/schema/flow/page.ts
+var pageEventSchema = stepEventSchema.omit({ flowId: true });
+var flowPageViewSchema = _enum(["full", "summary"]);
+var flowDiffReplySchema = object({
+  diff: string2().nullable(),
+  diffTruncated: boolean2()
+});
+var flowPageSchema = object({
+  flow: flowRecordSchema,
+  children: array(flowRecordSchema),
+  subflows: array(flowSummarySchema).optional(),
+  parentName: string2().nullable().optional(),
+  view: flowPageViewSchema.optional(),
+  hasSpec: boolean2().optional(),
+  hasDiff: boolean2().optional(),
+  events: array(pageEventSchema),
+  fetchedAt: countSchema,
+  lastEventAt: countSchema.nullable(),
+  lastEventSeq: countSchema.optional(),
+  stalled: boolean2()
+});
+
+// ../../packages/shared/src/schema/flow/step/summary.ts
+var MAX_STEP_LIMIT = 1000;
+var stepSummarySchema = object({
+  flowId: string2(),
+  rootFlowId: string2(),
+  stepId: string2(),
+  attempt: positiveSchema.default(1),
+  kind: stepKindSchema,
+  role: agentRoleSchema.nullable(),
+  status: stepStatusSchema,
+  verdict: _enum(["PASS", "FAIL"]).nullable(),
+  findingsCount: countSchema,
+  model: string2().nullable(),
+  usage: usageSchema.nullable().default(null),
+  errorSignature: string2().nullable().default(null),
+  startedAt: countSchema,
+  endedAt: countSchema.nullable(),
+  flowVersion: positiveSchema.default(1)
+});
+var stepListSchema = listOf("steps", stepSummarySchema).extend({
+  nextCursor: string2().nullable()
+});
+
+// ../../packages/shared/src/toolkits/flows.ts
+var READ_SURFACES = ALL_TOOL_SURFACES;
+var WRITE_SURFACES = WRITE_TOOL_SURFACES;
+var WORKFLOW_ONLY_SURFACES2 = WORKFLOW_ONLY_TOOL_SURFACES;
+var LARGE_FLOW_BODY_BYTES = 2 * 1024 * 1024;
+var CLOUD_STEP_TIMEOUT_MS = 60000;
+var flowsListTool = defineTool({
+  toolkit: "flows",
+  name: "list",
+  description: "List flows with optional column, date, workspace, ticket, view, definition, sort, and cursor filters.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({
+    columns: array(flowStatusSchema).optional(),
+    from: number2().int().min(0).optional(),
+    to: number2().int().min(0).optional(),
+    limit: number2().int().min(1).max(500).optional(),
+    cursor: string2().min(1).max(512).optional(),
+    parentId: flowIdSchema.optional(),
+    workspace: string2().trim().min(1).max(200).optional(),
+    ticket: string2().trim().min(1).max(200).optional(),
+    sort: flowSortSchema.optional(),
+    view: string2().trim().min(1).max(64).optional(),
+    definition: string2().trim().min(1).max(200).optional(),
+    excludeDefinitions: array(string2().trim().min(1).max(200)).optional(),
+    showAll: boolean2().optional(),
+    cleared: flowClearedFilterSchema.optional()
+  }),
+  output: flowListSchema
+});
+var flowsGetTool = defineTool({
+  toolkit: "flows",
+  name: "get",
+  description: "Get one flow record along with its direct child flow records.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({ id: flowIdSchema }),
+  output: flowDetailReplySchema
+});
+var flowsGetPageTool = defineTool({
+  toolkit: "flows",
+  name: "get_page",
+  description: "Get the hydrated flow page payload including steps, subflows, events, and stall metadata.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({
+    id: flowIdSchema,
+    view: flowPageViewSchema.optional()
+  }),
+  output: flowPageSchema
+});
+var flowsGetDiffTool = defineTool({
+  toolkit: "flows",
+  name: "get_diff",
+  description: "Read the stored git diff payload for a flow.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({ id: flowIdSchema }),
+  output: flowDiffReplySchema
+});
+var flowsListStepsTool = defineTool({
+  toolkit: "flows",
+  name: "list_steps",
+  description: "List step summaries across caller-visible flows with optional time, kind, role, and cursor filters.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({
+    from: number2().int().min(0).optional(),
+    to: number2().int().min(0).optional(),
+    kind: stepKindSchema.optional(),
+    role: agentRoleSchema.optional(),
+    limit: number2().int().min(1).max(MAX_STEP_LIMIT).optional(),
+    cursor: string2().min(1).max(512).optional()
+  }),
+  output: stepListSchema
+});
+var flowsListEventsTool = defineTool({
+  toolkit: "flows",
+  name: "list_events",
+  description: "Get ordered step events recorded on a flow.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES,
+  input: object({ id: flowIdSchema }),
+  output: flowEventsReplySchema
+});
+var flowsCreateTool = defineTool({
+  toolkit: "flows",
+  name: "create",
+  description: "Create a new Nosta flow in spec, review, yaml, or local mode (requires Idempotency-Key).",
+  kind: "write",
+  access: "member",
+  idempotency: "required",
+  quota: "daily_flow",
+  maxBodyBytes: LARGE_FLOW_BODY_BYTES,
+  surfaces: WRITE_SURFACES,
+  input: flowCreateInputSchema,
+  output: flowCreateReplySchema
+});
+var flowsStartTool = defineTool({
+  toolkit: "flows",
+  name: "start",
+  description: "Start or retry execution of an existing cloud flow.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: flowStartInputSchema.extend({ id: flowIdSchema }),
+  output: flowStartReplySchema
+});
+var flowsUpdateTool = defineTool({
+  toolkit: "flows",
+  name: "update",
+  description: "Update name, due date, priority, or labels on a flow.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: updateFlowInputSchema.extend({ id: flowIdSchema }),
+  output: object({ flow: flowRecordSchema })
+});
+var flowsApproveTool = defineTool({
+  toolkit: "flows",
+  name: "approve",
+  description: "Approve or reject a flow waiting at its merge gate.",
+  kind: "destructive",
+  access: "member",
+  approval: "human_confirm",
+  surfaces: WRITE_SURFACES,
+  input: approvalInputSchema.omit({ actor: true }).extend({
+    id: flowIdSchema,
+    decisionId: approvalInputSchema.shape.decisionId.optional()
+  }),
+  output: approvalReplySchema
+});
+var flowsSignalTool = defineTool({
+  toolkit: "flows",
+  name: "signal",
+  description: "Send a named signal with optional string payload to a running or waiting flow.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: flowSignalInputSchema.extend({ id: flowIdSchema }),
+  output: flowSignalReplySchema
+});
+var flowsCancelTool = defineTool({
+  toolkit: "flows",
+  name: "cancel",
+  description: "Cancel a running or waiting flow and its child flow tree.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: object({ id: flowIdSchema }),
+  output: flowCancelReplySchema
+});
+var flowsClearTool = defineTool({
+  toolkit: "flows",
+  name: "clear",
+  description: "Mark one failing flow as cleared from active failure triage.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: object({ id: flowIdSchema }),
+  output: flowClearReplySchema
+});
+var flowsClearBatchTool = defineTool({
+  toolkit: "flows",
+  name: "clear_batch",
+  description: "Mark multiple failing flows as cleared in one batch operation.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES,
+  input: flowBatchClearInputSchema,
+  output: flowBatchClearReplySchema
+});
+var flowsReportTool = defineTool({
+  toolkit: "flows",
+  name: "report",
+  description: "Report step progress, docs, evidence, tabs, diff, or completion status for a local flow.",
+  kind: "write",
+  access: "member",
+  maxBodyBytes: LARGE_FLOW_BODY_BYTES,
+  surfaces: WRITE_SURFACES,
+  input: flowReportSchema.extend({ id: flowIdSchema }),
+  output: object({ flow: flowRecordSchema })
+});
+var flowsRunCloudStepTool = defineTool({
+  toolkit: "flows",
+  name: "run_cloud_step",
+  description: "Execute a single hybrid cloud workflow step on a flow.",
+  kind: "write",
+  access: "member",
+  timeoutMs: CLOUD_STEP_TIMEOUT_MS,
+  surfaces: WORKFLOW_ONLY_SURFACES2,
+  httpExposed: true,
+  input: cloudStepRequestSchema.extend({ id: flowIdSchema }),
+  output: cloudStepReplySchema
+});
+var FLOW_TOOLS = [
+  flowsListTool,
+  flowsGetTool,
+  flowsGetPageTool,
+  flowsGetDiffTool,
+  flowsListStepsTool,
+  flowsListEventsTool,
+  flowsCreateTool,
+  flowsStartTool,
+  flowsUpdateTool,
+  flowsApproveTool,
+  flowsSignalTool,
+  flowsCancelTool,
+  flowsClearTool,
+  flowsClearBatchTool,
+  flowsReportTool,
+  flowsRunCloudStepTool
+];
+
+// ../../packages/shared/src/schema/inbox.ts
+var INBOX_STATUSES = ["open", "closed"];
+var inboxStatusSchema = _enum(INBOX_STATUSES);
+var INBOX_ID_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
+var MAX_INBOX_LIMIT = 500;
+var MAX_INBOX_IMPORT_BATCH = 500;
+var inboxItemSchema = object({
+  id: string2(),
+  scopeId: string2().default(""),
+  kind: string2().min(1).max(64),
+  status: inboxStatusSchema,
+  ticket: string2().nullable(),
+  node: string2().nullable().default(null),
+  flowId: string2().nullable(),
+  what: string2().min(1).max(2000),
+  cause: string2().nullable(),
+  action: string2().nullable(),
+  link: string2().nullable(),
+  replaces: string2().nullable().default(null),
+  createdAt: number2().int(),
+  updatedAt: number2().int(),
+  closedAt: number2().int().nullable(),
+  closedBy: string2().nullable(),
+  resolution: string2().nullable(),
+  outcome: string2().nullable().default(null),
+  change: string2().nullable().default(null)
+});
+var createInboxItemInputSchema = object({
+  kind: string2().min(1).max(64),
+  what: string2().min(1).max(2000),
+  ticket: string2().max(128).nullable().optional(),
+  node: string2().max(128).nullable().optional(),
+  flowId: string2().max(128).nullable().optional(),
+  cause: string2().max(4000).nullable().optional(),
+  action: string2().max(2000).nullable().optional(),
+  link: string2().max(2048).nullable().optional(),
+  replaces: string2().max(128).nullable().optional(),
+  replacedOutcome: string2().max(128).nullable().optional(),
+  replacedChange: string2().max(128).nullable().optional()
+});
+var closeInboxItemInputSchema = object({
+  resolution: string2().max(2000).nullable().optional(),
+  outcome: string2().max(128).nullable().optional(),
+  change: string2().max(128).nullable().optional()
+});
+var importInboxItemSchema = object({
+  id: string2().max(128).optional(),
+  scopeId: string2().max(200).optional(),
+  kind: string2().min(1).max(64),
+  what: string2().min(1).max(2000),
+  status: inboxStatusSchema.optional(),
+  ticket: string2().max(128).nullable().optional(),
+  node: string2().max(128).nullable().optional(),
+  flowId: string2().max(128).nullable().optional(),
+  cause: string2().max(4000).nullable().optional(),
+  action: string2().max(2000).nullable().optional(),
+  link: string2().max(2048).nullable().optional(),
+  replaces: string2().max(128).nullable().optional(),
+  createdAt: number2().int().min(0),
+  updatedAt: number2().int().min(0).nullable().optional(),
+  closedAt: number2().int().min(0).nullable().optional(),
+  closedBy: string2().max(200).nullable().optional(),
+  resolution: string2().max(2000).nullable().optional(),
+  outcome: string2().max(128).nullable().optional(),
+  change: string2().max(128).nullable().optional()
+});
+var importInboxInputSchema = object({
+  items: array(importInboxItemSchema).min(1).max(MAX_INBOX_IMPORT_BATCH)
+});
+var importInboxReplySchema = object({
+  imported: number2().int().min(0),
+  skipped: number2().int().min(0),
+  total: number2().int().min(0)
+});
+var inboxItemReplySchema = object({
+  item: inboxItemSchema
+});
+var inboxCountsSchema = object({
+  open: number2().int().min(0),
+  closed: number2().int().min(0)
+});
+var inboxListReplySchema = object({
+  items: array(inboxItemSchema),
+  counts: inboxCountsSchema.optional(),
+  nextCursor: string2().nullable().default(null)
+});
+
+// ../../packages/shared/src/toolkits/inbox.ts
+var READ_SURFACES2 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES2 = WRITE_TOOL_SURFACES;
+var BATCH_SURFACES = {
+  spa: false,
+  mcp: true,
+  cli: true,
+  workflow: true,
+  artifactFrame: false
 };
-var getApproveFlowUrl = (flowId) => {
-  return `/api/flow/${flowId}/approval`;
+var inboxIdField = string2().regex(INBOX_ID_RE);
+var inboxListTool = defineTool({
+  toolkit: "inbox",
+  name: "list",
+  description: "List inbox items and open/closed counts with optional filters.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES2,
+  input: object({
+    status: inboxStatusSchema.optional(),
+    kind: string2().optional(),
+    ticket: string2().optional(),
+    node: string2().optional(),
+    flowId: string2().optional(),
+    since: string2().optional(),
+    cursor: string2().optional(),
+    limit: number2().int().min(1).max(MAX_INBOX_LIMIT).optional()
+  }),
+  output: inboxListReplySchema
+});
+var inboxGetTool = defineTool({
+  toolkit: "inbox",
+  name: "get",
+  description: "Fetch a single inbox item by id.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES2,
+  input: object({ id: inboxIdField }),
+  output: inboxItemReplySchema
+});
+var inboxCreateTool = defineTool({
+  toolkit: "inbox",
+  name: "create",
+  description: "Create a new inbox item or replace an existing one.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES2,
+  input: createInboxItemInputSchema,
+  output: inboxItemReplySchema
+});
+var inboxCloseTool = defineTool({
+  toolkit: "inbox",
+  name: "close",
+  description: "Close an open inbox item with optional resolution metadata.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES2,
+  input: closeInboxItemInputSchema.extend({ id: inboxIdField }),
+  output: inboxItemReplySchema
+});
+var inboxReopenTool = defineTool({
+  toolkit: "inbox",
+  name: "reopen",
+  description: "Reopen a previously closed inbox item.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES2,
+  input: object({ id: inboxIdField }),
+  output: inboxItemReplySchema
+});
+var inboxImportTool = defineTool({
+  toolkit: "inbox",
+  name: "import",
+  description: "Bulk-import historical inbox items idempotently.",
+  kind: "write",
+  access: "member",
+  surfaces: BATCH_SURFACES,
+  input: importInboxInputSchema,
+  output: importInboxReplySchema
+});
+var INBOX_TOOLS = [
+  inboxListTool,
+  inboxGetTool,
+  inboxCreateTool,
+  inboxCloseTool,
+  inboxReopenTool,
+  inboxImportTool
+];
+
+// ../../packages/shared/src/toolkits/labels.ts
+var READ_SURFACES3 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES3 = WRITE_TOOL_SURFACES;
+var labelsListTool = defineTool({
+  toolkit: "labels",
+  name: "list",
+  description: "List all configured flow labels and their colors.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES3,
+  input: object({}),
+  output: labelListSchema
+});
+var labelsCreateTool = defineTool({
+  toolkit: "labels",
+  name: "create",
+  description: "Create or update a flow label with a name and color.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES3,
+  input: labelSchema,
+  output: labelListSchema
+});
+var LABEL_TOOLS = [labelsListTool, labelsCreateTool];
+
+// ../../packages/shared/src/toolkits/meta.ts
+var toolkitsListInputSchema = object({
+  surface: _enum(TOOL_SURFACES).optional()
+});
+var toolkitsListOutputSchema = object({
+  toolkits: array(toolkitSummarySchema)
+});
+var toolkitsDescribeInputSchema = object({
+  toolkit: string2().regex(TOOLKIT_NAME_RE),
+  tool: string2().regex(TOOL_NAME_RE).optional()
+});
+var toolkitsDescribeOutputSchema = object({
+  toolkit: toolkitDescriptorSchema
+});
+var ALL_SURFACES = ALL_TOOL_SURFACES;
+var toolkitsListTool = defineTool({
+  toolkit: "toolkits",
+  name: "list",
+  description: "List available Nosta toolkits and tool summaries visible to the caller.",
+  kind: "read",
+  access: "member",
+  surfaces: ALL_SURFACES,
+  input: toolkitsListInputSchema,
+  output: toolkitsListOutputSchema
+});
+var toolkitsDescribeTool = defineTool({
+  toolkit: "toolkits",
+  name: "describe",
+  description: "Return full input/output JSON schemas and metadata for one toolkit or a single tool.",
+  kind: "read",
+  access: "member",
+  surfaces: ALL_SURFACES,
+  input: toolkitsDescribeInputSchema,
+  output: toolkitsDescribeOutputSchema
+});
+var META_TOOLS = [toolkitsListTool, toolkitsDescribeTool];
+
+// ../../packages/shared/src/storage/pages.ts
+var MAX_PAGE_BYTES = 1500000;
+var MAX_MEDIA_BYTES = 50000000;
+var MAX_PAGE_TITLE = 200;
+var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
+var PAGE_SLOT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var pageSlotSchema = string2().regex(PAGE_SLOT);
+var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
+var MEDIA_CONTENT_TYPES = {
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8"
 };
-var getListSecretsUrl = () => {
-  return `/api/secrets`;
-};
-var getListFlowEventsUrl = (id) => {
-  return `/api/flow/${id}/events`;
-};
-var getStartFlowUrl = (id) => {
-  return `/api/flow/${id}/start`;
-};
-var getRunCloudStepUrl = (id) => {
-  return `/api/flow/${id}/step`;
-};
-var getSignalFlowUrl = (id) => {
-  return `/api/flow/${id}/signal`;
-};
-var getCancelFlowUrl = (id) => {
-  return `/api/flow/${id}/cancel`;
-};
+function mediaContentType(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0)
+    return null;
+  return MEDIA_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null;
+}
+function isDocumentKey(value) {
+  const parts = value.split("/");
+  const ticket = parts[0] ?? "";
+  const name = parts[1] ?? "";
+  return parts.length === 2 && PAGE_TICKET.test(ticket) && PAGE_NAME.test(name);
+}
+var pageRowSchema = object({
+  ticket: string2().regex(PAGE_TICKET),
+  name: string2().regex(PAGE_NAME),
+  title: string2().min(1),
+  stepId: string2(),
+  bytes: number2(),
+  created: string2().min(1),
+  kind: _enum(["html", "diff", "media"]).optional(),
+  slot: pageSlotSchema.optional(),
+  storage: _enum(["cloud", "local"]).optional(),
+  localPath: string2().min(1).max(1000).optional(),
+  localHost: string2().min(1).max(200).optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  linkedTo: array(string2().refine(isDocumentKey)).optional()
+});
+var localMediaInputSchema = object({
+  localPath: string2().trim().min(1).max(1000),
+  bytes: number2().int().min(0),
+  title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
+  stepId: string2().trim().max(128).optional(),
+  slot: pageSlotSchema.optional(),
+  flowId: string2().regex(LINK_ID).optional(),
+  localHost: string2().trim().min(1).max(200).optional()
+});
+var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
+  nextCursor: string2().nullable().optional()
+});
+
+// ../../packages/shared/src/storage/shares.ts
+var MAX_SHARE_EXPIRY_DAYS = 3650;
+var createFrameInputSchema = object({
+  ticket: string2().regex(PAGE_TICKET),
+  name: string2().regex(PAGE_NAME)
+});
+var frameLinkReplySchema = object({
+  ticket: string2(),
+  name: string2(),
+  expiresAt: number2().int(),
+  path: string2()
+});
+var createShareInputSchema = object({
+  ticket: string2().regex(PAGE_TICKET),
+  name: string2().regex(PAGE_NAME).optional(),
+  expiresInDays: number2().int().min(1).max(MAX_SHARE_EXPIRY_DAYS).nullable().optional()
+});
+var shareLinkReplySchema = object({
+  ticket: string2(),
+  name: string2().nullable(),
+  generation: number2().int().min(1),
+  expiresAt: number2().int().nullable(),
+  token: string2(),
+  hubUrl: string2().nullable(),
+  url: string2(),
+  pattern: string2().nullable()
+});
+var revokeShareReplySchema = object({
+  ticket: string2(),
+  generation: number2().int().min(1),
+  revokedAt: number2().int()
+});
+
+// ../../packages/shared/src/toolkits/pages.ts
+var READ_SURFACES4 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES4 = WRITE_TOOL_SURFACES;
+var FRAME_WRITE_SURFACES = ALL_TOOL_SURFACES;
+var MAX_PAGE_PUBLISH_BODY_BYTES = 4 * 1024 * 1024;
+var pageTicketSchema = string2().regex(PAGE_TICKET);
+var pageNameSchema = string2().regex(PAGE_NAME);
+var pageChecksMapSchema = record(string2().min(1).max(128), boolean2());
+var pagesListTool = defineTool({
+  toolkit: "pages",
+  name: "list",
+  description: "List published pages, diffs, and media rows filtered by ticket or linked flow ids.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES4,
+  input: object({
+    ticket: pageTicketSchema.optional(),
+    flowIds: array(string2().regex(LINK_ID)).max(100).optional(),
+    match: _enum(["all", "any"]).optional(),
+    limit: number2().int().min(1).max(500).optional(),
+    cursor: string2().min(1).max(512).optional()
+  }),
+  output: pageListResponseSchema
+});
+var pagesPublishTool = defineTool({
+  toolkit: "pages",
+  name: "publish",
+  description: "Publish or update an HTML artifact page under a ticket.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES4,
+  maxBodyBytes: MAX_PAGE_PUBLISH_BODY_BYTES,
+  input: object({
+    ticket: pageTicketSchema,
+    name: pageNameSchema,
+    title: string2().min(1).max(MAX_PAGE_TITLE),
+    stepId: string2().optional(),
+    slot: pageSlotSchema.optional(),
+    flowId: string2().regex(LINK_ID).optional(),
+    linkedTo: array(string2().refine(isDocumentKey)).optional(),
+    html: string2().min(1)
+  }),
+  output: object({ page: pageRowSchema })
+});
+var pagesDeleteTool = defineTool({
+  toolkit: "pages",
+  name: "delete",
+  description: "Delete a published page, diff, or media artifact and its stored objects.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES4,
+  input: object({
+    ticket: pageTicketSchema,
+    name: pageNameSchema
+  }),
+  output: object({
+    deleted: literal(true),
+    ticket: string2(),
+    name: string2()
+  })
+});
+var pagesGetChecksTool = defineTool({
+  toolkit: "pages",
+  name: "get_checks",
+  description: "Read saved checklist state for a published page.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES4,
+  input: object({
+    ticket: pageTicketSchema,
+    name: pageNameSchema
+  }),
+  output: object({ checks: record(string2(), boolean2()) })
+});
+var pagesWriteChecksTool = defineTool({
+  toolkit: "pages",
+  name: "write_checks",
+  description: "Persist checklist state for a published page.",
+  kind: "write",
+  access: "member",
+  surfaces: FRAME_WRITE_SURFACES,
+  input: object({
+    ticket: pageTicketSchema,
+    name: pageNameSchema,
+    checks: pageChecksMapSchema
+  }),
+  output: object({ checks: record(string2(), boolean2()) })
+});
+var pagesCreateShareTool = defineTool({
+  toolkit: "pages",
+  name: "create_share",
+  description: "Mint a signed share link for a single artifact or an entire ticket artifact hub.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES4,
+  input: createShareInputSchema,
+  output: shareLinkReplySchema
+});
+var pagesRevokeSharesTool = defineTool({
+  toolkit: "pages",
+  name: "revoke_shares",
+  description: "Revoke all active share links for a ticket by bumping its share generation.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES4,
+  input: object({ ticket: pageTicketSchema }),
+  output: revokeShareReplySchema
+});
+var pagesCreateFrameTool = defineTool({
+  toolkit: "pages",
+  name: "create_frame",
+  description: "Mint a short-lived signed iframe path for rendering a published artifact in the app.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES4,
+  input: createFrameInputSchema,
+  output: frameLinkReplySchema
+});
+var PAGE_TOOLS = [
+  pagesListTool,
+  pagesPublishTool,
+  pagesDeleteTool,
+  pagesGetChecksTool,
+  pagesWriteChecksTool,
+  pagesCreateShareTool,
+  pagesRevokeSharesTool,
+  pagesCreateFrameTool
+];
+
+// ../../packages/shared/src/runtime/alerts.ts
+var ALERT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+var ALERT_EVENT_KINDS = [
+  "flow_failed",
+  "schedule_failed",
+  "provider_exhausted"
+];
+var alertEventKindSchema = _enum(ALERT_EVENT_KINDS);
+var ALERT_TARGET_KINDS = ["slack", "webhook"];
+var alertTargetKindSchema = _enum(ALERT_TARGET_KINDS);
+var alertTargetInputSchema = object({
+  kind: alertTargetKindSchema.default("slack"),
+  secretName: string2().trim().min(1).max(200),
+  workspace: string2().trim().min(1).max(200).nullable().optional(),
+  events: array(alertEventKindSchema).min(1).default([...ALERT_EVENT_KINDS]),
+  enabled: boolean2().default(true)
+});
+var alertTargetRecordSchema = object({
+  id: string2(),
+  kind: alertTargetKindSchema,
+  secretName: string2(),
+  workspace: string2().nullable(),
+  events: array(alertEventKindSchema),
+  enabled: boolean2(),
+  createdAt: number2().int().min(0),
+  updatedAt: number2().int().min(0),
+  lastSentAt: number2().int().min(0).nullable(),
+  lastError: string2().nullable()
+});
+var alertTargetListReplySchema = object({
+  alerts: array(alertTargetRecordSchema)
+});
+var alertTargetReplySchema = object({
+  alert: alertTargetRecordSchema,
+  created: boolean2().optional()
+});
+var alertTestReplySchema = object({
+  ok: boolean2(),
+  id: string2(),
+  kind: alertTargetKindSchema,
+  statusCode: number2().int().optional(),
+  latencyMs: number2().int().min(0),
+  error: string2().optional()
+});
 
 // ../../packages/shared/src/runtime/telemetry.ts
 var telemetryAgentKindSchema = _enum(["review", "node"]);
@@ -13864,6 +15480,7 @@ var telemetryDailyRowSchema = object({
 var telemetryDailyResponseSchema = object({
   rows: array(telemetryDailyRowSchema)
 });
+var MAX_TELEMETRY_DAYS = 90;
 var MAX_CLIENT_PERF_BATCH = 50;
 var CLIENT_PERF_METRICS = [
   "boot_ms",
@@ -13986,555 +15603,23 @@ function median(values) {
   return Math.round(((ordered[mid - 1] ?? 0) + (ordered[mid] ?? 0)) / 2);
 }
 
-// ../../packages/shared/src/schema/flow/step/event.ts
-var stepEventStatusSchema = _enum([
-  ...flowStatusSchema.options,
-  "rejected"
-]);
-var stepEventSchema = object({
-  seq: countSchema,
-  at: countSchema,
-  flowId: string2(),
-  childFlowId: string2().nullable(),
-  stepId: string2().nullable(),
-  kind: stepKindSchema,
-  status: stepEventStatusSchema,
-  stepStatus: stepStatusSchema.optional(),
-  sourceVersion: countSchema.default(1),
-  summary: string2(),
-  usage: usageSchema.nullable()
+// ../../packages/shared/src/runtime/settings.ts
+var thresholdsSchema = object({
+  maxFindings: number2().int().min(0).max(100),
+  targetScore: number2().min(0).max(1)
 });
-
-// ../../packages/shared/src/schema/flow/page.ts
-var pageEventSchema = stepEventSchema.omit({ flowId: true });
-var flowPageViewSchema = _enum(["full", "summary"]);
-var flowDiffReplySchema = object({
-  diff: string2().nullable(),
-  diffTruncated: boolean2()
+var scheduleSchema = object({
+  enabled: boolean2(),
+  cron: string2()
 });
-var flowPageSchema = object({
-  flow: flowRecordSchema,
-  children: array(flowRecordSchema),
-  subflows: array(flowSummarySchema).optional(),
-  parentName: string2().nullable().optional(),
-  view: flowPageViewSchema.optional(),
-  hasSpec: boolean2().optional(),
-  hasDiff: boolean2().optional(),
-  events: array(pageEventSchema),
-  fetchedAt: countSchema,
-  lastEventAt: countSchema.nullable(),
-  lastEventSeq: countSchema.optional(),
-  stalled: boolean2()
-});
-
-// ../../packages/shared/src/utils/json.ts
-function parseJsonResponse(input) {
-  let decoded;
-  try {
-    decoded = JSON.parse(input.raw);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`invalid ${input.label} response: ${detail}`);
-  }
-  const parsed = input.schema.safeParse(decoded);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => i.message).join("; ");
-    throw new Error(`invalid ${input.label} response: ${issues}`);
-  }
-  return parsed.data;
-}
-
-// src/flows/history.ts
-var flowHistoryInputSchema = object({
-  definition: string2().trim().min(1).describe("Workflow definition name to analyze across recent runs."),
-  workspace: string2().trim().min(1).optional().describe("Optional workspace filter."),
-  limit: number2().int().min(1).max(100).optional().describe("Maximum recent runs to inspect (default 20).")
-});
-function recordPageStats(page, acc) {
-  if (page.flow.evidence.length === 0)
-    acc.missingEvidenceCount += 1;
-  const currentSteps = page.flow.steps.filter((step) => step.attempt === page.flow.attempt);
-  for (const step of currentSteps) {
-    if (step.kind === "approval" && step.decision !== null) {
-      acc.approvalCount += 1;
-    }
-    if (step.endedAt !== null && step.endedAt >= step.startedAt) {
-      const list = acc.stepDurations.get(step.id) ?? [];
-      list.push(step.endedAt - step.startedAt);
-      acc.stepDurations.set(step.id, list);
-    }
-    if (step.status === "errored" || step.status === "rejected") {
-      acc.stepFailures.set(step.id, (acc.stepFailures.get(step.id) ?? 0) + 1);
-    }
-  }
-}
-async function fetchFlowPage(flowId, backend) {
-  const url = getGetFlowPageUrl(encodeURIComponent(flowId));
-  const raw = await backend.request(url);
-  return parseJsonResponse({
-    raw,
-    schema: flowPageSchema,
-    label: `/api/flow/${flowId}/page`
-  });
-}
-async function getFlowHistory(input) {
-  const limit = input.args.limit ?? 20;
-  const listUrl = getListFlowsUrl({
-    definition: input.args.definition,
-    workspace: input.args.workspace,
-    limit
-  });
-  const listRaw = await input.backend.request(listUrl);
-  const parsedList = parseJsonResponse({
-    raw: listRaw,
-    schema: flowListSchema,
-    label: "/api/flow list"
-  });
-  const flows = [...parsedList.flows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
-  const acc = {
-    missingEvidenceCount: 0,
-    approvalCount: 0,
-    stepFailures: new Map,
-    stepDurations: new Map
-  };
-  let completeCount = 0;
-  let failedCount = 0;
-  const topFailingFlowIds = [];
-  for (const summary of flows) {
-    if (summary.state === "idle" && summary.outcome === "complete") {
-      completeCount += 1;
-    } else if (isFailingLifecycle(summary)) {
-      failedCount += 1;
-      if (topFailingFlowIds.length < 10)
-        topFailingFlowIds.push(summary.flowId);
-    }
-  }
-  const pages = await Promise.all(flows.map((summary) => fetchFlowPage(summary.flowId, input.backend)));
-  for (const page of pages)
-    recordPageStats(page, acc);
-  const failingSteps = Array.from(acc.stepFailures.entries()).map(([stepId, failures]) => ({
-    stepId,
-    failures,
-    medianMs: median(acc.stepDurations.get(stepId) ?? [])
-  })).sort((a, b) => b.failures - a.failures || a.stepId.localeCompare(b.stepId));
-  return {
-    definition: input.args.definition,
-    totalRuns: flows.length,
-    completeCount,
-    failedCount,
-    missingEvidenceCount: acc.missingEvidenceCount,
-    failingSteps,
-    approvalCount: acc.approvalCount,
-    topFailingFlowIds
-  };
-}
-
-// src/flows/validate.ts
-import { join as join6 } from "node:path";
-
-// ../../packages/shared/src/security.ts
-function isLoopbackHost(hostname) {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
-  return lower === "localhost" || lower === "127.0.0.1" || lower === "::1" || lower.endsWith(".localhost");
-}
-function isSafeOutboundUrl(raw, options) {
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (parsed.username || parsed.password)
-    return false;
-  const allowPrivate = options?.allowPrivate === true;
-  if (parsed.protocol !== "https:" && !(allowPrivate && parsed.protocol === "http:")) {
-    return false;
-  }
-  if (!parsed.hostname)
-    return false;
-  if (!allowPrivate && isLoopbackHost(parsed.hostname))
-    return false;
-  return true;
-}
-
-// ../../packages/shared/src/schema/secret.ts
-var ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var MAX_SECRET_VALUE = 32768;
-var MAX_AUDIT_LIMIT = 500;
-var HEADER_NAME = /^[A-Za-z0-9-]+$/;
-var SECRET_AUDIT_ACTIONS = [
-  "put",
-  "delete",
-  "list",
-  "resolve",
-  "proxy"
-];
-var secretAuditActionSchema = _enum(SECRET_AUDIT_ACTIONS);
-var SECRET_AUDIT_OUTCOMES = [
-  "ok",
-  "missing",
-  "denied",
-  "key_error",
-  "error"
-];
-var secretAuditOutcomeSchema = _enum(SECRET_AUDIT_OUTCOMES);
-var secretBindingSchema = discriminatedUnion("mode", [
-  object({ mode: literal("env") }),
-  object({
-    mode: literal("proxy"),
-    targetBaseUrl: string2().min(1).max(500).refine((raw) => isSafeOutboundUrl(raw, { allowPrivate: true }), "invalid targetBaseUrl"),
-    header: string2().regex(HEADER_NAME).max(100).optional(),
-    prefix: string2().max(100).optional(),
-    urlEnvVar: string2().regex(ENV_NAME).max(100).optional()
-  })
-]);
-var secretMetadataSchema = object({
-  name: string2(),
-  kid: string2(),
-  updatedAt: number2().int().min(0),
-  binding: secretBindingSchema.optional()
-});
-var secretListReplySchema = object({
-  names: array(string2()),
-  items: array(secretMetadataSchema)
-});
-var secretWriteInputSchema = object({
-  value: string2().min(1).max(MAX_SECRET_VALUE),
-  binding: secretBindingSchema.optional()
-});
-var secretDeleteReplySchema = object({
-  deleted: string2()
-});
-var secretAuditEntrySchema = object({
-  id: string2(),
-  at: number2().int().min(0),
-  scopeId: string2(),
-  actor: string2(),
-  action: secretAuditActionSchema,
-  secretName: string2().nullable(),
-  outcome: secretAuditOutcomeSchema,
-  flowId: string2().nullable(),
-  stepId: string2().nullable(),
-  kid: string2().nullable(),
-  targetHost: string2().nullable()
-});
-var secretAuditListSchema = object({
-  items: array(secretAuditEntrySchema),
-  nextCursor: string2().nullable()
-});
-var secretAuditQueryInputSchema = object({
-  scopeId: string2().optional(),
-  allScopes: boolean2().optional(),
-  name: string2().optional(),
-  action: secretAuditActionSchema.optional(),
-  flowId: string2().optional(),
-  from: number2().int().min(0).optional(),
-  to: number2().int().min(0).optional(),
-  limit: number2().int().min(1).max(MAX_AUDIT_LIMIT).optional(),
-  cursor: string2().optional()
-});
-
-// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/index.js
-var composer = require_composer();
-var Document = require_Document();
-var Schema = require_Schema();
-var errors3 = require_errors();
-var Alias = require_Alias();
-var identity = require_identity();
-var Pair = require_Pair();
-var Scalar = require_Scalar();
-var YAMLMap = require_YAMLMap();
-var YAMLSeq = require_YAMLSeq();
-var cst = require_cst();
-var lexer = require_lexer();
-var lineCounter = require_line_counter();
-var parser = require_parser();
-var publicApi = require_public_api();
-var visit = require_visit();
-var $Composer = composer.Composer;
-var $Document = Document.Document;
-var $Schema = Schema.Schema;
-var $YAMLError = errors3.YAMLError;
-var $YAMLParseError = errors3.YAMLParseError;
-var $YAMLWarning = errors3.YAMLWarning;
-var $Alias = Alias.Alias;
-var $isAlias = identity.isAlias;
-var $isCollection = identity.isCollection;
-var $isDocument = identity.isDocument;
-var $isMap = identity.isMap;
-var $isNode = identity.isNode;
-var $isPair = identity.isPair;
-var $isScalar = identity.isScalar;
-var $isSeq = identity.isSeq;
-var $Pair = Pair.Pair;
-var $Scalar = Scalar.Scalar;
-var $YAMLMap = YAMLMap.YAMLMap;
-var $YAMLSeq = YAMLSeq.YAMLSeq;
-var $Lexer = lexer.Lexer;
-var $LineCounter = lineCounter.LineCounter;
-var $Parser = parser.Parser;
-var $parse = publicApi.parse;
-var $parseAllDocuments = publicApi.parseAllDocuments;
-var $parseDocument = publicApi.parseDocument;
-var $stringify = publicApi.stringify;
-var $visit = visit.visit;
-var $visitAsync = visit.visitAsync;
-
-// ../../packages/shared/src/runtime/hybrid.ts
-var MAX_STEP_ARTIFACTS = 64;
-var MAX_STEP_ARTIFACT_BYTES = 32 * 1024 * 1024;
-var REPO_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-var WORKSPACE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
-var SHA256_HEX = /^[0-9a-f]{64}$/;
-var COMMIT_HEX = /^[0-9a-f]{40}$/;
-var SECRET_SUFFIXES = [
-  ".key",
-  ".pem",
-  ".p12",
-  ".p8",
-  ".pfx",
-  ".tfvars",
-  ".tfstate",
-  ".tfstate.backup",
-  ".jks",
-  ".keystore",
-  ".kdbx"
-];
-var SECRET_BASENAMES = new Set([
-  "secrets",
-  ".dev.vars",
-  "id_rsa",
-  "id_ed25519",
-  "id_ecdsa",
-  "id_dsa",
-  ".npmrc",
-  ".netrc",
-  ".pypirc",
-  ".git-credentials",
-  "credentials.json",
-  "secrets.json",
-  "secrets.yaml",
-  "secrets.yml",
-  "secrets.toml"
-]);
-var SECRET_PATH_RE = /(?:^|\/)(?:\.git\/config|\.aws\/credentials|\.ssh\/config)$/;
-function normalizeRelativePath(raw) {
-  return raw.replaceAll("\\", "/").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
-}
-function isSafeRelativePath(raw) {
-  if (!raw || raw.includes("\x00"))
-    return false;
-  const slash = raw.replaceAll("\\", "/");
-  if (slash.startsWith("/") || /^[A-Za-z]:/.test(slash))
-    return false;
-  const cleaned = normalizeRelativePath(slash);
-  if (!cleaned || cleaned === ".")
-    return false;
-  const parts = cleaned.split("/");
-  return parts.every((part) => part.length > 0 && part !== "." && part !== "..");
-}
-function isSafeMountPath(raw) {
-  const cleaned = raw.replaceAll("\\", "/").replace(/\/+$/, "");
-  if (cleaned === "" || cleaned === "." || cleaned === "./")
-    return true;
-  return isSafeRelativePath(cleaned);
-}
-function isSecretPath(raw) {
-  const cleaned = normalizeRelativePath(raw);
-  if (!cleaned)
-    return false;
-  if (SECRET_PATH_RE.test(cleaned.toLowerCase()))
-    return true;
-  const parts = cleaned.split("/");
-  for (const part of parts) {
-    const lower = part.toLowerCase();
-    if (SECRET_BASENAMES.has(lower) || lower.startsWith(".env") || lower.startsWith(".dev.vars")) {
-      return true;
-    }
-  }
-  const base = (parts[parts.length - 1] ?? "").toLowerCase();
-  return SECRET_SUFFIXES.some((suffix) => base.endsWith(suffix));
-}
-var bundleRepoManifestSchema = object({
-  name: string2().regex(REPO_NAME),
-  mountPath: string2().min(1).max(240).refine(isSafeMountPath, "unsafe mount path"),
-  commitSha: string2().regex(COMMIT_HEX).optional(),
-  branch: string2().min(1).max(200).optional(),
-  dirty: boolean2(),
-  patchPath: string2().min(1).max(240).refine(isSafeRelativePath, "unsafe patch path").optional(),
-  patchApplied: boolean2().optional(),
-  untrackedPaths: array(string2().refine(isSafeRelativePath, "unsafe untracked path")).optional(),
-  deletedPaths: array(string2().refine(isSafeRelativePath, "unsafe deleted path")).optional()
-});
-var bundleManifestSchema = object({
-  version: literal(1),
-  workspace: string2().regex(WORKSPACE_NAME),
-  primaryRepo: string2().regex(REPO_NAME),
-  repos: array(bundleRepoManifestSchema).min(1).max(32)
-});
-var bundlePointerSchema = object({
-  workspace: string2().regex(WORKSPACE_NAME),
-  sha: string2().regex(SHA256_HEX),
-  commitSha: string2(),
-  bytes: number2().int().min(1),
-  createdAt: number2().int().min(0),
-  dirty: boolean2().optional(),
-  repoCount: number2().int().min(1).optional()
-});
-var stepArtifactSchema = object({
-  path: string2().refine(isSafeRelativePath, "unsafe artifact path"),
-  contentBase64: string2(),
-  bytes: number2().int().min(0),
-  sha256: string2().regex(SHA256_HEX)
-});
-var cloudStepRequestSchema = object({
-  workspace: string2().min(1).max(64),
-  workflowName: string2().min(1).max(64),
-  stepId: string2().min(1).max(64),
-  bundleSha: string2().regex(SHA256_HEX),
-  force: boolean2().optional(),
-  values: record(string2(), string2()).optional(),
-  pullOutputs: boolean2().optional(),
-  outputPaths: array(string2().refine(isSafeRelativePath, "unsafe output path")).max(MAX_STEP_ARTIFACTS).optional()
-});
-var cloudStepReplySchema = stepRecordSchema.and(object({
-  values: record(string2(), string2()).optional(),
-  artifacts: array(stepArtifactSchema).optional()
-}));
-
-// ../../packages/shared/src/schema/flow/control.ts
-var SIGNAL_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-var flowCreateReplySchema = replyOf("flow", flowRecordSchema).extend({
-  created: boolean2()
-});
-var approvalInputSchema = object({
-  decision: _enum(["approve", "reject"]),
-  version: positiveSchema,
-  attempt: positiveSchema,
-  decisionId: string2().min(1).max(200),
-  actor: string2().min(1).max(200).optional()
-});
-var approvalReplySchema = replyOf("flow", flowRecordSchema).extend({
-  pendingDelivery: boolean2().optional()
-});
-var flowStartInputSchema = object({
-  stackBase: string2().optional(),
-  awaitMergeReady: boolean2().optional()
-});
-var flowStartReplySchema = object({
-  instanceId: string2(),
-  attempt: number2().int().min(1)
-});
-var flowEventsReplySchema = listOf("events", stepEventSchema);
-var flowSignalInputSchema = object({
-  type: string2().regex(SIGNAL_NAME),
-  payload: record(string2(), string2()).default({}),
-  dedupeKey: string2().min(1).max(128).optional()
-});
-var flowSignalReplySchema = object({
-  flowId: string2(),
-  type: string2(),
-  attempt: number2().int().min(1),
-  queued: boolean2()
-});
-var flowCancelReplySchema = object({
-  flowId: string2(),
-  canceledFlowIds: array(string2()),
-  alreadyIdleIds: array(string2()),
-  failedTerminations: array(object({ flowId: string2(), error: string2() }))
-});
-var flowClearReplySchema = object({
-  flowId: string2(),
-  clearedAt: number2().int().min(0),
-  alreadyCleared: boolean2()
-});
-var FLOW_BATCH_CLEAR_MAX = 200;
-var flowBatchClearInputSchema = object({
-  flowIds: array(string2().min(1).max(128)).min(1).max(FLOW_BATCH_CLEAR_MAX)
-});
-var flowBatchClearReplySchema = object({
-  clearedIds: array(string2()),
-  alreadyClearedIds: array(string2()),
-  clearedAt: number2().int().min(0)
-});
-
-// ../../packages/shared/src/schema/runtime/cloud-session.ts
-var CLOUD_SESSION_ARTIFACTS = [
-  "in.tgz",
-  "values-in.json",
-  "keys.json",
-  "started.txt",
-  "exit.txt",
-  "values.json",
-  "usage.json",
-  "out.tgz",
-  "error.txt"
-];
-var cloudSessionArtifactSchema = _enum(CLOUD_SESSION_ARTIFACTS);
-var CLOUD_SESSION_JOB_ID_PATTERN = /^[A-Za-z0-9:._-]{1,160}$/;
-var cloudSessionRepoSchema = object({
-  repository: string2().min(1).max(200),
-  ref: string2().min(1).max(200),
-  base: string2().min(1).max(200).optional()
-});
-var cloudSessionLinksSchema = object({
-  inputs: string2().url().optional(),
-  values_in: string2().url().optional(),
-  keys: string2().url().optional(),
-  keys_clear: string2().url().optional(),
-  started: string2().url(),
-  exit: string2().url(),
-  values: string2().url(),
-  usage: string2().url(),
-  out: string2().url(),
-  error: string2().url()
-});
-var cloudSessionJobSchema = object({
-  jobId: string2().regex(CLOUD_SESSION_JOB_ID_PATTERN),
-  kind: _enum(["agent", "command"]),
-  repo: cloudSessionRepoSchema.optional(),
-  prompt: string2().min(1).optional(),
-  command: string2().min(1).optional(),
-  minutes: number2().int().min(1).max(120),
-  links: cloudSessionLinksSchema
-});
-var cloudSessionUsageSchema = object({
-  model: string2().min(1).max(120).optional(),
-  inputTokens: number2().int().min(0).default(0),
-  cachedInputTokens: number2().int().min(0).optional(),
-  outputTokens: number2().int().min(0).default(0),
-  reasoningTokens: number2().int().min(0).optional(),
-  durationMs: number2().int().min(0).default(0),
-  status: number2().int().nullable().optional(),
-  error: string2().max(2000).nullable().optional()
-});
-
-// ../../packages/shared/src/schema/runtime/vm.ts
-var VM_VENDORS = ["boat"];
-var vmVendorSchema = _enum(VM_VENDORS);
-var DEFAULT_VM_MACHINE_TYPE = "small";
-var DEFAULT_VM_TTL_SECONDS = 3600;
-var MAX_VM_TTL_SECONDS = 28800;
-var SANDBOX_TOOL_NAMES = [
-  "sandbox_exec",
-  "sandbox_read",
-  "sandbox_write"
-];
-var vmProfileInputSchema = object({
-  label: string2().min(1).max(120).optional(),
-  provider: vmVendorSchema.default("boat"),
-  secretName: string2().min(1).max(200).optional(),
-  baseUrl: string2().url().max(500).optional(),
-  machineType: string2().min(1).max(64).default(DEFAULT_VM_MACHINE_TYPE),
-  ttlSeconds: number2().int().min(60).max(MAX_VM_TTL_SECONDS).default(DEFAULT_VM_TTL_SECONDS),
-  enabled: boolean2().default(true)
-});
-var vmProfileSchema = vmProfileInputSchema.extend({
-  id: string2().refine(isValidProfileId, "invalid vm profile id"),
+var settingsSchema = object({
+  model: string2(),
+  endpoint: string2(),
+  rubric: string2(),
+  thresholds: thresholdsSchema,
+  schedule: scheduleSchema,
+  version: number2().int().min(1),
   updatedAt: number2().int().min(0)
-});
-var vmProfileListResponseSchema = object({
-  vms: array(vmProfileSchema)
 });
 
 // ../../packages/shared/src/schema/schedule.ts
@@ -14682,642 +15767,1501 @@ var scheduleListSchema = object({
   schedules: array(scheduleRecordSchema)
 });
 
-// ../../packages/shared/src/workflow.ts
-var RESERVED_VALUE_KEYS = new Set([
+// ../../packages/shared/src/runtime/sync.ts
+var SYNC_MAX_DELTA_LIMIT = 500;
+var SYNC_RETENTION_MS = 14 * 86400000;
+var SYNC_PRUNE_INTERVAL_MS = 15 * 60000;
+var SYNC_ENTITY_TYPES = [
   "flow",
-  "run",
-  "round",
-  "end",
-  "part",
-  "reason"
-]);
-var idRe = SIGNAL_NAME;
-var CALL_NAME_RE = /^[A-Za-z][A-Za-z0-9._:/-]{0,127}$/;
-var RESERVED_SECRET_NAMES = new Set(["NOSTA_VALUES_FILE", "HOME", "PATH"]);
-var MAX_STEP_SECRETS = 32;
-var secretListSchema = array(string2().regex(ENV_NAME).refine((name) => !RESERVED_SECRET_NAMES.has(name), "reserved secret name")).max(MAX_STEP_SECRETS);
-var whereSchema = _enum(["local", "cloud"]);
-var stringMap = record(string2(), string2());
-var outputPathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret output path");
-var safeFilePathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret path").transform((value) => normalizeRelativePath(value));
-var MAX_STEP_MINUTES = 60;
-var MAX_CLOUD_SESSION_MINUTES = 120;
-var baseFields = {
-  id: string2().regex(idRe),
-  where: whereSchema.optional(),
-  minutes: number2().int().min(1).max(MAX_CLOUD_SESSION_MINUTES).optional(),
-  secrets: secretListSchema.optional(),
-  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
-  runtime: stepRuntimeSchema.optional(),
-  providerInstanceId: string2().min(1).max(64).optional(),
-  repo: cloudSessionRepoSchema.optional()
-};
-var stepHookSchema = object({
-  event: _enum(["pre", "post"]),
-  run: string2().min(1),
-  secrets: secretListSchema.optional()
+  "label",
+  "inbox",
+  "schedule",
+  "page",
+  "view",
+  "workflow_definition"
+];
+var syncEntityTypeSchema = _enum(SYNC_ENTITY_TYPES);
+var syncOpSchema = _enum(["upsert", "delete"]);
+var syncActionSchema = object({
+  syncId: countSchema,
+  scopeId: string2(),
+  entityType: syncEntityTypeSchema,
+  entityId: string2().min(1),
+  op: syncOpSchema,
+  version: countSchema.nullable(),
+  payload: unknown().nullable(),
+  createdAt: countSchema
 });
-var flowGuardsSchema = object({
-  approvalNodes: array(string2().regex(idRe)).max(32).optional(),
-  allowBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
-  gateBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
-  prGateAfter: array(string2().regex(idRe)).max(32).optional()
+var syncWorkflowDefinitionSchema = object({
+  workspace: string2(),
+  definitionName: string2(),
+  visibility: workflowVisibilitySchema,
+  updatedAt: countSchema
 });
-var flowEvidenceSchema = object({
-  required: boolean2().optional(),
-  artifacts: array(safeFilePathSchema).max(32).optional(),
-  checks: array(string2().regex(idRe)).max(32).optional()
+var syncUserViewSchema = object({
+  viewKey: string2(),
+  config: record(string2(), unknown()),
+  updatedAt: countSchema
 });
-function unsupportedCloudSessionPrimitives(step) {
-  const unsupported = [];
-  if (step.hooks && step.hooks.length > 0)
-    unsupported.push("hooks");
-  if (step.tools !== undefined)
-    unsupported.push("tools");
-  if (step.hosts && step.hosts.length > 0)
-    unsupported.push("hosts");
-  if (step.mcpServers && step.mcpServers.length > 0)
-    unsupported.push("mcpServers");
-  if (step.vmProfileId)
-    unsupported.push("vmProfileId");
-  return unsupported;
+var syncBootstrapReplySchema = object({
+  cursor: countSchema,
+  flows: array(flowSummarySchema),
+  labels: array(labelSchema),
+  inbox: array(inboxItemSchema),
+  schedules: array(scheduleRecordSchema),
+  pages: array(pageRowSchema),
+  workflowDefinitions: array(syncWorkflowDefinitionSchema),
+  views: array(syncUserViewSchema)
+});
+var syncDeltasReplySchema = object({
+  cursor: countSchema,
+  reset: boolean2(),
+  hasMore: boolean2(),
+  actions: array(syncActionSchema)
+});
+
+// ../../packages/shared/src/schema/runtime/vm.ts
+var VM_VENDORS = ["boat"];
+var vmVendorSchema = _enum(VM_VENDORS);
+var DEFAULT_VM_MACHINE_TYPE = "small";
+var DEFAULT_VM_TTL_SECONDS = 3600;
+var MAX_VM_TTL_SECONDS = 28800;
+var SANDBOX_TOOL_NAMES = [
+  "sandbox_exec",
+  "sandbox_read",
+  "sandbox_write"
+];
+var vmProfileInputSchema = object({
+  label: string2().min(1).max(120).optional(),
+  provider: vmVendorSchema.default("boat"),
+  secretName: string2().min(1).max(200).optional(),
+  baseUrl: string2().url().max(500).optional(),
+  machineType: string2().min(1).max(64).default(DEFAULT_VM_MACHINE_TYPE),
+  ttlSeconds: number2().int().min(60).max(MAX_VM_TTL_SECONDS).default(DEFAULT_VM_TTL_SECONDS),
+  enabled: boolean2().default(true)
+});
+var vmProfileSchema = vmProfileInputSchema.extend({
+  id: string2().refine(isValidProfileId, "invalid vm profile id"),
+  updatedAt: number2().int().min(0)
+});
+var vmProfileListResponseSchema = object({
+  vms: array(vmProfileSchema)
+});
+
+// ../../packages/shared/src/schema/state.ts
+var STATE_SCOPE_RE = /^[a-zA-Z0-9._:-]{1,128}$/;
+var MAX_STATE_KEY_BYTES = 1024;
+var MAX_STATE_VALUE_BYTES = 256 * 1024;
+var MAX_STATE_LIMIT = 500;
+var STATE_KEY_CONTROL_RE = /\p{Cc}/u;
+var STATE_KEY_ENCODER = new TextEncoder;
+function isValidStateText(value, allowEmpty) {
+  if (!allowEmpty && value.length === 0)
+    return false;
+  if (!value.isWellFormed() || STATE_KEY_CONTROL_RE.test(value))
+    return false;
+  return STATE_KEY_ENCODER.encode(value).byteLength <= MAX_STATE_KEY_BYTES;
 }
-function checkStepMinutes(step, ctx) {
-  if (step.minutes !== undefined && step.minutes > MAX_STEP_MINUTES) {
-    const supportsCloudSession = step.kind === "command" || step.kind === "restricted_agent";
-    if (!supportsCloudSession || step.runtime !== "cloud_session") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["minutes"],
-        message: `minutes must be at most ${MAX_STEP_MINUTES} unless runtime is cloud_session`
-      });
-    }
-  }
-  if (step.kind === "restricted_agent" && step.runtime === "cloud_session") {
-    const unsupported = unsupportedCloudSessionPrimitives(step);
-    if (unsupported.length > 0) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["runtime"],
-        message: `restricted_agent with runtime cloud_session does not support: ${unsupported.join(", ")}`
-      });
-    }
-  }
+function isValidStateScope(scope) {
+  return STATE_SCOPE_RE.test(scope);
 }
-var MAX_STEP_RETRIES = 3;
-var DEFAULT_CALL_RETRY_POLICY = {
-  max: 0,
-  delayMs: 500,
-  maxDelayMs: 30000,
-  backoff: 2
-};
-var callRetryObjectSchema = object({
-  max: number2().int().min(0).max(MAX_STEP_RETRIES).default(DEFAULT_CALL_RETRY_POLICY.max),
-  delayMs: number2().int().min(0).max(300000).default(DEFAULT_CALL_RETRY_POLICY.delayMs),
-  maxDelayMs: number2().int().min(0).max(1800000).default(DEFAULT_CALL_RETRY_POLICY.maxDelayMs),
-  backoff: number2().min(1).max(10).default(DEFAULT_CALL_RETRY_POLICY.backoff)
-});
-var callRetrySchema = union([
-  number2().int().min(0).max(MAX_STEP_RETRIES),
-  callRetryObjectSchema
-]);
-var stepOnErrorSchema = _enum(["fail", "continue"]);
-var stepProviderSchema = string2().trim().min(1).max(64);
-var commandSchema = object({
-  ...baseFields,
-  kind: literal("command"),
-  run: string2().min(1),
-  ends: stringMap.optional(),
-  retries: callRetrySchema.optional(),
-  onError: stepOnErrorSchema.optional(),
-  provider: stepProviderSchema.optional()
-});
-var reviewSchema = object({
-  ...baseFields,
-  kind: literal("review"),
-  skill: string2().min(1),
-  files: array(string2().refine(isValidFileName)).min(1).max(MAX_FILES)
-});
-var agentSchema = object({
-  id: string2().regex(idRe),
-  where: literal("local").optional(),
-  runtime: literal("local").optional(),
-  minutes: number2().int().min(1).max(MAX_STEP_MINUTES).optional(),
-  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
-  providerInstanceId: string2().min(1).max(64).optional(),
-  kind: literal("agent"),
-  prompt: string2().min(1)
-}).strict();
-var restrictedAgentSchema = object({
-  ...baseFields,
-  kind: literal("restricted_agent"),
-  prompt: string2().min(1),
-  skills: array(safeFilePathSchema).max(32).optional(),
-  references: array(safeFilePathSchema).max(32).optional(),
-  tools: array(_enum(SANDBOX_TOOL_NAMES)).max(32).optional(),
-  hooks: array(stepHookSchema).max(16).optional(),
-  hosts: array(string2().trim().min(1).max(255)).max(64).optional(),
-  mcpServers: array(string2().trim().min(1).max(64)).max(16).optional(),
-  vmProfileId: string2().min(1).max(64).optional()
-});
-var callSchema = object({
-  id: string2().regex(idRe),
-  where: literal("cloud").optional(),
-  minutes: number2().int().min(1).max(60).optional(),
-  secrets: secretListSchema.optional(),
-  kind: literal("call"),
-  call: string2().regex(CALL_NAME_RE),
-  version: number2().int().min(1).optional(),
-  args: record(string2(), unknown()).optional(),
-  outputs: stringMap.optional(),
-  retries: callRetrySchema.optional(),
-  onError: stepOnErrorSchema.optional(),
-  provider: stepProviderSchema.optional()
-});
-var leafCoreSchema = discriminatedUnion("kind", [
-  commandSchema,
-  reviewSchema,
-  agentSchema,
-  restrictedAgentSchema,
-  callSchema
-]).superRefine(checkStepMinutes);
-var MAX_AGAIN_IF_ROUNDS = 100;
-var MAX_WAIT_HOURS = 2160;
-var stepSchema = lazy(() => discriminatedUnion("kind", [
-  commandSchema.extend({ when: leafCoreSchema.optional() }),
-  reviewSchema.extend({ when: leafCoreSchema.optional() }),
-  agentSchema.extend({ when: leafCoreSchema.optional() }).strict(),
-  restrictedAgentSchema.extend({ when: leafCoreSchema.optional() }),
-  callSchema.extend({ when: leafCoreSchema.optional() }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("flow"),
-    mode: _enum(["yaml", "review", "spec"]).optional(),
-    name: string2().regex(idRe).optional(),
-    flow: string2().regex(idRe).optional(),
-    workspace: string2().min(1).max(64).optional(),
-    bundleSha: string2().min(1).optional(),
-    title: string2().min(1).optional(),
-    files: array(string2().refine(isValidFileName)).optional(),
-    spec: string2().min(1).optional(),
-    baseSha: string2().min(1).optional(),
-    ticketUrl: string2().min(1).optional(),
-    secrets: secretListSchema.optional(),
-    when: leafCoreSchema.optional()
-  }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("choose"),
-    value: string2().min(1),
-    cases: record(string2(), array(stepSchema)),
-    default: array(stepSchema).optional(),
-    when: leafCoreSchema.optional()
-  }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("parallel"),
-    steps: array(stepSchema).min(1).max(16),
-    when: leafCoreSchema.optional()
-  }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("wait"),
-    signal: string2().regex(idRe),
-    hours: number2().positive().max(MAX_WAIT_HOURS).optional(),
-    unsignalled: string2().min(1).optional(),
-    when: leafCoreSchema.optional()
-  }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("again_if"),
-    value: string2().min(1),
-    rounds: union([
-      number2().int().min(1).max(MAX_AGAIN_IF_ROUNDS),
-      string2().min(1)
-    ]),
-    from: string2().regex(idRe).optional()
-  }),
-  object({
-    id: string2().regex(idRe),
-    kind: literal("end"),
-    state: string2().min(1)
-  })
-]).superRefine(checkStepMinutes));
-var envHookSchema = object({
-  id: string2().regex(idRe),
-  setup: string2().min(1),
-  teardown: string2().min(1).optional(),
-  minutes: number2().int().min(1).max(60).optional(),
-  where: whereSchema.optional(),
-  secrets: secretListSchema.optional()
-});
-var flowScheduleSchema = union([
-  cronExpressionSchema,
-  object({
-    id: scheduleIdSchema.optional(),
-    cron: cronExpressionSchema,
-    enabled: boolean2().optional(),
-    values: stringMap.optional()
-  })
-]);
-var flowConfigSchema2 = object({
-  name: string2().regex(idRe),
+function isValidStateKey(key) {
+  if (key === "." || key === "..")
+    return false;
+  return isValidStateText(key, false);
+}
+function isValidStatePrefix(prefix) {
+  return isValidStateText(prefix, true);
+}
+var stateEntrySchema = object({
+  scope: string2(),
+  key: string2(),
+  value: unknown(),
   version: number2().int().min(1),
-  workspace: string2().regex(WORKSPACE_SHAPE),
-  visibility: workflowVisibilitySchema.optional(),
-  schedule: flowScheduleSchema.optional(),
-  tabs: array(flowTabSchema).max(16).optional(),
-  defaultTab: flowTabIdSchema.optional(),
-  guards: flowGuardsSchema.optional(),
-  evidence: flowEvidenceSchema.optional(),
-  defaults: object({ where: whereSchema }).optional(),
-  values: stringMap.optional(),
-  conditions: array(leafCoreSchema).max(16).optional(),
-  prepare: array(leafCoreSchema).max(16).optional(),
-  environment: array(envHookSchema).max(16).optional(),
-  steps: array(stepSchema).min(1).max(64),
-  checks: array(leafCoreSchema).max(16).optional(),
-  record: array(leafCoreSchema).max(16).optional(),
-  alerts: array(leafCoreSchema).max(16).optional()
+  expiresAt: number2().int().nullable(),
+  createdAt: number2().int(),
+  updatedAt: number2().int()
 });
-function dedupeStrings(items) {
-  if (!items || items.length === 0)
-    return;
-  return Array.from(new Set(items));
+var putStateInputSchema = object({
+  value: unknown(),
+  expectedVersion: number2().int().min(0).optional(),
+  expiresAt: number2().int().positive().nullable().optional()
+});
+var stateEntryReplySchema = object({
+  entry: stateEntrySchema,
+  created: boolean2().optional()
+});
+var stateListReplySchema = object({
+  scope: string2(),
+  entries: array(stateEntrySchema),
+  nextCursor: string2().nullable()
+});
+var stateConflictReplySchema = object({
+  error: literal("version_conflict"),
+  currentVersion: number2().int().min(0)
+});
+
+// ../../packages/shared/src/toolkits/runtime.ts
+var READ_SURFACES5 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES5 = WRITE_TOOL_SURFACES;
+var ADMIN_SURFACES = ADMIN_TOOL_SURFACES;
+var SPA_CLI_SURFACES = SPA_CLI_TOOL_SURFACES;
+var SPA_ONLY_SURFACES = SPA_ONLY_TOOL_SURFACES;
+var profileIdSchema = string2().refine(isValidProfileId, "invalid profile id");
+var alertIdSchema = string2().regex(ALERT_ID_RE);
+var secretNameSchema = string2().min(1).max(500);
+var workspaceSchema = string2().regex(WORKSPACE_SHAPE);
+var stateScopeSchema = string2().refine(isValidStateScope, "invalid_state_scope");
+var stateKeySchema = string2().refine(isValidStateKey, "invalid_state_key");
+var statePrefixSchema = string2().refine(isValidStatePrefix, "invalid_state_prefix");
+var dayStringSchema = string2().regex(/^\d{4}-\d{2}-\d{2}$/);
+var settingsPatchInputSchema = object({
+  model: string2().min(1).max(100).optional(),
+  endpoint: string2().min(1).max(500).optional(),
+  rubric: string2().min(1).max(2000).optional(),
+  thresholds: thresholdsSchema.optional(),
+  schedule: scheduleSchema.optional()
+});
+var flowPolicySchema = object({
+  tools: array(string2()),
+  secrets: array(string2()),
+  hosts: array(string2()),
+  mcpServers: array(string2()),
+  version: number2().int().min(1),
+  updatedAt: number2().int().min(0)
+});
+var flowPolicyPatchInputSchema = object({
+  tools: array(string2()).optional(),
+  secrets: array(string2()).optional(),
+  hosts: array(string2()).optional(),
+  mcpServers: array(string2()).optional()
+});
+var secretRotateReplySchema = union([
+  object({ rotated: literal(false) }),
+  object({
+    rotated: literal(true),
+    dekId: string2(),
+    kekVersion: string2()
+  })
+]);
+var bundleValidateReplySchema = object({
+  ok: boolean2(),
+  workspace: string2(),
+  sha: string2(),
+  workflows: array(string2()),
+  faults: array(object({ path: string2(), error: string2() }))
+});
+var runtimeSettingsGetTool = defineTool({
+  toolkit: "runtime",
+  name: "settings_get",
+  description: "Read current runtime reviewer settings.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({}),
+  output: settingsSchema
+});
+var runtimeSettingsPutTool = defineTool({
+  toolkit: "runtime",
+  name: "settings_put",
+  description: "Patch global runtime reviewer settings.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: settingsPatchInputSchema,
+  output: settingsSchema
+});
+var runtimeFlowPolicyGetTool = defineTool({
+  toolkit: "runtime",
+  name: "flow_policy_get",
+  description: "Read the global flow capability policy (allowed tools, secrets, hosts, MCP servers).",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({}),
+  output: flowPolicySchema
+});
+var runtimeFlowPolicyPatchTool = defineTool({
+  toolkit: "runtime",
+  name: "flow_policy_patch",
+  description: "Update the global flow capability policy.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: flowPolicyPatchInputSchema,
+  output: flowPolicySchema
+});
+var runtimeScopePolicyGetTool = defineTool({
+  toolkit: "runtime",
+  name: "scope_policy_get",
+  description: "Read operator fallback policy for a scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({ scopeId: string2().min(1).max(200).optional() }),
+  output: scopePolicySchema
+});
+var runtimeScopePolicyPutTool = defineTool({
+  toolkit: "runtime",
+  name: "scope_policy_put",
+  description: "Update operator fallback policy for a scope.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: object({
+    scopeId: string2().min(1).max(200).optional(),
+    allowOperatorFallback: boolean2()
+  }),
+  output: scopePolicySchema
+});
+var runtimeSecretsListTool = defineTool({
+  toolkit: "runtime",
+  name: "secrets_list",
+  description: "List secret names and metadata (never values) stored in the caller scope.",
+  kind: "read",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: object({}),
+  output: secretListReplySchema
+});
+var runtimeSecretsAuditTool = defineTool({
+  toolkit: "runtime",
+  name: "secrets_audit",
+  description: "Query secret access and mutation audit log entries.",
+  kind: "read",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: secretAuditQueryInputSchema,
+  output: secretAuditListSchema
+});
+var runtimeSecretsPutTool = defineTool({
+  toolkit: "runtime",
+  name: "secrets_put",
+  description: "Encrypt and store a secret value with optional env or credential-proxy binding.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: secretWriteInputSchema.extend({ name: secretNameSchema }),
+  output: secretMetadataSchema
+});
+var runtimeSecretsDeleteTool = defineTool({
+  toolkit: "runtime",
+  name: "secrets_delete",
+  description: "Delete a stored secret from the caller scope.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: object({ name: secretNameSchema }),
+  output: secretDeleteReplySchema
+});
+var runtimeSecretsRotateTool = defineTool({
+  toolkit: "runtime",
+  name: "secrets_rotate",
+  description: "Rotate the data encryption key for a scope's secret store.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: object({ scopeId: string2().min(1).max(200).optional() }),
+  output: secretRotateReplySchema
+});
+var runtimeProvidersListTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_list",
+  description: "List configured model provider instances with active cooldown status.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({}),
+  output: providerListResponseSchema
+});
+var runtimeProvidersPutTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_put",
+  description: "Create or update a provider instance configuration.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: providerInstanceInputSchema.extend({ id: profileIdSchema }),
+  output: providerInstanceSchema
+});
+var runtimeProvidersDeleteTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_delete",
+  description: "Delete a provider instance configuration by id.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: object({ id: profileIdSchema }),
+  output: providerDeleteReplySchema
+});
+var runtimeProvidersAuthStartTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_auth_start",
+  description: "Start a managed OAuth sign-in flow for a provider instance.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: providerAuthStartInputSchema,
+  output: providerAuthStartReplySchema
+});
+var runtimeProvidersAuthCompleteTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_auth_complete",
+  description: "Complete a managed provider OAuth flow with its callback URL.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: providerAuthCompleteInputSchema,
+  output: providerAuthCompleteReplySchema
+});
+var runtimeProvidersAuthCancelTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_auth_cancel",
+  description: "Cancel an in-flight managed provider OAuth flow.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: providerAuthCancelInputSchema,
+  output: providerAuthCancelReplySchema
+});
+var runtimeProvidersConnectTool = defineTool({
+  toolkit: "runtime",
+  name: "providers_connect",
+  description: "Connect a provider instance directly with an API key, OAuth token, or auth file.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: providerConnectInputSchema,
+  output: providerAuthCompleteReplySchema
+});
+var runtimeVmsListTool = defineTool({
+  toolkit: "runtime",
+  name: "vms_list",
+  description: "List configured sandbox VM profiles in the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({}),
+  output: vmProfileListResponseSchema
+});
+var runtimeVmsPutTool = defineTool({
+  toolkit: "runtime",
+  name: "vms_put",
+  description: "Create or update a sandbox VM profile.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: vmProfileInputSchema.extend({ id: profileIdSchema }),
+  output: vmProfileSchema
+});
+var runtimeVmsDeleteTool = defineTool({
+  toolkit: "runtime",
+  name: "vms_delete",
+  description: "Delete a sandbox VM profile by id.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: ADMIN_SURFACES,
+  input: object({ id: profileIdSchema }),
+  output: object({ deleted: string2() })
+});
+var runtimeAlertsListTool = defineTool({
+  toolkit: "runtime",
+  name: "alerts_list",
+  description: "List alert webhook/Slack targets in the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({}),
+  output: alertTargetListReplySchema
+});
+var runtimeAlertsGetTool = defineTool({
+  toolkit: "runtime",
+  name: "alerts_get",
+  description: "Get one alert target by id.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({ id: alertIdSchema }),
+  output: alertTargetReplySchema
+});
+var runtimeAlertsPutTool = defineTool({
+  toolkit: "runtime",
+  name: "alerts_put",
+  description: "Create or update an alert target.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES5,
+  input: alertTargetInputSchema.extend({ id: alertIdSchema }),
+  output: alertTargetReplySchema
+});
+var runtimeAlertsDeleteTool = defineTool({
+  toolkit: "runtime",
+  name: "alerts_delete",
+  description: "Delete an alert target by id.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES5,
+  input: object({ id: alertIdSchema }),
+  output: object({ deleted: literal(true), id: string2() })
+});
+var runtimeAlertsTestTool = defineTool({
+  toolkit: "runtime",
+  name: "alerts_test",
+  description: "Send a test notification to an alert target.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES5,
+  input: object({ id: alertIdSchema }),
+  output: alertTestReplySchema
+});
+var runtimeStateListTool = defineTool({
+  toolkit: "runtime",
+  name: "state_list",
+  description: "List adapter state entries within a logical state scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({
+    scope: stateScopeSchema,
+    prefix: statePrefixSchema.optional(),
+    cursor: stateKeySchema.optional(),
+    limit: number2().int().min(1).max(MAX_STATE_LIMIT).optional()
+  }),
+  output: stateListReplySchema
+});
+var runtimeStateGetTool = defineTool({
+  toolkit: "runtime",
+  name: "state_get",
+  description: "Read one adapter state entry by logical scope and key.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({
+    scope: stateScopeSchema,
+    key: stateKeySchema
+  }),
+  output: object({ entry: stateEntrySchema })
+});
+var runtimeStatePutTool = defineTool({
+  toolkit: "runtime",
+  name: "state_put",
+  description: "Write an adapter state entry with optional CAS expectedVersion and TTL expiresAt.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES5,
+  input: putStateInputSchema.extend({
+    scope: stateScopeSchema,
+    key: stateKeySchema
+  }),
+  output: stateEntryReplySchema
+});
+var runtimeStateDeleteTool = defineTool({
+  toolkit: "runtime",
+  name: "state_delete",
+  description: "Delete an adapter state entry with optional CAS version check.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES5,
+  input: object({
+    scope: stateScopeSchema,
+    key: stateKeySchema,
+    expectedVersion: number2().int().min(1).optional()
+  }),
+  output: object({
+    deleted: literal(true),
+    scope: string2(),
+    key: string2()
+  })
+});
+var runtimeSyncBootstrapTool = defineTool({
+  toolkit: "runtime",
+  name: "sync_bootstrap",
+  description: "Load the initial scoped sync snapshot and sync cursor.",
+  kind: "read",
+  access: "member",
+  surfaces: SPA_CLI_SURFACES,
+  input: object({}),
+  output: syncBootstrapReplySchema
+});
+var runtimeSyncDeltasTool = defineTool({
+  toolkit: "runtime",
+  name: "sync_deltas",
+  description: "Fetch incremental sync_log deltas after a sync cursor.",
+  kind: "read",
+  access: "member",
+  surfaces: SPA_CLI_SURFACES,
+  input: object({
+    since: number2().int().min(0).optional(),
+    limit: number2().int().min(1).max(SYNC_MAX_DELTA_LIMIT).optional()
+  }),
+  output: syncDeltasReplySchema
+});
+var runtimeTelemetryDailyTool = defineTool({
+  toolkit: "runtime",
+  name: "telemetry_daily",
+  description: "Read daily aggregated LLM telemetry rows across models.",
+  kind: "read",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: object({
+    days: number2().int().min(1).max(MAX_TELEMETRY_DAYS).optional()
+  }),
+  output: telemetryDailyResponseSchema
+});
+var runtimeTelemetryPerfTool = defineTool({
+  toolkit: "runtime",
+  name: "telemetry_perf",
+  description: "Read daily client performance percentiles.",
+  kind: "read",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: object({
+    days: number2().int().min(1).max(MAX_TELEMETRY_DAYS).optional()
+  }),
+  output: perfDailyResponseSchema
+});
+var runtimeTelemetryClientPerfTool = defineTool({
+  toolkit: "runtime",
+  name: "telemetry_client_perf",
+  description: "Submit a batch of browser client performance timing samples.",
+  kind: "write",
+  access: "member",
+  surfaces: SPA_ONLY_SURFACES,
+  input: clientPerfBatchSchema,
+  output: clientPerfReplySchema
+});
+var runtimeTelemetryRebuildTool = defineTool({
+  toolkit: "runtime",
+  name: "telemetry_rebuild",
+  description: "Rebuild daily LLM telemetry rollups from bronze R2 telemetry objects.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES,
+  input: object({ day: dayStringSchema.optional() }),
+  output: object({
+    ok: literal(true),
+    day: string2().optional(),
+    replayed: number2().int().min(0),
+    skipped: number2().int().min(0)
+  })
+});
+var runtimeInsightsGetTool = defineTool({
+  toolkit: "runtime",
+  name: "insights_get",
+  description: "Read workflow insights, daily review/settlement trends, and role-gated telemetry.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({
+    days: number2().int().min(1).max(MAX_TELEMETRY_DAYS).optional()
+  }),
+  output: insightsResponseSchema
+});
+var runtimeInsightsProposalsTool = defineTool({
+  toolkit: "runtime",
+  name: "insights_proposals",
+  description: "List detected improvement proposals for the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({ limit: number2().int().min(1).max(200).optional() }),
+  output: insightsProposalListSchema
+});
+var runtimeInsightsScanTool = defineTool({
+  toolkit: "runtime",
+  name: "insights_scan",
+  description: "Run improvement proposal detectors over recent workflow runs.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES5,
+  input: object({}),
+  output: insightsScanResponseSchema
+});
+var runtimeBundlesLatestTool = defineTool({
+  toolkit: "runtime",
+  name: "bundles_latest",
+  description: "Read the latest uploaded bundle pointer for a workspace.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES5,
+  input: object({ workspace: workspaceSchema }),
+  output: bundlePointerSchema
+});
+var runtimeBundlesValidateTool = defineTool({
+  toolkit: "runtime",
+  name: "bundles_validate",
+  description: "Validate all .nosta/workflows/*.yaml definitions in the latest workspace bundle.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES5,
+  input: object({ workspace: workspaceSchema }),
+  output: bundleValidateReplySchema
+});
+var RUNTIME_TOOLS = [
+  runtimeSettingsGetTool,
+  runtimeSettingsPutTool,
+  runtimeFlowPolicyGetTool,
+  runtimeFlowPolicyPatchTool,
+  runtimeScopePolicyGetTool,
+  runtimeScopePolicyPutTool,
+  runtimeSecretsListTool,
+  runtimeSecretsAuditTool,
+  runtimeSecretsPutTool,
+  runtimeSecretsDeleteTool,
+  runtimeSecretsRotateTool,
+  runtimeProvidersListTool,
+  runtimeProvidersPutTool,
+  runtimeProvidersDeleteTool,
+  runtimeProvidersAuthStartTool,
+  runtimeProvidersAuthCompleteTool,
+  runtimeProvidersAuthCancelTool,
+  runtimeProvidersConnectTool,
+  runtimeVmsListTool,
+  runtimeVmsPutTool,
+  runtimeVmsDeleteTool,
+  runtimeAlertsListTool,
+  runtimeAlertsGetTool,
+  runtimeAlertsPutTool,
+  runtimeAlertsDeleteTool,
+  runtimeAlertsTestTool,
+  runtimeStateListTool,
+  runtimeStateGetTool,
+  runtimeStatePutTool,
+  runtimeStateDeleteTool,
+  runtimeSyncBootstrapTool,
+  runtimeSyncDeltasTool,
+  runtimeTelemetryDailyTool,
+  runtimeTelemetryPerfTool,
+  runtimeTelemetryClientPerfTool,
+  runtimeTelemetryRebuildTool,
+  runtimeInsightsGetTool,
+  runtimeInsightsProposalsTool,
+  runtimeInsightsScanTool,
+  runtimeBundlesLatestTool,
+  runtimeBundlesValidateTool
+];
+
+// ../../packages/shared/src/toolkits/schedules.ts
+var READ_SURFACES6 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES6 = WRITE_TOOL_SURFACES;
+var schedulesListTool = defineTool({
+  toolkit: "schedules",
+  name: "list",
+  description: "List scheduled workflow definitions visible to the caller.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES6,
+  input: object({
+    workspace: string2().regex(WORKSPACE_SHAPE).optional(),
+    definitionName: string2().regex(SIGNAL_NAME).optional(),
+    enabled: boolean2().optional()
+  }),
+  output: scheduleListSchema
+});
+var schedulesGetTool = defineTool({
+  toolkit: "schedules",
+  name: "get",
+  description: "Get one scheduled workflow definition by id.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES6,
+  input: object({ id: scheduleIdSchema }),
+  output: scheduleReplySchema
+});
+var schedulesCreateTool = defineTool({
+  toolkit: "schedules",
+  name: "create",
+  description: "Create a new recurring workflow schedule.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES6,
+  input: scheduleCreateInputSchema,
+  output: scheduleReplySchema
+});
+var schedulesUpdateTool = defineTool({
+  toolkit: "schedules",
+  name: "update",
+  description: "Update cron, enabled state, values, or bundleSha on a schedule.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES6,
+  input: scheduleUpdateFieldsSchema.extend({ id: scheduleIdSchema }),
+  output: scheduleReplySchema
+});
+var schedulesPauseTool = defineTool({
+  toolkit: "schedules",
+  name: "pause",
+  description: "Pause a scheduled workflow so it stops firing.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES6,
+  input: object({ id: scheduleIdSchema }),
+  output: scheduleReplySchema
+});
+var schedulesResumeTool = defineTool({
+  toolkit: "schedules",
+  name: "resume",
+  description: "Resume a paused workflow schedule.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES6,
+  input: object({ id: scheduleIdSchema }),
+  output: scheduleReplySchema
+});
+var schedulesDeleteTool = defineTool({
+  toolkit: "schedules",
+  name: "delete",
+  description: "Permanently delete a workflow schedule by id.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES6,
+  input: object({ id: scheduleIdSchema }),
+  output: object({ deleted: literal(true), id: string2() })
+});
+var SCHEDULE_TOOLS = [
+  schedulesListTool,
+  schedulesGetTool,
+  schedulesCreateTool,
+  schedulesUpdateTool,
+  schedulesPauseTool,
+  schedulesResumeTool,
+  schedulesDeleteTool
+];
+
+// ../../packages/shared/src/storage/blobs.ts
+var MAX_BLOB_BYTES = 100 * 1024 * 1024;
+var MAX_BLOB_SIGN_TTL_MINUTES = 1440;
+var MAX_BLOB_TTL_DAYS = 3650;
+var MAX_BLOB_LIST_LIMIT = 500;
+var BLOB_NAMESPACE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+var BLOB_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+var CONTENT_TYPE_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}(?:;\s*charset=[a-z0-9._-]+)?$/i;
+function isValidBlobKey(key) {
+  if (key.length === 0 || key.length > 256 || key.includes("\\"))
+    return false;
+  const segments = key.split("/");
+  for (const segment of segments) {
+    if (segment === "." || segment === ".." || !BLOB_SEGMENT_RE.test(segment))
+      return false;
+  }
+  return true;
 }
-function normalizeStepHooks(hooks) {
-  if (!hooks || hooks.length === 0)
-    return;
-  return hooks.map((hook) => {
-    const secrets = dedupeStrings(hook.secrets);
-    return {
-      event: hook.event,
-      run: hook.run,
-      ...secrets ? { secrets } : {}
-    };
-  });
+function isValidBlobContentType(value) {
+  return value.length <= 128 && CONTENT_TYPE_RE.test(value.trim());
 }
-function normalizeGuards(raw) {
-  if (!raw)
-    return;
-  const approvalNodes = dedupeStrings(raw.approvalNodes);
-  const allowBeforeApproval = dedupeStrings(raw.allowBeforeApproval);
-  const gateBeforeApproval = dedupeStrings(raw.gateBeforeApproval);
-  const prGateAfter = dedupeStrings(raw.prGateAfter);
+var blobMethodSchema = _enum(["GET", "PUT"]);
+var blobSignInputSchema = object({
+  namespace: string2().regex(BLOB_NAMESPACE_RE),
+  key: string2().refine(isValidBlobKey, "invalid_blob_key"),
+  method: blobMethodSchema,
+  ttlDays: number2().int().min(1).max(MAX_BLOB_TTL_DAYS).nullable().optional(),
+  contentType: string2().refine(isValidBlobContentType, "invalid_content_type").optional(),
+  expiresInMinutes: number2().int().min(1).max(MAX_BLOB_SIGN_TTL_MINUTES).optional()
+});
+var blobSignReplySchema = object({
+  method: blobMethodSchema,
+  namespace: string2(),
+  key: string2(),
+  url: string2(),
+  path: string2(),
+  expiresAt: number2().int(),
+  maxBytes: number2().int(),
+  ttlDays: number2().int().nullable()
+});
+var blobMetaSchema = object({
+  namespace: string2(),
+  key: string2(),
+  bytes: number2().int().min(0),
+  contentType: string2().nullable(),
+  sha256: string2().nullable(),
+  createdAt: number2().int().nullable(),
+  updatedAt: number2().int(),
+  expiresAt: number2().int().nullable()
+});
+var blobListReplySchema = object({
+  blobs: array(blobMetaSchema),
+  nextCursor: string2().nullable()
+});
+var blobPutReplySchema = object({
+  blob: blobMetaSchema
+});
+
+// ../../packages/shared/src/storage/data-stores.ts
+var DATA_STORE_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var DATA_STORE_SECRET_REF_RE = /^[A-Za-z0-9._:-]{1,200}$/;
+var S3_BUCKET_RE = /^[a-z0-9][a-z0-9.-]{1,62}$/;
+var S3_PREFIX_RE = /^[A-Za-z0-9._/-]{0,200}$/;
+var D1_ACCOUNT_ID_RE = /^[a-f0-9]{32}$/i;
+var D1_DATABASE_ID_RE = /^[0-9a-f-]{36}$/i;
+var D1_TABLE_PREFIX_RE = /^[a-z][a-z0-9_]{0,31}$/;
+var BINDING_TARGET_RE = /^(?:\*|[a-z0-9][a-z0-9._-]{0,63})$/;
+var DATA_STORE_PURPOSES = ["blobs", "records"];
+var dataStorePurposeSchema = _enum(DATA_STORE_PURPOSES);
+var DATA_STORE_KINDS = ["object", "database"];
+var dataStoreKindSchema = _enum(DATA_STORE_KINDS);
+var DATA_STORE_DRIVERS = ["s3", "d1"];
+var dataStoreDriverSchema = _enum(DATA_STORE_DRIVERS);
+var secretRefSchema = string2().regex(DATA_STORE_SECRET_REF_RE);
+var s3StoreConfigSchema = object({
+  endpoint: string2().url().max(500),
+  region: string2().min(1).max(64).default("auto"),
+  bucket: string2().regex(S3_BUCKET_RE),
+  prefix: string2().regex(S3_PREFIX_RE).optional(),
+  forcePathStyle: boolean2().default(true)
+});
+var s3SecretRefsSchema = object({
+  accessKeyId: secretRefSchema,
+  secretAccessKey: secretRefSchema
+});
+var d1StoreConfigSchema = object({
+  accountId: string2().regex(D1_ACCOUNT_ID_RE),
+  databaseId: string2().regex(D1_DATABASE_ID_RE),
+  tablePrefix: string2().regex(D1_TABLE_PREFIX_RE).default("nosta_")
+});
+var d1SecretRefsSchema = object({
+  apiToken: secretRefSchema
+});
+var s3StoreInputSchema = object({
+  kind: literal("object"),
+  driver: literal("s3"),
+  config: s3StoreConfigSchema,
+  secretRefs: s3SecretRefsSchema
+});
+var d1StoreInputSchema = object({
+  kind: literal("database"),
+  driver: literal("d1"),
+  config: d1StoreConfigSchema,
+  secretRefs: d1SecretRefsSchema
+});
+var dataStoreInputSchema = discriminatedUnion("driver", [
+  s3StoreInputSchema,
+  d1StoreInputSchema
+]);
+var storeMetaFields = {
+  name: string2().regex(DATA_STORE_NAME_RE),
+  createdAt: number2().int(),
+  updatedAt: number2().int()
+};
+var s3StoreRecordSchema = s3StoreInputSchema.extend(storeMetaFields);
+var d1StoreRecordSchema = d1StoreInputSchema.extend(storeMetaFields);
+var dataStoreRecordSchema = discriminatedUnion("driver", [
+  s3StoreRecordSchema,
+  d1StoreRecordSchema
+]);
+var dataStoreReplySchema = object({
+  store: dataStoreRecordSchema,
+  created: boolean2().optional()
+});
+var dataStoreListReplySchema = object({
+  stores: array(dataStoreRecordSchema)
+});
+var dataStoreTestReplySchema = object({
+  ok: boolean2(),
+  store: string2(),
+  driver: dataStoreDriverSchema,
+  latencyMs: number2().int().nonnegative(),
+  error: string2().optional()
+});
+var dataStoreBindingInputSchema = object({
+  purpose: dataStorePurposeSchema,
+  target: string2().regex(BINDING_TARGET_RE),
+  store: string2().regex(DATA_STORE_NAME_RE)
+});
+var dataStoreBindingSchema = dataStoreBindingInputSchema.extend({
+  createdAt: number2().int(),
+  updatedAt: number2().int()
+});
+var dataStoreBindingReplySchema = object({
+  binding: dataStoreBindingSchema
+});
+var dataStoreBindingListReplySchema = object({
+  bindings: array(dataStoreBindingSchema)
+});
+
+// ../../packages/shared/src/storage/export.ts
+var backupSummarySchema = object({
+  version: literal(1),
+  day: string2(),
+  key: string2(),
+  createdAt: number2().int(),
+  bytes: number2().int().nonnegative(),
+  sha256: string2(),
+  counts: record(string2(), number2().int().nonnegative())
+});
+var backupListItemSchema = object({
+  day: string2(),
+  key: string2(),
+  bytes: number2().int().nonnegative(),
+  uploadedAt: number2().int().nullable()
+});
+var backupListReplySchema = object({
+  latest: backupSummarySchema.nullable(),
+  backups: array(backupListItemSchema)
+});
+var exportReplySchema = object({
+  version: literal(1),
+  exportedAt: number2().int(),
+  scopeId: string2(),
+  counts: record(string2(), number2().int().nonnegative()),
+  data: record(string2(), array(record(string2(), unknown())))
+});
+
+// ../../packages/shared/src/storage/records.ts
+var RECORD_COLLECTION_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+var RECORD_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$/;
+var RECORD_TAG_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+var MAX_RECORD_DATA_BYTES = 256 * 1024;
+var MAX_RECORD_TAGS = 32;
+var MAX_RECORD_LIST_LIMIT = 200;
+var recordTagsSchema = array(string2().regex(RECORD_TAG_RE)).max(MAX_RECORD_TAGS);
+var recordDataSchema = record(string2(), unknown());
+var optionalMetaString = string2().min(1).max(128).nullable().optional();
+var recordSchema = object({
+  collection: string2(),
+  id: string2(),
+  status: string2().nullable(),
+  ticket: string2().nullable(),
+  flowId: string2().nullable(),
+  tags: array(string2()),
+  data: recordDataSchema,
+  version: number2().int().positive(),
+  createdAt: number2().int(),
+  updatedAt: number2().int()
+});
+var recordCreateInputSchema = object({
+  id: string2().regex(RECORD_ID_RE).optional(),
+  status: optionalMetaString,
+  ticket: optionalMetaString,
+  flowId: optionalMetaString,
+  tags: recordTagsSchema.optional(),
+  data: recordDataSchema
+});
+var recordPutInputSchema = object({
+  status: optionalMetaString,
+  ticket: optionalMetaString,
+  flowId: optionalMetaString,
+  tags: recordTagsSchema.optional(),
+  data: recordDataSchema,
+  expectedVersion: number2().int().nonnegative().optional()
+});
+var recordPatchInputSchema = object({
+  status: optionalMetaString,
+  ticket: optionalMetaString,
+  flowId: optionalMetaString,
+  tags: recordTagsSchema.optional(),
+  data: recordDataSchema.optional(),
+  expectedVersion: number2().int().positive().optional()
+});
+var recordReplySchema = object({
+  record: recordSchema,
+  created: boolean2().optional()
+});
+var recordListReplySchema = object({
+  collection: string2(),
+  records: array(recordSchema),
+  nextCursor: string2().nullable()
+});
+
+// ../../packages/shared/src/toolkits/storage.ts
+var READ_SURFACES7 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES7 = WRITE_TOOL_SURFACES;
+var ADMIN_SURFACES2 = ADMIN_TOOL_SURFACES;
+var collectionSchema = string2().regex(RECORD_COLLECTION_RE);
+var recordIdSchema = string2().regex(RECORD_ID_RE);
+var blobNamespaceSchema = string2().regex(BLOB_NAMESPACE_RE);
+var blobKeySchema = string2().refine(isValidBlobKey, "invalid_blob_key");
+var storeNameSchema = string2().regex(DATA_STORE_NAME_RE);
+var storageRecordsListTool = defineTool({
+  toolkit: "storage",
+  name: "records_list",
+  description: "List generic records in a collection with optional metadata, time window, and cursor filters.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({
+    collection: collectionSchema,
+    status: string2().trim().min(1).max(128).optional(),
+    ticket: string2().trim().min(1).max(128).optional(),
+    flowId: string2().trim().min(1).max(128).optional(),
+    tag: string2().regex(RECORD_TAG_RE).optional(),
+    since: number2().int().min(0).optional(),
+    until: number2().int().min(0).optional(),
+    limit: number2().int().min(1).max(MAX_RECORD_LIST_LIMIT).optional(),
+    cursor: string2().min(1).max(512).optional()
+  }),
+  output: recordListReplySchema
+});
+var storageRecordsGetTool = defineTool({
+  toolkit: "storage",
+  name: "records_get",
+  description: "Fetch one record by collection and id.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({
+    collection: collectionSchema,
+    id: recordIdSchema
+  }),
+  output: object({ record: recordSchema })
+});
+var storageRecordsCreateTool = defineTool({
+  toolkit: "storage",
+  name: "records_create",
+  description: "Create a new record in a collection.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: recordCreateInputSchema.extend({
+    collection: collectionSchema
+  }),
+  output: recordReplySchema
+});
+var storageRecordsPutTool = defineTool({
+  toolkit: "storage",
+  name: "records_put",
+  description: "Upsert a record by collection and id with optional optimistic concurrency check.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: recordPutInputSchema.extend({
+    collection: collectionSchema,
+    id: recordIdSchema
+  }),
+  output: recordReplySchema
+});
+var storageRecordsPatchTool = defineTool({
+  toolkit: "storage",
+  name: "records_patch",
+  description: "Shallow-merge fields and metadata onto an existing record with optional version check.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: recordPatchInputSchema.extend({
+    collection: collectionSchema,
+    id: recordIdSchema
+  }),
+  output: recordReplySchema
+});
+var storageRecordsDeleteTool = defineTool({
+  toolkit: "storage",
+  name: "records_delete",
+  description: "Delete a record by collection and id with optional version check.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: object({
+    collection: collectionSchema,
+    id: recordIdSchema,
+    expectedVersion: number2().int().positive().optional()
+  }),
+  output: object({
+    deleted: literal(true),
+    collection: string2(),
+    id: string2()
+  })
+});
+var storageBlobsListTool = defineTool({
+  toolkit: "storage",
+  name: "blobs_list",
+  description: "List stored blob metadata within the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({
+    namespace: blobNamespaceSchema.optional(),
+    prefix: string2().min(1).max(256).optional(),
+    cursor: string2().min(1).max(512).optional(),
+    limit: number2().int().min(1).max(MAX_BLOB_LIST_LIMIT).optional()
+  }),
+  output: blobListReplySchema
+});
+var storageBlobsSignTool = defineTool({
+  toolkit: "storage",
+  name: "blobs_sign",
+  description: "Mint a short-lived signed GET or PUT URL for a scoped blob.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: blobSignInputSchema,
+  output: blobSignReplySchema
+});
+var storageBlobsDeleteTool = defineTool({
+  toolkit: "storage",
+  name: "blobs_delete",
+  description: "Delete a stored blob by namespace and key.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES7,
+  input: object({
+    namespace: blobNamespaceSchema,
+    key: blobKeySchema
+  }),
+  output: object({
+    deleted: literal(true),
+    namespace: string2(),
+    key: string2()
+  })
+});
+var storageStoresListTool = defineTool({
+  toolkit: "storage",
+  name: "stores_list",
+  description: "List configured external data stores for the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({}),
+  output: dataStoreListReplySchema
+});
+var storageStoresGetTool = defineTool({
+  toolkit: "storage",
+  name: "stores_get",
+  description: "Get one configured external data store by name.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({ name: storeNameSchema }),
+  output: dataStoreReplySchema
+});
+var storageStoresPutTool = defineTool({
+  toolkit: "storage",
+  name: "stores_put",
+  description: "Create or update an external S3 or D1 data store configuration.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES7,
+  input: discriminatedUnion("driver", [
+    s3StoreInputSchema.extend({ name: storeNameSchema }),
+    d1StoreInputSchema.extend({ name: storeNameSchema })
+  ]),
+  output: dataStoreReplySchema
+});
+var storageStoresDeleteTool = defineTool({
+  toolkit: "storage",
+  name: "stores_delete",
+  description: "Delete an external data store configuration, optionally removing active bindings.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES7,
+  input: object({
+    name: storeNameSchema,
+    force: boolean2().optional()
+  }),
+  output: object({ deleted: literal(true), name: string2() })
+});
+var storageStoresTestTool = defineTool({
+  toolkit: "storage",
+  name: "stores_test",
+  description: "Probe connectivity and credentials for a configured external data store.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES7,
+  input: object({ name: storeNameSchema }),
+  output: dataStoreTestReplySchema
+});
+var storageStoreBindingsListTool = defineTool({
+  toolkit: "storage",
+  name: "store_bindings_list",
+  description: "List data store bindings for blobs and records in the caller scope.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES7,
+  input: object({}),
+  output: dataStoreBindingListReplySchema
+});
+var storageStoreBindingsPutTool = defineTool({
+  toolkit: "storage",
+  name: "store_bindings_put",
+  description: "Bind a blob namespace or record collection target to a data store.",
+  kind: "write",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES7,
+  input: dataStoreBindingInputSchema,
+  output: dataStoreBindingReplySchema
+});
+var storageStoreBindingsDeleteTool = defineTool({
+  toolkit: "storage",
+  name: "store_bindings_delete",
+  description: "Delete a data store binding by purpose and target.",
+  kind: "destructive",
+  access: "org_admin",
+  surfaces: WRITE_SURFACES7,
+  input: object({
+    purpose: dataStorePurposeSchema,
+    target: string2().regex(BINDING_TARGET_RE)
+  }),
+  output: object({
+    deleted: literal(true),
+    purpose: dataStorePurposeSchema,
+    target: string2()
+  })
+});
+var storageBackupsListTool = defineTool({
+  toolkit: "storage",
+  name: "backups_list",
+  description: "List daily R2 database backup snapshots and the latest backup summary.",
+  kind: "read",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES2,
+  input: object({}),
+  output: backupListReplySchema
+});
+var storageBackupsRunTool = defineTool({
+  toolkit: "storage",
+  name: "backups_run",
+  description: "Trigger an immediate full database backup snapshot to R2.",
+  kind: "write",
+  access: "superadmin",
+  surfaces: ADMIN_SURFACES2,
+  input: object({}),
+  output: object({
+    backup: backupSummarySchema,
+    pruned: number2().int().nonnegative()
+  })
+});
+var STORAGE_TOOLS = [
+  storageRecordsListTool,
+  storageRecordsGetTool,
+  storageRecordsCreateTool,
+  storageRecordsPutTool,
+  storageRecordsPatchTool,
+  storageRecordsDeleteTool,
+  storageBlobsListTool,
+  storageBlobsSignTool,
+  storageBlobsDeleteTool,
+  storageStoresListTool,
+  storageStoresGetTool,
+  storageStoresPutTool,
+  storageStoresDeleteTool,
+  storageStoresTestTool,
+  storageStoreBindingsListTool,
+  storageStoreBindingsPutTool,
+  storageStoreBindingsDeleteTool,
+  storageBackupsListTool,
+  storageBackupsRunTool
+];
+
+// ../../packages/shared/src/toolkits/views.ts
+var READ_SURFACES8 = ALL_TOOL_SURFACES;
+var WRITE_SURFACES8 = WRITE_TOOL_SURFACES;
+var viewsGetTool = defineTool({
+  toolkit: "views",
+  name: "get",
+  description: "Read a saved user view configuration by view key.",
+  kind: "read",
+  access: "member",
+  surfaces: READ_SURFACES8,
+  input: object({ key: viewKeySchema }),
+  output: userViewReplySchema
+});
+var viewsPutTool = defineTool({
+  toolkit: "views",
+  name: "put",
+  description: "Merge and save a user view configuration patch by view key.",
+  kind: "write",
+  access: "member",
+  surfaces: WRITE_SURFACES8,
+  input: putViewInputSchema.extend({ key: viewKeySchema }),
+  output: userViewReplySchema
+});
+var viewsDeleteTool = defineTool({
+  toolkit: "views",
+  name: "delete",
+  description: "Delete a saved user view configuration by view key.",
+  kind: "destructive",
+  access: "member",
+  surfaces: WRITE_SURFACES8,
+  input: object({ key: viewKeySchema }),
+  output: object({ deleted: literal(true), key: string2() })
+});
+var VIEW_TOOLS = [
+  viewsGetTool,
+  viewsPutTool,
+  viewsDeleteTool
+];
+// ../../packages/shared/src/toolkits/mcp.ts
+var toolkitsCallInputSchema = object({
+  toolkit: string2().regex(TOOLKIT_NAME_RE),
+  tool: string2().regex(TOOL_NAME_RE),
+  arguments: record(string2(), unknown()).optional()
+});
+function buildMcpDescriptor(input) {
   return {
-    ...approvalNodes ? { approvalNodes } : {},
-    ...allowBeforeApproval ? { allowBeforeApproval } : {},
-    ...gateBeforeApproval ? { gateBeforeApproval } : {},
-    ...prGateAfter ? { prGateAfter } : {}
+    name: input.name,
+    description: input.description,
+    inputSchema: toolJsonSchemaOf(input.schema),
+    annotations: input.annotations
   };
 }
-function normalizeEvidence(raw) {
-  if (!raw)
-    return;
-  return {
-    required: raw.required ?? false,
-    artifacts: dedupeStrings(raw.artifacts) ?? [],
-    checks: dedupeStrings(raw.checks) ?? []
-  };
-}
-function normalizeCallRetries(retries) {
-  if (retries === undefined)
-    return;
-  if (typeof retries === "number")
-    return { ...DEFAULT_CALL_RETRY_POLICY, max: retries };
-  return retries;
-}
-function resolveLeafCore(raw, defaultWhere) {
-  if (raw.kind === "agent") {
-    return { ...raw, where: "local" };
-  }
-  const secrets = dedupeStrings(raw.secrets);
-  if (raw.kind === "call") {
-    const retries = normalizeCallRetries(raw.retries);
-    return {
-      id: raw.id,
-      kind: "call",
-      call: raw.call,
-      ...raw.version !== undefined ? { version: raw.version } : {},
-      args: raw.args ?? {},
-      ...raw.outputs ? { outputs: raw.outputs } : {},
-      ...retries ? { retries } : {},
-      ...raw.onError ? { onError: raw.onError } : {},
-      ...raw.provider ? { provider: raw.provider } : {},
-      where: "cloud",
-      ...raw.minutes !== undefined ? { minutes: raw.minutes } : {},
-      ...secrets ? { secrets } : {}
-    };
-  }
-  if (raw.kind === "command") {
-    const retries = normalizeCallRetries(raw.retries);
-    const { secrets: _omit, retries: _omitRetries, ...rest } = raw;
-    return {
-      ...rest,
-      where: raw.where ?? defaultWhere,
-      ...retries ? { retries } : {},
-      ...secrets ? { secrets } : {}
-    };
-  }
-  if (raw.kind === "restricted_agent") {
-    const {
-      secrets: _omitSecrets,
-      skills: rawSkills,
-      references: rawReferences,
-      tools: rawTools,
-      hooks: rawHooks,
-      hosts: rawHosts,
-      mcpServers: rawMcpServers,
-      ...rest
-    } = raw;
-    const skills = dedupeStrings(rawSkills);
-    const references = dedupeStrings(rawReferences);
-    const tools = rawTools !== undefined ? Array.from(new Set(rawTools)) : undefined;
-    const hooks = normalizeStepHooks(rawHooks);
-    const hosts = dedupeStrings(rawHosts);
-    const mcpServers = dedupeStrings(rawMcpServers);
-    return {
-      ...rest,
-      where: raw.where ?? defaultWhere,
-      ...secrets ? { secrets } : {},
-      ...skills ? { skills } : {},
-      ...references ? { references } : {},
-      ...tools !== undefined ? { tools } : {},
-      ...hooks ? { hooks } : {},
-      ...hosts ? { hosts } : {},
-      ...mcpServers ? { mcpServers } : {}
-    };
-  }
-  const { secrets: _omit, ...rest } = raw;
-  return {
-    ...rest,
-    where: raw.where ?? defaultWhere,
-    ...secrets ? { secrets } : {}
-  };
-}
-function resolveLeaf(raw, defaultWhere) {
-  const { when, ...core } = raw;
-  const resolved = resolveLeafCore(core, defaultWhere);
-  if (when)
-    resolved.when = resolveLeafCore(when, defaultWhere);
-  return resolved;
-}
-function resolveStep(raw, defaultWhere) {
-  if (raw.kind === "command" || raw.kind === "review" || raw.kind === "agent" || raw.kind === "restricted_agent" || raw.kind === "call") {
-    return resolveLeaf(raw, defaultWhere);
-  }
-  if (raw.kind === "again_if" || raw.kind === "end")
-    return raw;
-  const when = raw.when ? resolveLeaf(raw.when, defaultWhere) : undefined;
-  if (raw.kind === "choose") {
-    const cases = {};
-    for (const [k, list] of Object.entries(raw.cases))
-      cases[k] = list.map((rawStep) => resolveStep(rawStep, defaultWhere));
-    const fallback = raw.default?.map((rawStep) => resolveStep(rawStep, defaultWhere));
-    return {
-      id: raw.id,
-      kind: "choose",
-      value: raw.value,
-      cases,
-      ...fallback ? { default: fallback } : {},
-      ...when ? { when } : {}
-    };
-  }
-  if (raw.kind === "parallel") {
-    return {
-      id: raw.id,
-      kind: "parallel",
-      steps: raw.steps.map((rawStep) => resolveStep(rawStep, defaultWhere)),
-      ...when ? { when } : {}
-    };
-  }
-  if (raw.kind === "flow") {
-    const secrets = dedupeStrings(raw.secrets);
-    const { when: _ignored, secrets: _omit, flow: flowAlias, ...rest } = raw;
-    const name = rest.name ?? flowAlias;
-    return {
-      ...rest,
-      ...name ? { name } : {},
-      ...secrets ? { secrets } : {},
-      ...when ? { when } : {}
-    };
-  }
-  const { when: _ignored, ...rest } = raw;
-  return { ...rest, ...when ? { when } : {} };
-}
-function* walkSteps(steps, nested = false) {
-  for (const step of steps) {
-    yield { step, nested };
-    if ("when" in step && step.when)
-      yield { step: step.when, nested: true };
-    if (step.kind === "choose") {
-      for (const branch of Object.values(step.cases))
-        yield* walkSteps(branch, true);
-      if (step.default)
-        yield* walkSteps(step.default, true);
-    } else if (step.kind === "parallel") {
-      yield* walkSteps(step.steps, true);
-    }
-  }
-}
-function allSteps(config) {
-  return [
-    ...config.conditions,
-    ...config.prepare,
-    ...config.steps,
-    ...config.checks,
-    ...config.record,
-    ...config.alerts
-  ];
-}
-function validateAgainIfList(steps, allowAgainIf) {
-  const localIds = new Set(steps.map((s) => s.id));
-  for (const step of steps) {
-    if (step.kind === "again_if") {
-      if (!allowAgainIf)
-        return `nested_again_if:${step.id}`;
-      if (step.from && !localIds.has(step.from))
-        return `unknown_again_if_from:${step.from}`;
-    } else if (step.kind === "choose") {
-      for (const branch of Object.values(step.cases)) {
-        const err = validateAgainIfList(branch, allowAgainIf);
-        if (err)
-          return err;
+function listToolkitMcpDescriptors(input) {
+  const descriptors = input.defs.map((def) => buildMcpDescriptor({
+    name: def.mcpName,
+    description: def.description,
+    schema: def.input,
+    annotations: def.annotations
+  }));
+  if (input.includeCallTool) {
+    descriptors.push(buildMcpDescriptor({
+      name: "toolkits_call",
+      description: "Invoke an MCP-enabled Nosta toolkit tool by toolkit name, tool name, and arguments object. Call toolkits_list and toolkits_describe first to inspect schemas.",
+      schema: toolkitsCallInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true
       }
-      if (step.default) {
-        const err = validateAgainIfList(step.default, allowAgainIf);
-        if (err)
-          return err;
-      }
-    } else if (step.kind === "parallel") {
-      for (const branch of step.steps) {
-        if (branch.kind === "again_if")
-          return `nested_again_if:${branch.id}`;
-        if (branch.kind === "choose" || branch.kind === "parallel") {
-          const err = validateAgainIfList([branch], allowAgainIf);
-          if (err)
-            return err;
-        }
-      }
-    }
+    }));
   }
-  return null;
+  return descriptors;
 }
-function collectWorkflowStepIds(steps, include) {
-  const out = [];
-  const seen = new Set;
-  const visit = (list) => {
-    for (const step of list) {
-      if (step.kind === "again_if" || step.kind === "end")
-        continue;
-      if ((!include || include(step)) && !seen.has(step.id)) {
-        seen.add(step.id);
-        out.push(step.id);
-      }
-      if (step.kind === "choose") {
-        for (const branch of Object.values(step.cases))
-          visit(branch);
-        if (step.default)
-          visit(step.default);
-      } else if (step.kind === "parallel") {
-        visit(step.steps);
-      }
-    }
-  };
-  visit(steps);
-  return out;
-}
-function validateRefs(config) {
-  const tabErr = validateFlowTabs(config)?.code ?? null;
-  if (tabErr)
-    return tabErr;
-  const seen = new Set;
-  for (const hook of config.environment) {
-    if (seen.has(hook.id))
-      return `duplicate_step_id:${hook.id}`;
-    seen.add(hook.id);
-    if (hook.teardown) {
-      const td = `${hook.id}_teardown`;
-      if (seen.has(td))
-        return `duplicate_step_id:${td}`;
-      seen.add(td);
-    }
+function buildToolkitHttpRequest(input) {
+  if (!input.forcePost && input.def.httpMethod === "GET") {
+    const qs = encodeToolQueryParams(input.args).toString();
+    return {
+      method: "GET",
+      path: qs ? `${input.def.httpPath}?${qs}` : input.def.httpPath
+    };
   }
-  for (const { step } of walkSteps(allSteps(config))) {
-    if (seen.has(step.id))
-      return `duplicate_step_id:${step.id}`;
-    seen.add(step.id);
-  }
-  const bodyAndChecks = [...config.steps, ...config.checks];
-  const guardable = new Set(collectWorkflowStepIds(bodyAndChecks));
-  const evidenceChecks = new Set(collectWorkflowStepIds(bodyAndChecks, isLeafStep));
-  if (config.guards) {
-    for (const id of [
-      ...config.guards.approvalNodes ?? [],
-      ...config.guards.prGateAfter ?? []
-    ]) {
-      if (!guardable.has(id))
-        return `unknown_guard_node:${id}`;
-    }
-  }
-  if (config.evidence) {
-    for (const id of config.evidence.checks) {
-      if (!evidenceChecks.has(id))
-        return `unknown_evidence_check:${id}`;
-    }
-  }
-  const nonBodySteps = [
-    ...config.conditions,
-    ...config.prepare,
-    ...config.checks,
-    ...config.record,
-    ...config.alerts
-  ];
-  const nonBodyErr = validateAgainIfList(nonBodySteps, false);
-  if (nonBodyErr)
-    return nonBodyErr;
-  return validateAgainIfList(config.steps, true);
-}
-function isLeafStep(step) {
-  return step.kind === "command" || step.kind === "review" || step.kind === "agent" || step.kind === "restricted_agent" || step.kind === "call";
-}
-function normalizeSchedule(raw) {
-  if (!raw)
-    return;
-  if (typeof raw === "string")
-    return { cron: raw, enabled: true };
-  return {
-    ...raw.id ? { id: raw.id } : {},
-    cron: raw.cron,
-    enabled: raw.enabled ?? true,
-    ...raw.values ? { values: raw.values } : {}
-  };
-}
-function parseWorkflowYaml(raw) {
-  let doc;
-  try {
-    doc = $parse(raw);
-  } catch {
-    return "invalid_yaml";
-  }
-  const parsed = flowConfigSchema2.safeParse(doc);
-  if (!parsed.success) {
-    const first = parsed.error.issues[0];
-    if (!first)
-      return "invalid_workflow";
-    const path = first.path.reduce((acc, part) => typeof part === "number" ? `${acc}[${part}]` : acc ? `${acc}.${String(part)}` : String(part), "");
-    return path ? `invalid_workflow: ${path}: ${first.message}` : `invalid_workflow: ${first.message}`;
-  }
-  const defaultWhere = parsed.data.defaults?.where ?? "local";
-  const schedule = normalizeSchedule(parsed.data.schedule);
-  const guards = normalizeGuards(parsed.data.guards);
-  const evidence = normalizeEvidence(parsed.data.evidence);
-  const config = {
-    name: parsed.data.name,
-    version: parsed.data.version,
-    workspace: parsed.data.workspace,
-    ...parsed.data.visibility ? { visibility: parsed.data.visibility } : {},
-    ...schedule ? { schedule } : {},
-    ...parsed.data.tabs ? { tabs: parsed.data.tabs } : {},
-    ...parsed.data.defaultTab ? { defaultTab: parsed.data.defaultTab } : {},
-    ...guards ? { guards } : {},
-    ...evidence ? { evidence } : {},
-    values: parsed.data.values ?? {},
-    conditions: (parsed.data.conditions ?? []).map((s) => resolveLeaf(s, defaultWhere)),
-    prepare: (parsed.data.prepare ?? []).map((s) => resolveLeaf(s, defaultWhere)),
-    environment: (parsed.data.environment ?? []).map((h) => {
-      const secrets = dedupeStrings(h.secrets);
-      const { secrets: _omit, ...rest } = h;
-      return {
-        ...rest,
-        where: h.where ?? defaultWhere,
-        ...secrets ? { secrets } : {}
-      };
-    }),
-    steps: parsed.data.steps.map((s) => resolveStep(s, defaultWhere)),
-    checks: (parsed.data.checks ?? []).map((s) => resolveLeaf(s, defaultWhere)),
-    record: (parsed.data.record ?? []).map((s) => resolveLeaf(s, defaultWhere)),
-    alerts: (parsed.data.alerts ?? []).map((s) => resolveLeaf(s, defaultWhere))
-  };
-  const err = validateRefs(config);
-  return err ?? config;
+  return { method: "POST", path: input.def.httpPath, body: input.args };
 }
 
-// src/gate/git.ts
-import { execFile } from "node:child_process";
-import { existsSync as existsSync3 } from "node:fs";
-import { readFile as readFile2 } from "node:fs/promises";
-import {
-  basename as basename3,
-  dirname as dirname3,
-  isAbsolute as isAbsolute2,
-  join as join5,
-  relative as relative2,
-  resolve as resolve3,
-  sep as sep2
-} from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-import { promisify } from "node:util";
+// ../../packages/shared/src/toolkits/index.ts
+var TOOLKIT_CATALOG = [
+  ...META_TOOLS,
+  ...FLOW_TOOLS,
+  ...LABEL_TOOLS,
+  ...VIEW_TOOLS,
+  ...INBOX_TOOLS,
+  ...SCHEDULE_TOOLS,
+  ...PAGE_TOOLS,
+  ...STORAGE_TOOLS,
+  ...RUNTIME_TOOLS,
+  ...CORE_TOOLS
+];
+var BY_ID = new Map;
+var BY_MCP_NAME = new Map;
+for (const def of TOOLKIT_CATALOG) {
+  if (BY_ID.has(def.id))
+    throw new Error(`duplicate_toolkit_tool:${def.id}`);
+  BY_ID.set(def.id, def);
+  if (BY_MCP_NAME.has(def.mcpName)) {
+    throw new Error(`duplicate_mcp_tool_name:${def.mcpName}`);
+  }
+  BY_MCP_NAME.set(def.mcpName, def);
+}
+function findTool(input) {
+  return BY_ID.get(`${input.toolkit}.${input.tool}`) ?? null;
+}
+function findToolByMcpName(name) {
+  return BY_MCP_NAME.get(name) ?? null;
+}
+function listToolsForSurface(surface) {
+  return TOOLKIT_CATALOG.filter((def) => def.surfaces[surface]);
+}
+
+// src/flows/toolkits.ts
+var PLUGIN_TOOLKIT_MCP_TOOLS = listToolkitMcpDescriptors({
+  defs: listToolsForSurface("mcp"),
+  includeCallTool: true
+});
+var PLUGIN_CLI_TOOLS = listToolsForSurface("cli");
+var CLI_BY_ID = new Map(PLUGIN_CLI_TOOLS.map((def) => [def.id, def]));
+function readAllowedToolkits(env = process.env) {
+  const raw = env.NOSTA_ALLOWED_TOOLKITS;
+  if (raw === undefined)
+    return null;
+  return new Set(raw.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0));
+}
+function isDomainAllowed(domain, allowed) {
+  if (allowed === null)
+    return true;
+  if (domain === "toolkits")
+    return true;
+  return allowed.has(domain);
+}
+function assertDomainAllowed(domain, allowed) {
+  if (isDomainAllowed(domain, allowed))
+    return;
+  throw new Error(`toolkit not allowed by NOSTA_ALLOWED_TOOLKITS: ${domain}`);
+}
+function isToolkitAllowed(def, allowed) {
+  return isDomainAllowed(def.toolkit, allowed);
+}
+function assertToolkitAllowed(def, allowed) {
+  assertDomainAllowed(def.toolkit, allowed);
+}
+function listPluginToolkitMcpTools(allowed) {
+  const effective = allowed !== undefined ? allowed : readAllowedToolkits();
+  if (effective === null)
+    return PLUGIN_TOOLKIT_MCP_TOOLS;
+  const defs = listToolsForSurface("mcp").filter((def) => isToolkitAllowed(def, effective));
+  return listToolkitMcpDescriptors({ defs, includeCallTool: true });
+}
+function resolveCliToolkitTool(command) {
+  return CLI_BY_ID.get(command) ?? null;
+}
+async function invokeToolkitOverTransport(input) {
+  const normalized = input.def.toolkit === "toolkits" && input.def.name === "list" && input.args.surface === undefined ? { ...input.args, surface: input.surface } : input.args;
+  const parsed = input.def.input.parse(normalized);
+  const req = buildToolkitHttpRequest({
+    def: input.def,
+    args: parsed,
+    forcePost: input.forcePost
+  });
+  const headers = {};
+  if (req.body !== undefined) {
+    headers["content-type"] = "application/json";
+  }
+  if (input.def.idempotency !== "none" || input.def.quota === "daily_flow") {
+    headers["Idempotency-Key"] = randomUUID();
+  }
+  return input.backend.request(req.path, {
+    method: req.method,
+    ...Object.keys(headers).length > 0 ? { headers } : {},
+    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {}
+  });
+}
+async function callToolkitMcpTool(input) {
+  const allowed = input.allowedToolkits !== undefined ? input.allowedToolkits : readAllowedToolkits();
+  if (input.name === "toolkits_call") {
+    const parsed = toolkitsCallInputSchema.parse(input.args);
+    const def = findTool({ toolkit: parsed.toolkit, tool: parsed.tool });
+    if (!def || !def.surfaces.mcp) {
+      throw new Error(`unknown or unavailable MCP tool: ${parsed.toolkit}.${parsed.tool}`);
+    }
+    assertToolkitAllowed(def, allowed);
+    return invokeToolkitOverTransport({
+      def,
+      args: parsed.arguments ?? {},
+      backend: input.backend,
+      surface: "mcp",
+      forcePost: true
+    });
+  }
+  const def = findToolByMcpName(input.name);
+  if (!def || !def.surfaces.mcp)
+    return null;
+  assertToolkitAllowed(def, allowed);
+  return invokeToolkitOverTransport({
+    def,
+    args: input.args,
+    backend: input.backend,
+    surface: "mcp"
+  });
+}
+async function callToolkitCliCommand(input) {
+  const def = resolveCliToolkitTool(input.command);
+  if (!def)
+    return null;
+  const allowed = input.allowedToolkits !== undefined ? input.allowedToolkits : readAllowedToolkits();
+  assertToolkitAllowed(def, allowed);
+  return invokeToolkitOverTransport({
+    def,
+    args: input.args,
+    backend: input.backend,
+    surface: "cli"
+  });
+}
 
 // src/install/index.ts
 import { randomBytes } from "node:crypto";
@@ -15440,6 +17384,8 @@ function mergeOpenCodeJson(input) {
   root.mcp = mcp;
   const permission = asObject(root.permission);
   permission.nosta_approve_flow = "ask";
+  permission.nosta_flows_approve = "ask";
+  permission.nosta_toolkits_call = "ask";
   permission.nosta_bypass_flow = "ask";
   root.permission = permission;
   return `${JSON.stringify(root, null, 2)}
@@ -15562,6 +17508,8 @@ async function copyWorkflowTemplates(input) {
 function usageText() {
   return [
     "Usage: nosta-mcp install <harness> [--global | --project] [--pack <name>] [--dry-run]",
+    "       nosta-mcp <toolkit>.<tool> [--json <payload> | --file <path>]",
+    "       nosta-mcp sync [--json <payload> | --file <path>]",
     `Harnesses: ${HARNESSES.join(", ")}`,
     "Run with no arguments to start the Nosta stdio MCP server."
   ].join(`
@@ -15749,3473 +17697,6 @@ function formatInstallSummary(result) {
   return `${lines.join(`
 `)}
 `;
-}
-
-// src/packet.ts
-import { constants as fsConstants, realpathSync } from "node:fs";
-import { lstat, mkdir as mkdir3, open as open2, realpath, stat } from "node:fs/promises";
-import {
-  basename,
-  dirname as dirname2,
-  isAbsolute,
-  join as join4,
-  relative,
-  resolve as resolve2,
-  sep
-} from "node:path";
-
-// ../../packages/shared/src/utils/bytes.ts
-function concatChunks(chunks, total) {
-  const out = new Uint8Array(new ArrayBuffer(total));
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
-}
-
-// src/packet.ts
-function resolveRealPath(targetPath) {
-  const abs = resolve2(targetPath);
-  const tail = [];
-  let cursor = abs;
-  while (true) {
-    try {
-      const real = realpathSync(cursor);
-      return tail.length > 0 ? join4(real, ...tail.reverse()) : real;
-    } catch {
-      const parent = dirname2(cursor);
-      if (parent === cursor)
-        return abs;
-      tail.push(basename(cursor));
-      cursor = parent;
-    }
-  }
-}
-function defaultWorkspaceRoot(env = process.env) {
-  return env.NOSTA_WORKSPACE_ROOT || process.cwd();
-}
-function checkWorkspaceContainment(input) {
-  const rel = relative(input.resolvedRoot, input.resolvedTarget);
-  if (!rel || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
-    return { kind: "escapes" };
-  }
-  const normalizedRel = rel.split(sep).join("/");
-  if (input.checkSecret && isSecretPath(normalizedRel)) {
-    return { kind: "secret", normalizedRel };
-  }
-  return { kind: "ok", normalizedRel };
-}
-async function assertConfinedWorkspaceDir(dirPath, rootDir = defaultWorkspaceRoot()) {
-  const [resolvedRoot, resolvedDir] = await Promise.all([
-    realpath(rootDir),
-    realpath(dirPath)
-  ]);
-  if (resolvedDir === resolvedRoot)
-    return resolvedDir;
-  const rel = relative(resolvedRoot, resolvedDir);
-  if (!rel || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
-    throw new Error(`directory outside workspace root is not allowed: ${dirPath}`);
-  }
-  return resolvedDir;
-}
-async function assertReadableWorkspaceFile(filePath, rootDir = defaultWorkspaceRoot()) {
-  const [resolvedRoot, resolvedFile] = await Promise.all([
-    realpath(rootDir),
-    realpath(filePath)
-  ]);
-  const checked = checkWorkspaceContainment({
-    resolvedRoot,
-    resolvedTarget: resolvedFile,
-    checkSecret: true
-  });
-  if (checked.kind === "escapes") {
-    throw new Error(`path outside workspace root is not allowed: ${filePath}`);
-  }
-  if (checked.kind === "secret") {
-    throw new Error(`secret path is not allowed: ${checked.normalizedRel}`);
-  }
-  return resolvedFile;
-}
-async function readBoundedWorkspaceFile(input) {
-  const root = input.rootDir ?? defaultWorkspaceRoot();
-  const target = isAbsolute(input.filePath) ? input.filePath : resolve2(root, input.filePath);
-  const resolved = await assertReadableWorkspaceFile(target, root);
-  const handle = await open2(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-  try {
-    const info = await handle.stat();
-    if (!info.isFile()) {
-      throw new Error(`path is not a regular file: ${input.filePath}`);
-    }
-    if (info.size > input.maxBytes) {
-      throw new Error(`file exceeds ${input.maxBytes} bytes: ${input.filePath}`);
-    }
-    const chunks = [];
-    let total = 0;
-    const chunkSize = Math.min(64 * 1024, input.maxBytes + 1);
-    while (total <= input.maxBytes) {
-      const slice = Buffer.allocUnsafe(Math.min(chunkSize, input.maxBytes + 1 - total));
-      const { bytesRead } = await handle.read(slice, 0, slice.length, total);
-      if (bytesRead === 0)
-        break;
-      total += bytesRead;
-      if (total > input.maxBytes) {
-        throw new Error(`file exceeds ${input.maxBytes} bytes: ${input.filePath}`);
-      }
-      chunks.push(new Uint8Array(slice.subarray(0, bytesRead)));
-    }
-    return { path: resolved, bytes: concatChunks(chunks, total) };
-  } finally {
-    await handle.close();
-  }
-}
-async function rejectSymlinkTarget(targetPath, input) {
-  try {
-    const info = await lstat(targetPath);
-    if (info.isSymbolicLink()) {
-      throw new Error(`symlink write path is not allowed: ${input.filePath}`);
-    }
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return;
-    throw error;
-  }
-}
-async function writeConfinedWorkspaceFile(input) {
-  const root = input.rootDir ?? defaultWorkspaceRoot();
-  const resolvedRoot = await realpath(root);
-  const target = isAbsolute(input.filePath) ? resolve2(input.filePath) : resolve2(resolvedRoot, input.filePath);
-  await rejectSymlinkTarget(target, input);
-  const resolvedTarget = resolveRealPath(target);
-  await rejectSymlinkTarget(resolvedTarget, input);
-  const checked = checkWorkspaceContainment({
-    resolvedRoot,
-    resolvedTarget,
-    checkSecret: true
-  });
-  if (checked.kind === "escapes") {
-    throw new Error(`write path outside workspace root is not allowed: ${input.filePath}`);
-  }
-  if (checked.kind === "secret") {
-    throw new Error(`secret write path is not allowed: ${checked.normalizedRel}`);
-  }
-  if (input.allowedExtensions && !input.allowedExtensions.some((ext) => resolvedTarget.toLowerCase().endsWith(ext))) {
-    throw new Error(`write path must end with ${input.allowedExtensions.join(" or ")}`);
-  }
-  await mkdir3(dirname2(resolvedTarget), { recursive: true });
-  const handle = await open2(resolvedTarget, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 420);
-  try {
-    await handle.writeFile(input.content, "utf8");
-  } finally {
-    await handle.close();
-  }
-  return resolvedTarget;
-}
-async function workspaceFileKind(input) {
-  try {
-    const resolvedRoot = await realpath(input.rootDir);
-    const target = isAbsolute(input.filePath) ? resolve2(input.filePath) : resolve2(resolvedRoot, input.filePath);
-    const resolvedTarget = resolveRealPath(target);
-    const checked = checkWorkspaceContainment({
-      resolvedRoot,
-      resolvedTarget,
-      checkSecret: true
-    });
-    if (checked.kind !== "ok") {
-      return "escapes";
-    }
-    const info = await stat(resolvedTarget);
-    return info.isFile() ? "file" : "not_file";
-  } catch {
-    return "missing";
-  }
-}
-async function buildPacket(args) {
-  const paths = args.paths;
-  if (!Array.isArray(paths) || paths.length === 0 || paths.length > MAX_FILES) {
-    throw new Error(`paths must list 1..${MAX_FILES} files`);
-  }
-  let hasNonString = false;
-  for (const path of paths) {
-    if (typeof path !== "string")
-      hasNonString = true;
-  }
-  if (hasNonString) {
-    throw new Error(`paths must list 1..${MAX_FILES} files`);
-  }
-  const root = defaultWorkspaceRoot();
-  const files = [];
-  let totalBytes = 0;
-  for (const filePath of paths) {
-    const remaining = MAX_PACKET_BYTES - totalBytes;
-    const { path: resolved, bytes } = await readBoundedWorkspaceFile({
-      filePath,
-      maxBytes: Math.max(0, remaining),
-      rootDir: root
-    });
-    totalBytes += bytes.byteLength;
-    if (totalBytes > MAX_PACKET_BYTES) {
-      throw new Error("packet exceeds 256 KiB");
-    }
-    files.push({
-      name: basename(resolved),
-      content: Buffer.from(bytes).toString("utf8")
-    });
-  }
-  const result = validatePacket({ title: args.title, files });
-  if (!result.ok)
-    throw new Error(result.error);
-  return result.packet;
-}
-
-// src/gate/policy.ts
-import { basename as basename2 } from "node:path";
-var workflowConfigSchema = object({
-  version: literal(1),
-  nodes: array(string2().min(1)).min(1),
-  approvalNodes: array(string2().min(1)).default(["go"]),
-  allowBeforeGo: array(string2().min(1)).default([]),
-  gateBeforeGo: array(string2().min(1)).default([]),
-  prGateAfter: array(string2().min(1)).default([]),
-  tabs: array(flowTabSchema).max(16).optional(),
-  defaultTab: flowTabIdSchema.optional()
-}).superRefine((data, ctx) => {
-  const nodeSet = new Set(data.nodes);
-  if (nodeSet.size !== data.nodes.length) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["nodes"],
-      message: "nodes must not contain duplicates"
-    });
-  }
-  for (const node of data.approvalNodes) {
-    if (!nodeSet.has(node)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["approvalNodes"],
-        message: `approvalNode "${node}" is not in nodes`
-      });
-    }
-  }
-  for (const node of data.prGateAfter) {
-    if (!nodeSet.has(node)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["prGateAfter"],
-        message: `prGateAfter "${node}" is not in nodes`
-      });
-    }
-  }
-  const tabError = validateFlowTabs(data);
-  if (tabError) {
-    ctx.addIssue({
-      code: "custom",
-      path: [tabError.path],
-      message: tabError.message
-    });
-  }
-});
-var BLANK_SLATE_CONFIG = {
-  version: 1,
-  nodes: ["work"],
-  approvalNodes: [],
-  allowBeforeGo: [],
-  gateBeforeGo: [],
-  prGateAfter: []
-};
-function isEnforcedConfig(config) {
-  return config.approvalNodes.length > 0 || config.gateBeforeGo.length > 0 || config.prGateAfter.length > 0;
-}
-var PR_GATE_TOOLS = new Set([
-  "pull_request_create",
-  "mcp_t3-code_pull_request_create",
-  "mcp__t3-code__pull_request_create"
-]);
-var WRITE_TOOLS = new Set([
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "write_file",
-  "edit_file"
-]);
-var SHELL_TOOLS = new Set(["Bash", "run_command"]);
-var MUTATING_SHELL_CMDS = new Set([
-  "tee",
-  "rm",
-  "mv",
-  "cp",
-  "touch",
-  "truncate",
-  "sed"
-]);
-function commandSegments(command) {
-  return command.split(/(?:&&|\|\||[;|\n])/).map((seg) => seg.trim().split(/\s+/).filter(Boolean)).filter((tokens) => tokens.length > 0);
-}
-function stripQuotes(token) {
-  return token.replace(/^['"]|['"]$/g, "");
-}
-function isGhPrMutate(command) {
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename2(stripQuotes(tokens[0]));
-    if (cmd !== "gh")
-      continue;
-    const prIdx = tokens.indexOf("pr", 1);
-    const sub = prIdx !== -1 ? tokens[prIdx + 1] : undefined;
-    if (sub === "create" || sub === "ready")
-      return true;
-  }
-  return false;
-}
-function isGitCommit(command) {
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename2(stripQuotes(tokens[0]));
-    if (cmd === "git" && tokens.slice(1).includes("commit"))
-      return true;
-  }
-  return false;
-}
-function shellMutatedPaths(command) {
-  const paths = [];
-  for (const match of command.matchAll(/(?:^|[\s0-9&])>>?\s*([^\s;|&]+)/g)) {
-    if (match[1])
-      paths.push(stripQuotes(match[1]));
-  }
-  for (const tokens of commandSegments(command)) {
-    const cmd = basename2(stripQuotes(tokens[0]));
-    if (!MUTATING_SHELL_CMDS.has(cmd))
-      continue;
-    if (cmd === "sed" && !tokens.some((t) => t === "-i" || t.startsWith("-i")))
-      continue;
-    for (const token of tokens.slice(1)) {
-      if (token.startsWith("-") || token.includes(">"))
-        continue;
-      paths.push(stripQuotes(token));
-    }
-  }
-  return paths;
-}
-function globCharPattern(normalized, index) {
-  const ch = normalized[index];
-  if (ch === "*") {
-    if (normalized[index + 1] !== "*")
-      return { chunk: "[^/]*", advance: 1 };
-    return normalized[index + 2] === "/" ? { chunk: "(?:.*/)?", advance: 3 } : { chunk: ".*", advance: 2 };
-  }
-  if (ch === "?")
-    return { chunk: "[^/]", advance: 1 };
-  if ("\\^$.|+()[]{}".includes(ch))
-    return { chunk: `\\${ch}`, advance: 1 };
-  return { chunk: ch, advance: 1 };
-}
-function globToRegExp(pattern) {
-  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
-  let out = "^";
-  for (let i = 0;i < normalized.length; ) {
-    const { chunk, advance } = globCharPattern(normalized, i);
-    out += chunk;
-    i += advance;
-  }
-  return new RegExp(`${out}$`);
-}
-function matchesAnyGlob(relativePath, patterns) {
-  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
-  return patterns.some((pattern) => globToRegExp(pattern).test(normalized));
-}
-function mapEventStatus(status) {
-  if (status === "complete")
-    return "complete";
-  if (status === "running")
-    return "active";
-  if (status === "errored" || status === "terminated")
-    return "errored";
-  if (status === "rejected")
-    return "rejected";
-  return null;
-}
-function computeNextNode(config, nodes) {
-  for (const id of config.nodes) {
-    if (nodes[id]?.status !== "complete")
-      return id;
-  }
-  return null;
-}
-function advanceCurrentNode(binding, now) {
-  const next = computeNextNode(binding.config, binding.nodes);
-  binding.currentNode = next;
-  if (next && binding.nodes[next]?.status === "pending") {
-    binding.nodes[next].status = "active";
-    binding.nodes[next].updatedAt = now;
-  }
-  binding.updatedAt = now;
-}
-function describeNextAction(binding) {
-  const current = binding.currentNode;
-  if (!current)
-    return "All workflow nodes are complete.";
-  if (binding.config.approvalNodes.includes(current)) {
-    return `Request owner approval via approve_flow(node: "${current}") before editing gated product files.`;
-  }
-  return `Complete "${current}" and call advance_flow(node: "${current}", summary: "...").`;
-}
-function toStepReportStatus(status) {
-  if (status === "active")
-    return "running";
-  if (status === "complete" || status === "errored" || status === "rejected")
-    return status;
-  return "queued";
-}
-function toStepReport(binding, id) {
-  const state = binding.nodes[id];
-  const kind = binding.config.approvalNodes.includes(id) ? "approval" : "agent";
-  const status = toStepReportStatus(state?.status);
-  const parts = [
-    state?.summary,
-    state?.artifactUrl,
-    state?.prUrl,
-    state?.commitSha ? `commit:${state.commitSha}` : undefined,
-    state?.proof ? `proof:${state.proof}` : undefined,
-    state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined
-  ].filter((v) => typeof v === "string" && v.length > 0);
-  return {
-    id,
-    name: id,
-    kind,
-    status,
-    ...state?.summary ? { summary: state.summary } : {},
-    ...kind === "approval" && state?.approvedBy ? { actor: state.approvedBy } : {},
-    ...kind === "approval" ? { decision: approvalDecisionForStatus(status) } : {},
-    ...state?.usage ? { usage: state.usage } : {},
-    output: parts.join(" | ")
-  };
-}
-function buildCloudReport(binding, now) {
-  const steps = binding.config.nodes.map((id) => toStepReport(binding, id));
-  const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
-  const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
-  const values = binding.values && Object.keys(binding.values).length > 0 ? binding.values : undefined;
-  return {
-    status,
-    finishedAt: status === "running" ? null : now,
-    steps,
-    ...values ? { values } : {}
-  };
-}
-function cloneBinding(binding) {
-  const nodes = {};
-  for (const [k, v] of Object.entries(binding.nodes))
-    nodes[k] = { ...v };
-  return {
-    ...binding,
-    nodes,
-    ...binding.values ? { values: { ...binding.values } } : {}
-  };
-}
-function checkGatedPath(input) {
-  const { binding, config, targetPath, toRelative } = input;
-  const rel = toRelative(targetPath);
-  if (rel !== null && matchesAnyGlob(rel, config.gateBeforeGo) && !matchesAnyGlob(rel, config.allowBeforeGo)) {
-    return {
-      decision: "deny",
-      reason: `Editing "${rel}" is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  return null;
-}
-function evaluatePrAction(binding, config) {
-  const missing = config.prGateAfter.filter((id) => binding.nodes[id]?.status !== "complete");
-  if (missing.length > 0) {
-    return {
-      decision: "deny",
-      reason: `PR creation/ready is blocked until [${missing.join(", ")}] complete (flow ${binding.flowId}, current node: ${binding.currentNode ?? "complete"}).`,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  return {
-    decision: "allow",
-    reason: "prGateAfter nodes are complete",
-    flowId: binding.flowId,
-    currentNode: binding.currentNode
-  };
-}
-function evaluatePreApproval(input) {
-  const { binding, config, tool, path, command, toRelative } = input;
-  if (WRITE_TOOLS.has(tool) && path) {
-    const blocked = checkGatedPath({
-      binding,
-      config,
-      targetPath: path,
-      toRelative
-    });
-    if (blocked)
-      return blocked;
-  }
-  if (!SHELL_TOOLS.has(tool) || command.length === 0)
-    return null;
-  if (isGitCommit(command)) {
-    return {
-      decision: "deny",
-      reason: `git commit is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  for (const target of shellMutatedPaths(command)) {
-    const blocked = checkGatedPath({
-      binding,
-      config,
-      targetPath: target,
-      toRelative
-    });
-    if (blocked)
-      return blocked;
-  }
-  return null;
-}
-function evaluatePolicy(input) {
-  const { binding, config, tool, command } = input;
-  if (PR_GATE_TOOLS.has(tool) || SHELL_TOOLS.has(tool) && isGhPrMutate(command)) {
-    return evaluatePrAction(binding, config);
-  }
-  const approvalsDone = config.approvalNodes.every((id) => binding.nodes[id]?.status === "complete");
-  if (!approvalsDone) {
-    const blocked = evaluatePreApproval(input);
-    if (blocked)
-      return blocked;
-  }
-  return {
-    decision: "allow",
-    reason: "action permitted by active workflow phase",
-    flowId: binding.flowId,
-    currentNode: binding.currentNode
-  };
-}
-function evaluateStopDecision(input) {
-  const { binding, config, bypassActive } = input;
-  if (bypassActive) {
-    return {
-      decision: "allow",
-      reason: "temporary bypass active",
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  if (!binding.currentNode) {
-    return {
-      decision: "allow",
-      reason: "all workflow nodes complete",
-      flowId: binding.flowId,
-      currentNode: null
-    };
-  }
-  if (config.approvalNodes.includes(binding.currentNode)) {
-    return {
-      decision: "allow",
-      reason: `waiting for owner approval on "${binding.currentNode}"`,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  const hasEvidence = binding.observed.some((ev) => ev.node === binding.currentNode);
-  if (!hasEvidence) {
-    return {
-      decision: "deny",
-      reason: `Active node "${binding.currentNode}" has no recorded evidence yet (flow ${binding.flowId}). ${describeNextAction(binding)}`,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode
-    };
-  }
-  return {
-    decision: "allow",
-    reason: `evidence recorded for active node "${binding.currentNode}"`,
-    flowId: binding.flowId,
-    currentNode: binding.currentNode
-  };
-}
-
-// src/gate/git.ts
-var execFileAsync = promisify(execFile);
-function canonicalRepoRoot(repoRoot) {
-  return resolveRealPath(repoRoot);
-}
-function bindingKey(repoRoot, branch) {
-  return `${canonicalRepoRoot(repoRoot)}::${branch.trim()}`;
-}
-var SAFE_GIT_REF_RE = /^[^-\s\x00][^\s\x00]*$/;
-function assertSafeGitRef(raw, label) {
-  const trimmed = raw.trim();
-  if (!trimmed || !SAFE_GIT_REF_RE.test(trimmed) || trimmed.includes("..")) {
-    throw new Error(`invalid git ${label} ref: ${raw}`);
-  }
-  return trimmed;
-}
-async function assertSafeRepoDir(repoRoot) {
-  const resolved = process.env.NOSTA_WORKSPACE_ROOT ? await assertConfinedWorkspaceDir(repoRoot) : canonicalRepoRoot(repoRoot);
-  if (dirname3(resolved) === resolved) {
-    throw new Error(`filesystem root is not allowed as repoRoot: ${repoRoot}`);
-  }
-  return resolved;
-}
-async function assertGitRepoRoot(repoRoot) {
-  const canonical = await assertSafeRepoDir(repoRoot);
-  const top = await runGit(canonical, ["rev-parse", "--show-toplevel"]);
-  if (!top || canonicalRepoRoot(top) !== canonical) {
-    throw new Error(`not a git repository root: ${repoRoot}`);
-  }
-  return canonical;
-}
-var SAFE_GIT_FLAGS = [
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "diff.external=",
-  "-c",
-  "core.pager=cat"
-];
-async function runGit(cwd, args) {
-  try {
-    const { stdout } = await execFileAsync("git", [...SAFE_GIT_FLAGS, ...args], {
-      cwd,
-      timeout: 3000
-    });
-    const trimmed = stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch {
-    return null;
-  }
-}
-async function resolveRepoBranch(input) {
-  const safeExplicit = input.repoRoot ? await assertSafeRepoDir(input.repoRoot) : undefined;
-  if (safeExplicit && input.branch) {
-    return {
-      repoRoot: safeExplicit,
-      branch: input.branch.trim()
-    };
-  }
-  const cwd = safeExplicit ?? process.cwd();
-  const root = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!root)
-    throw new Error("could not resolve git repository context; pass { repoRoot, branch }");
-  const branch = input.branch?.trim() || await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]) || await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) || await runGit(cwd, ["rev-parse", "--short", "HEAD"]) || "HEAD";
-  return {
-    repoRoot: safeExplicit ?? await assertSafeRepoDir(root),
-    branch
-  };
-}
-async function resolveWorkspaceName(repoRoot) {
-  const canonical = canonicalRepoRoot(repoRoot);
-  const commonDir = await runGit(canonical, ["rev-parse", "--git-common-dir"]);
-  if (commonDir) {
-    const resolved = resolveRealPath(isAbsolute2(commonDir) ? commonDir : resolve3(canonical, commonDir));
-    const base = basename3(resolved);
-    if (base === ".git") {
-      const parentName = basename3(dirname3(resolved));
-      if (parentName)
-        return parentName;
-    } else if (base) {
-      return base.replace(/\.git$/, "") || base;
-    }
-  }
-  return basename3(canonical) || "workspace";
-}
-var WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-var WORKFLOW_CONFIG_FILES = [
-  "workflow.yaml",
-  "workflow.yml",
-  "workflow.json"
-];
-function flowDefinitionToWorkflowConfig(def) {
-  const nodes = collectWorkflowStepIds([...def.steps, ...def.checks]);
-  const seen = new Set(nodes);
-  for (const id of [
-    ...def.guards?.approvalNodes ?? [],
-    ...def.guards?.prGateAfter ?? []
-  ]) {
-    if (!seen.has(id)) {
-      seen.add(id);
-      nodes.push(id);
-    }
-  }
-  const parsed = workflowConfigSchema.safeParse({
-    version: 1,
-    nodes: nodes.length > 0 ? nodes : ["work"],
-    approvalNodes: def.guards?.approvalNodes ?? [],
-    allowBeforeGo: def.guards?.allowBeforeApproval ?? [],
-    gateBeforeGo: def.guards?.gateBeforeApproval ?? [],
-    prGateAfter: def.guards?.prGateAfter ?? [],
-    ...def.tabs ? { tabs: def.tabs } : {},
-    ...def.defaultTab ? { defaultTab: def.defaultTab } : {}
-  });
-  if (!parsed.success) {
-    throw new Error(`invalid workflow config: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
-  }
-  return parsed.data;
-}
-async function readBundledWorkflowYaml(workflowName) {
-  if (!WORKFLOW_NAME_RE.test(workflowName))
-    return null;
-  const here = dirname3(fileURLToPath2(import.meta.url));
-  let assetsDir;
-  try {
-    assetsDir = resolveAssetsDir(here);
-  } catch {
-    return null;
-  }
-  const dir = join5(assetsDir, "workflows");
-  for (const ext of ["yaml", "yml"]) {
-    const filePath = join5(dir, `${workflowName}.${ext}`);
-    if (existsSync3(filePath))
-      return readFile2(filePath, "utf8");
-  }
-  return null;
-}
-async function loadNamedYamlWorkflowConfig(repoRoot, workflowName) {
-  if (!WORKFLOW_NAME_RE.test(workflowName)) {
-    throw new Error(`invalid workflow name: ${workflowName}`);
-  }
-  const dir = join5(canonicalRepoRoot(repoRoot), ".nosta", "workflows");
-  for (const ext of ["yaml", "yml"]) {
-    const label = `.nosta/workflows/${workflowName}.${ext}`;
-    const filePath = join5(dir, `${workflowName}.${ext}`);
-    if (toRepoRelativePath(repoRoot, filePath) === null) {
-      throw new Error(`workflow config escapes repository root: ${label}`);
-    }
-    try {
-      const { bytes } = await readBoundedWorkspaceFile({
-        filePath,
-        maxBytes: MAX_PACKET_BYTES,
-        rootDir: repoRoot
-      });
-      const parsed = parseWorkflowYaml(Buffer.from(bytes).toString("utf8"));
-      if (typeof parsed === "string") {
-        throw new Error(`invalid ${label}: ${parsed}`);
-      }
-      return flowDefinitionToWorkflowConfig(parsed);
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw error;
-    }
-  }
-  const bundled = await readBundledWorkflowYaml(workflowName);
-  if (bundled !== null) {
-    const parsed = parseWorkflowYaml(bundled);
-    if (typeof parsed === "string") {
-      throw new Error(`invalid bundled workflow ${workflowName}: ${parsed}`);
-    }
-    return flowDefinitionToWorkflowConfig(parsed);
-  }
-  throw new Error(`workflow_not_found:${workflowName}`);
-}
-async function loadWorkflowConfig(repoRoot, workflowName) {
-  if (workflowName)
-    return loadNamedYamlWorkflowConfig(repoRoot, workflowName);
-  const baseDir = join5(canonicalRepoRoot(repoRoot), ".nosta");
-  let fileName = null;
-  let filePath = "";
-  let text = "";
-  for (const candidate of WORKFLOW_CONFIG_FILES) {
-    const candidatePath = join5(baseDir, candidate);
-    if (toRepoRelativePath(repoRoot, candidatePath) === null) {
-      throw new Error(`workflow config escapes repository root: .nosta/${candidate}`);
-    }
-    try {
-      const { bytes } = await readBoundedWorkspaceFile({
-        filePath: candidatePath,
-        maxBytes: MAX_PACKET_BYTES,
-        rootDir: repoRoot
-      });
-      text = Buffer.from(bytes).toString("utf8");
-      fileName = candidate;
-      filePath = candidatePath;
-      break;
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw error;
-    }
-  }
-  if (!fileName)
-    return null;
-  let raw;
-  try {
-    raw = fileName.endsWith(".json") ? JSON.parse(text) : $parse(text);
-  } catch (error) {
-    const label = fileName.endsWith(".json") ? "JSON" : "YAML";
-    throw new Error(`invalid ${label} in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const parsed = workflowConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(`invalid .nosta/${fileName}: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
-  }
-  return parsed.data;
-}
-var GITHUB_ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/(\d+)(?:[/?#].*)?$/;
-function parseGitHubIssueUrl(ticketUrl) {
-  const match = GITHUB_ISSUE_URL_RE.exec(ticketUrl.trim());
-  if (!match?.[1] || !match[2])
-    return null;
-  return { repo: match[1], number: match[2] };
-}
-async function fetchGitHubIssueBody(ticketUrl) {
-  const issue = parseGitHubIssueUrl(ticketUrl);
-  if (!issue)
-    return null;
-  try {
-    const { stdout } = await execFileAsync("gh", [
-      "issue",
-      "view",
-      issue.number,
-      "--repo",
-      issue.repo,
-      "--json",
-      "body",
-      "--jq",
-      ".body"
-    ], { timeout: 5000 });
-    const trimmed = stdout.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  } catch (error) {
-    console.error("[gate] fetchGitHubIssueBody failed", {
-      repo: issue.repo,
-      number: issue.number,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    return null;
-  }
-}
-function toRepoRelativePath(repoRoot, targetPath) {
-  const root = canonicalRepoRoot(repoRoot);
-  const absTarget = isAbsolute2(targetPath) ? resolve3(targetPath) : resolve3(root, targetPath);
-  const realTarget = resolveRealPath(absTarget);
-  const rel = relative2(root, realTarget);
-  if (rel.startsWith("..") || isAbsolute2(rel))
-    return null;
-  return rel.split(sep2).join("/");
-}
-
-// src/flows/validate.ts
-var validateFlowInputSchema = object({
-  path: string2().trim().min(1).optional().describe("Path to a workflow YAML file (absolute or relative to repoRoot)."),
-  workflow: string2().trim().min(1).optional().describe("Workflow name under .nosta/workflows/<name>.yaml."),
-  yaml: string2().min(1).optional().describe("Inline YAML text to validate without reading from disk."),
-  repoRoot: string2().trim().min(1).optional().describe("Git repository root for resolving relative skills, references, and workflows."),
-  checkSecrets: boolean2().optional().describe("When true (default), verify declared secret names against backend /api/secrets.")
-}).superRefine((data, ctx) => {
-  const sources = [
-    data.path !== undefined,
-    data.workflow !== undefined,
-    data.yaml !== undefined
-  ].filter(Boolean).length;
-  if (sources !== 1) {
-    ctx.addIssue({
-      code: "custom",
-      message: "provide exactly one of { path }, { workflow }, or { yaml }"
-    });
-  }
-});
-function collectLeafPrimitives(step, acc) {
-  if ("outputs" in step && step.outputs) {
-    const count = Array.isArray(step.outputs) ? step.outputs.length : Object.keys(step.outputs).length;
-    if (count > 0)
-      acc.hasOutputs = true;
-  }
-  if ("secrets" in step) {
-    for (const s of step.secrets ?? [])
-      acc.secrets.add(s);
-  }
-  if (step.kind === "restricted_agent") {
-    for (const s of step.skills ?? [])
-      acc.skills.add(s);
-    for (const r of step.references ?? [])
-      acc.references.add(r);
-    for (const hook of step.hooks ?? []) {
-      for (const s of hook.secrets ?? [])
-        acc.secrets.add(s);
-    }
-  }
-}
-function collectDefinitionPrimitives(def) {
-  const acc = {
-    skills: new Set,
-    references: new Set,
-    secrets: new Set,
-    hasOutputs: false
-  };
-  for (const env of def.environment) {
-    for (const s of env.secrets ?? [])
-      acc.secrets.add(s);
-  }
-  const all = [
-    ...def.conditions,
-    ...def.prepare,
-    ...def.steps,
-    ...def.checks,
-    ...def.record,
-    ...def.alerts
-  ];
-  for (const { step } of walkSteps(all)) {
-    if ("when" in step && step.when)
-      collectLeafPrimitives(step.when, acc);
-    if (isLeafStep(step))
-      collectLeafPrimitives(step, acc);
-    else if (step.kind === "flow") {
-      for (const s of step.secrets ?? [])
-        acc.secrets.add(s);
-    }
-  }
-  return {
-    skills: Array.from(acc.skills),
-    references: Array.from(acc.references),
-    secrets: Array.from(acc.secrets),
-    hasOutputs: acc.hasOutputs
-  };
-}
-async function resolveOptionalRepoRoot(explicit) {
-  if (explicit)
-    return assertSafeRepoDir(explicit);
-  try {
-    const resolved = await resolveRepoBranch({});
-    return resolved.repoRoot;
-  } catch {
-    return null;
-  }
-}
-async function readWorkflowSource(input) {
-  if (input.args.yaml !== undefined)
-    return { ok: true, text: input.args.yaml };
-  if (input.args.workflow !== undefined) {
-    const name = input.args.workflow;
-    if (!WORKFLOW_NAME_RE.test(name))
-      return { ok: false, error: `invalid workflow name: ${name}` };
-    if (input.repoRoot) {
-      for (const ext of ["yaml", "yml"]) {
-        const candidate = join6(".nosta", "workflows", `${name}.${ext}`);
-        try {
-          const { bytes } = await readBoundedWorkspaceFile({
-            filePath: candidate,
-            maxBytes: MAX_PACKET_BYTES,
-            rootDir: input.repoRoot
-          });
-          return { ok: true, text: Buffer.from(bytes).toString("utf8") };
-        } catch (error) {
-          if (error.code === "ENOENT")
-            continue;
-          return {
-            ok: false,
-            error: error instanceof Error ? error.message : String(error)
-          };
-        }
-      }
-    }
-    const bundled = await readBundledWorkflowYaml(name);
-    if (bundled !== null)
-      return { ok: true, text: bundled };
-    return { ok: false, error: `workflow_not_found:${name}` };
-  }
-  const rawPath = input.args.path;
-  const boundaryRoot = input.repoRoot ?? defaultWorkspaceRoot();
-  try {
-    const { bytes } = await readBoundedWorkspaceFile({
-      filePath: rawPath,
-      maxBytes: MAX_PACKET_BYTES,
-      rootDir: boundaryRoot
-    });
-    return { ok: true, text: Buffer.from(bytes).toString("utf8") };
-  } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
-async function checkRepoFiles(input) {
-  const resolved = [];
-  for (const rel of input.paths) {
-    const kind = await workspaceFileKind({
-      filePath: rel,
-      rootDir: input.repoRoot
-    });
-    if (kind === "escapes")
-      input.errors.push(`${input.kind}_escapes_repo:${rel}`);
-    else if (kind === "not_file")
-      input.errors.push(`${input.kind}_not_a_file:${rel}`);
-    else if (kind === "missing")
-      input.errors.push(`missing_${input.kind}:${rel}`);
-    else
-      resolved.push(rel);
-  }
-  return resolved;
-}
-async function findMissingSecrets(input) {
-  if (!input.backend || input.required.length === 0)
-    return [];
-  const raw = await input.backend.request(getListSecretsUrl());
-  const parsed = parseJsonResponse({
-    raw,
-    schema: secretListReplySchema,
-    label: "/api/secrets"
-  });
-  const available = new Set(parsed.names);
-  return input.required.filter((name) => !available.has(name));
-}
-async function validateFlow(input) {
-  const repoRoot = await resolveOptionalRepoRoot(input.args.repoRoot);
-  const source = await readWorkflowSource({ args: input.args, repoRoot });
-  if (!source.ok) {
-    return {
-      ok: false,
-      errors: [source.error],
-      warnings: [],
-      resolvedSkills: [],
-      resolvedReferences: [],
-      missingSecrets: [],
-      hasEvidence: false,
-      stepPlan: []
-    };
-  }
-  const parsed = parseWorkflowYaml(source.text);
-  if (typeof parsed === "string") {
-    return {
-      ok: false,
-      errors: [parsed],
-      warnings: [],
-      resolvedSkills: [],
-      resolvedReferences: [],
-      missingSecrets: [],
-      hasEvidence: false,
-      stepPlan: []
-    };
-  }
-  const errors = [];
-  const warnings = [];
-  const prims = collectDefinitionPrimitives(parsed);
-  let resolvedSkills = [];
-  let resolvedReferences = [];
-  if (repoRoot) {
-    resolvedSkills = await checkRepoFiles({
-      repoRoot,
-      paths: prims.skills,
-      kind: "skill",
-      errors
-    });
-    resolvedReferences = await checkRepoFiles({
-      repoRoot,
-      paths: prims.references,
-      kind: "reference",
-      errors
-    });
-  } else if (prims.skills.length > 0 || prims.references.length > 0) {
-    errors.push("repo_root_required_for_skills_or_references");
-  }
-  const hasEvidence = Boolean(parsed.evidence && (parsed.evidence.artifacts.length > 0 || parsed.evidence.checks.length > 0) || parsed.checks.length > 0 || prims.hasOutputs);
-  if (!hasEvidence) {
-    if (parsed.evidence?.required)
-      errors.push("evidence_required_but_none_declared");
-    else
-      warnings.push("workflow declares no evidence checks, artifacts, or step outputs");
-  }
-  const missingSecrets = input.args.checkSecrets === false ? [] : await findMissingSecrets({
-    backend: input.backend,
-    required: prims.secrets
-  });
-  for (const name of missingSecrets)
-    errors.push(`missing_secret:${name}`);
-  const stepPlan = collectWorkflowStepIds([...parsed.steps, ...parsed.checks]);
-  return {
-    ok: errors.length === 0,
-    errors,
-    warnings,
-    resolvedSkills,
-    resolvedReferences,
-    missingSecrets,
-    hasEvidence,
-    stepPlan
-  };
-}
-
-// src/gate/index.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-
-// src/transport.ts
-import { randomUUID } from "node:crypto";
-var flowIdReplySchema = object({ flow: object({ id: string2() }) });
-function validateBaseUrl(rawUrl) {
-  const normalized = rawUrl.replace(/\/+$/, "");
-  let parsed;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
-    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
-  }
-  return normalized;
-}
-
-class TransportHttpError extends Error {
-  status;
-  constructor(message, status) {
-    super(message);
-    this.status = status;
-  }
-}
-async function sendText(cfg, req) {
-  const init = req.init ?? {};
-  const headers = new Headers(init.headers);
-  headers.set("authorization", `Bearer ${cfg.token}`);
-  if (cfg.actor && !headers.has("x-nosta-actor"))
-    headers.set("x-nosta-actor", cfg.actor);
-  const method = (init.method ?? "GET").toUpperCase();
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    ...init,
-    headers,
-    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
-  });
-  const text = await res.text();
-  if (!res.ok)
-    throw new TransportHttpError(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`, res.status);
-  return text;
-}
-async function sendJson(cfg, req) {
-  const headers = {
-    authorization: `Bearer ${cfg.token}`,
-    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
-    ...req.body !== undefined ? { "content-type": "application/json" } : {},
-    ...req.headers ?? {}
-  };
-  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
-    method: req.method,
-    headers,
-    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
-    signal: AbortSignal.timeout(cfg.timeoutMs)
-  });
-  if (req.allow404 && res.status === 404)
-    return null;
-  const text = await res.text();
-  if (!res.ok)
-    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
-}
-function bundleHeaders(input) {
-  return {
-    "content-type": "application/gzip",
-    "x-bundle-sha256": input.sha256,
-    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
-    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
-    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
-  };
-}
-function createNostaTransport(config) {
-  const cfg = {
-    baseUrl: validateBaseUrl(config.baseUrl),
-    token: config.token,
-    actor: config.actor,
-    timeoutMs: config.timeoutMs ?? 120000,
-    fetch: config.fetch ?? fetch
-  };
-  return {
-    baseUrl: cfg.baseUrl,
-    token: cfg.token,
-    streamUrl(path) {
-      return `${cfg.baseUrl}${path}`;
-    },
-    request(path, init) {
-      return sendText(cfg, { path, init });
-    },
-    requestJson(req) {
-      return sendJson(cfg, req);
-    },
-    async getLatestBundle(workspace) {
-      const raw = await sendJson(cfg, {
-        method: "GET",
-        path: `/api/bundles/${encodeURIComponent(workspace)}/latest`,
-        allow404: true
-      });
-      return raw === null ? null : bundlePointerSchema.parse(raw);
-    },
-    async putBundle(input) {
-      const text = await sendText(cfg, {
-        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
-        init: {
-          method: "PUT",
-          headers: bundleHeaders(input),
-          body: Buffer.from(input.bytes)
-        }
-      });
-      return bundlePointerSchema.parse(JSON.parse(text));
-    },
-    async createLocalFlow(input) {
-      return flowIdReplySchema.parse(await sendJson(cfg, {
-        method: "POST",
-        path: "/api/flow",
-        body: { mode: "local", ...input }
-      }));
-    },
-    async reportFlow(input) {
-      const { flowId, ...body } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, {
-        method: "POST",
-        path: `/api/flow/${encodeURIComponent(flowId)}/report`,
-        body
-      }));
-    },
-    async runCloudStep(input) {
-      const { flowId, ...body } = input;
-      const raw = await sendJson(cfg, {
-        method: "POST",
-        path: getRunCloudStepUrl(encodeURIComponent(flowId)),
-        body
-      });
-      return cloudStepReplySchema.parse(raw);
-    },
-    async startYamlFlow(input) {
-      const { idempotencyKey, ...rest } = input;
-      return flowIdReplySchema.parse(await sendJson(cfg, {
-        method: "POST",
-        path: "/api/flow",
-        body: { mode: "yaml", ...rest },
-        headers: { "Idempotency-Key": idempotencyKey }
-      }));
-    },
-    async getFlow(flowId) {
-      return await sendJson(cfg, {
-        method: "GET",
-        path: `/api/flow/${encodeURIComponent(flowId)}`
-      });
-    },
-    listFlowEvents(flowId) {
-      return sendText(cfg, {
-        path: getListFlowEventsUrl(encodeURIComponent(flowId))
-      });
-    },
-    approveFlow(input) {
-      const { flowId, ...rest } = input;
-      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID();
-      const body = { ...rest, decisionId };
-      return sendText(cfg, {
-        path: getApproveFlowUrl(encodeURIComponent(flowId)),
-        init: {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "Idempotency-Key": decisionId
-          },
-          body: JSON.stringify(body)
-        }
-      });
-    }
-  };
-}
-function publishPage(backend, page) {
-  const body = {
-    ticket: page.ticket,
-    name: page.name,
-    title: page.title,
-    stepId: page.stepId ?? "",
-    html: page.html,
-    ...page.slot ? { slot: page.slot } : {},
-    ...page.flowId ? { flowId: page.flowId } : {},
-    ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
-  };
-  return backend.request("/api/pages", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-}
-function transportFromEnv(env = process.env) {
-  return createNostaTransport({
-    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
-    token: env.NOSTA_PLUGIN_TOKEN ?? "",
-    timeoutMs: 30000
-  });
-}
-
-// src/store.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { realpathSync as realpathSync2 } from "node:fs";
-import { mkdir as mkdir4, readFile as readFile3, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import { join as join7, resolve as resolve4 } from "node:path";
-function canonicalRoot(repoRoot) {
-  const abs = resolve4(repoRoot);
-  try {
-    return realpathSync2(abs);
-  } catch {
-    return abs;
-  }
-}
-function branchIndexKey(repoRoot, branch) {
-  return `${canonicalRoot(repoRoot)}::${branch.trim()}`;
-}
-function flowsDir(stateDir) {
-  const root = stateDir ?? process.env.NOSTA_STATE_DIR ?? join7(homedir2(), ".nosta");
-  return join7(root, "flows");
-}
-function safeFlowFile(flowId) {
-  return `${flowId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
-}
-async function readJsonFile(filePath) {
-  try {
-    const raw = await readFile3(filePath, "utf8");
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-async function writeJsonAtomic(filePath, value) {
-  const tmp = `${filePath}.${process.pid}.${randomUUID2()}.tmp`;
-  await writeFile2(tmp, `${JSON.stringify(value, null, 2)}
-`, "utf8");
-  await rename2(tmp, filePath);
-}
-async function readFlowIndex(stateDir) {
-  const loaded = await readJsonFile(join7(flowsDir(stateDir), "index.json"));
-  return {
-    byBranch: loaded?.byBranch ? { ...loaded.byBranch } : {},
-    byTicket: loaded?.byTicket ? { ...loaded.byTicket } : {}
-  };
-}
-async function readLocalFlow(flowId, stateDir) {
-  const loaded = await readJsonFile(join7(flowsDir(stateDir), safeFlowFile(flowId)));
-  if (!loaded || typeof loaded.flowId !== "string")
-    return null;
-  return {
-    ...loaded,
-    docs: Array.isArray(loaded.docs) ? loaded.docs : [],
-    evidence: Array.isArray(loaded.evidence) ? loaded.evidence : [],
-    diffSummary: loaded.diffSummary ?? null,
-    ship: loaded.ship ?? null
-  };
-}
-async function resolveIndexedFlowId(input) {
-  const index = await readFlowIndex(input.stateDir);
-  if (input.repoRoot && input.branch) {
-    const hit = index.byBranch[branchIndexKey(input.repoRoot, input.branch)];
-    if (hit)
-      return hit;
-  }
-  if (input.ticket) {
-    const hit = index.byTicket[input.ticket.trim()];
-    if (hit)
-      return hit;
-  }
-  return null;
-}
-async function saveLocalFlow(state, stateDir) {
-  const dir = flowsDir(stateDir);
-  await mkdir4(dir, { recursive: true });
-  const normalized = {
-    ...state,
-    ...state.repoRoot ? { repoRoot: canonicalRoot(state.repoRoot) } : {}
-  };
-  await writeJsonAtomic(join7(dir, safeFlowFile(normalized.flowId)), normalized);
-  const index = await readFlowIndex(stateDir);
-  if (normalized.repoRoot && normalized.branch) {
-    index.byBranch[branchIndexKey(normalized.repoRoot, normalized.branch)] = normalized.flowId;
-  }
-  if (normalized.ticket) {
-    index.byTicket[normalized.ticket.trim()] = normalized.flowId;
-  }
-  await writeJsonAtomic(join7(dir, "index.json"), index);
-  return normalized;
-}
-function emptyLocalFlow(input) {
-  return {
-    flowId: input.flowId,
-    ...input.repoRoot ? { repoRoot: canonicalRoot(input.repoRoot) } : {},
-    ...input.branch ? { branch: input.branch } : {},
-    ...input.base ? { base: input.base } : {},
-    ...input.ticket ? { ticket: input.ticket } : {},
-    ...input.title ? { title: input.title } : {},
-    ...input.workflow ? { workflow: input.workflow } : {},
-    ...input.tabs !== undefined ? { tabs: input.tabs } : {},
-    ...input.defaultTab !== undefined ? { defaultTab: input.defaultTab } : {},
-    docs: [],
-    evidence: [],
-    diffSummary: null,
-    ship: null,
-    updatedAt: input.now ?? Date.now()
-  };
-}
-
-// ../../packages/shared/src/utils/sse.ts
-var MAX_SSE_BUFFER_BYTES = 1024 * 1024;
-function parseSseBlock(block) {
-  let id = null;
-  let event = "message";
-  const dataLines = [];
-  for (const rawLine of block.split(/\r?\n/)) {
-    if (rawLine.length === 0 || rawLine.startsWith(":"))
-      continue;
-    const colon = rawLine.indexOf(":");
-    const field = colon === -1 ? rawLine : rawLine.slice(0, colon);
-    const rawValue = colon === -1 ? "" : rawLine.slice(colon + 1);
-    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
-    if (field === "id") {
-      const parsed = Number(value.trim());
-      if (Number.isSafeInteger(parsed) && parsed > 0)
-        id = parsed;
-    } else if (field === "event") {
-      if (value.trim().length > 0)
-        event = value.trim();
-    } else if (field === "data") {
-      dataLines.push(value);
-    }
-  }
-  if (dataLines.length === 0)
-    return null;
-  const rawData = dataLines.join(`
-`);
-  let data = rawData;
-  try {
-    data = JSON.parse(rawData);
-  } catch {
-    data = rawData;
-  }
-  return { id, event, data };
-}
-function drainSseFrames(buffer) {
-  const frames = [];
-  let remaining = buffer;
-  let match = /\r?\n\r?\n/.exec(remaining);
-  while (match !== null) {
-    const block = remaining.slice(0, match.index);
-    remaining = remaining.slice(match.index + match[0].length);
-    const frame = parseSseBlock(block);
-    if (frame)
-      frames.push(frame);
-    match = /\r?\n\r?\n/.exec(remaining);
-  }
-  return { frames, rest: remaining };
-}
-
-// src/gate/stream.ts
-function waitAbortable(ms, signal) {
-  if (signal.aborted)
-    return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve(true);
-    }, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve(false);
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-}
-function connectFlowStream(options) {
-  const fetchFn = options.fetchImpl ?? fetch;
-  const baseDelayMs = options.baseDelayMs ?? 250;
-  const maxDelayMs = options.maxDelayMs ?? 15000;
-  const controller = new AbortController;
-  let lastId = options.initialLastEventId ?? 0;
-  async function consumeStream(body) {
-    const reader = body.getReader();
-    const decoder = new TextDecoder;
-    let buffer = "";
-    try {
-      while (!controller.signal.aborted) {
-        const { done, value } = await reader.read();
-        if (done)
-          break;
-        buffer += decoder.decode(value, { stream: true });
-        if (Buffer.byteLength(buffer, "utf8") > MAX_SSE_BUFFER_BYTES) {
-          throw new Error("SSE frame buffer exceeded 1 MiB");
-        }
-        const drained = drainSseFrames(buffer);
-        buffer = drained.rest;
-        for (const frame of drained.frames) {
-          if (frame.id !== null && frame.id > lastId)
-            lastId = frame.id;
-          options.onEvent(frame);
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-  }
-  async function loop() {
-    let attempt = 0;
-    while (!controller.signal.aborted) {
-      try {
-        const headers = {
-          accept: "text/event-stream"
-        };
-        if (options.token)
-          headers.authorization = `Bearer ${options.token}`;
-        if (lastId > 0)
-          headers["last-event-id"] = String(lastId);
-        const response = await fetchFn(options.url, {
-          method: "GET",
-          headers,
-          signal: controller.signal
-        });
-        if (!response.ok || !response.body) {
-          throw new Error(`SSE stream answered ${response.status}`);
-        }
-        attempt = 0;
-        await consumeStream(response.body);
-      } catch (error) {
-        if (controller.signal.aborted)
-          return;
-        options.onError?.(error);
-      }
-      if (controller.signal.aborted)
-        return;
-      const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
-      attempt += 1;
-      const shouldContinue = await waitAbortable(delay, controller.signal);
-      if (!shouldContinue)
-        return;
-    }
-  }
-  loop();
-  return {
-    close: () => {
-      controller.abort();
-    },
-    lastEventId: () => lastId
-  };
-}
-
-// src/gate/index.ts
-var ACTIVE_FLOW_STATES = new Set(["running", "queued", "waiting"]);
-var hydratedFlowResponseSchema = object({
-  flow: object({
-    id: string2().min(1),
-    mode: string2().optional(),
-    state: string2().optional(),
-    workspace: string2().nullable().optional(),
-    branch: string2().nullable().optional(),
-    values: record(string2(), string2()).optional(),
-    steps: array(object({
-      id: string2().min(1),
-      status: string2().optional(),
-      summary: string2().optional()
-    })).optional()
-  })
-});
-
-class WorkflowGate {
-  bindings = new Map;
-  bypasses = new Map;
-  flowIndex = new Map;
-  streams = new Map;
-  backend;
-  now;
-  fetchImpl;
-  enableStream;
-  streamBackoff;
-  constructor(options) {
-    this.backend = options.backend;
-    this.now = options.now ?? (() => Date.now());
-    this.fetchImpl = options.fetchImpl;
-    this.enableStream = options.enableStream ?? true;
-    this.streamBackoff = options.streamBackoff;
-  }
-  async start(input) {
-    const { repoRoot, branch } = await resolveRepoBranch(input);
-    if (!input.forceNew) {
-      const existing = await this.lookupReusableBinding(repoRoot, branch);
-      if (existing && (!input.workflow || existing.workflowName === input.workflow)) {
-        const tabs = input.tabs ?? existing.config.tabs;
-        const defaultTab = input.defaultTab ?? existing.config.defaultTab;
-        return {
-          flow: {
-            id: existing.flowId,
-            mode: "local",
-            state: existing.flowState ?? "running"
-          },
-          binding: existing,
-          ...tabs ? { tabs } : {},
-          ...defaultTab ? { defaultTab } : {},
-          nextAction: describeNextAction(existing),
-          reused: true
-        };
-      }
-    }
-    const config = await loadWorkflowConfig(repoRoot, input.workflow) ?? BLANK_SLATE_CONFIG;
-    const workspace = await resolveWorkspaceName(repoRoot);
-    const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
-    const tabs = input.tabs ?? config.tabs;
-    const defaultTab = input.defaultTab ?? config.defaultTab;
-    const body = await this.buildLocalStartBody({
-      input,
-      name,
-      workspace,
-      branch,
-      tabs,
-      defaultTab
-    });
-    const parsed = JSON.parse(await this.backend.request("/api/flow", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "Idempotency-Key": randomUUID3()
-      },
-      body: JSON.stringify(body)
-    }));
-    const flowId = parsed.flow?.id;
-    if (!flowId)
-      throw new Error("backend did not return flow.id");
-    const binding = this.attachBinding({
-      repoRoot,
-      branch,
-      flowId,
-      config,
-      workflowName: input.workflow,
-      flowState: parsed.flow?.state ?? "running"
-    });
-    const existing = await readLocalFlow(flowId);
-    await saveLocalFlow(existing ?? emptyLocalFlow({
-      flowId,
-      repoRoot,
-      branch,
-      base: input.base,
-      ticket: input.ticket,
-      title: name,
-      ...input.workflow ? { workflow: input.workflow } : {},
-      ...tabs ? { tabs } : {},
-      ...defaultTab ? { defaultTab } : {},
-      now: this.now()
-    }));
-    return {
-      flow: parsed.flow,
-      binding,
-      ...tabs ? { tabs } : {},
-      ...defaultTab ? { defaultTab } : {},
-      nextAction: describeNextAction(binding)
-    };
-  }
-  async status(input) {
-    if (input.flowId) {
-      const raw = await this.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}`);
-      const payload = JSON.parse(raw);
-      const binding = this.getByFlowId(input.flowId);
-      const tabs = binding?.config.tabs;
-      return binding ? {
-        ...payload,
-        binding,
-        ...tabs ? { tabs } : {},
-        nextAction: describeNextAction(binding)
-      } : payload;
-    }
-    const binding = await this.resolveBinding(input);
-    const raw = await this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}`);
-    const payload = JSON.parse(raw);
-    const tabs = binding.config.tabs;
-    return {
-      ...payload,
-      binding,
-      ...tabs ? { tabs } : {},
-      nextAction: describeNextAction(binding)
-    };
-  }
-  async advance(input) {
-    const binding = await this.resolveBinding(input);
-    if (binding.config.approvalNodes.includes(input.node)) {
-      throw new Error(`node "${input.node}" requires owner approval via approve_flow`);
-    }
-    if (binding.currentNode !== input.node) {
-      throw new Error(`cannot advance "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
-    }
-    const updated = await this.persistAndCommit(binding, (draft, now) => {
-      const state = draft.nodes[input.node];
-      state.status = "complete";
-      state.summary = input.summary;
-      if (input.artifactUrl)
-        state.artifactUrl = input.artifactUrl;
-      if (input.prUrl)
-        state.prUrl = input.prUrl;
-      if (input.commitSha)
-        state.commitSha = input.commitSha;
-      if (input.proof)
-        state.proof = input.proof;
-      if (input.usage)
-        state.usage = input.usage;
-      if (input.values || input.commitSha) {
-        draft.values = {
-          ...draft.values ?? {},
-          ...input.values ?? {},
-          ...input.commitSha ? { commitSha: input.commitSha } : {}
-        };
-      }
-      state.updatedAt = now;
-      advanceCurrentNode(draft, now);
-    });
-    return {
-      flowId: updated.flowId,
-      binding: updated,
-      nextAction: describeNextAction(updated)
-    };
-  }
-  async approve(input) {
-    const binding = await this.resolveBinding(input);
-    if (!binding.config.approvalNodes.includes(input.node)) {
-      throw new Error(`node "${input.node}" is not an approval node; use advance_flow instead`);
-    }
-    if (binding.currentNode !== input.node) {
-      throw new Error(`cannot approve "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
-    }
-    const decision = input.decision ?? "approve";
-    const updated = await this.persistAndCommit(binding, (draft, now) => {
-      const state = draft.nodes[input.node];
-      if (decision === "reject") {
-        state.status = "rejected";
-        state.summary = input.summary ?? "rejected by owner";
-        state.updatedAt = now;
-        draft.updatedAt = now;
-      } else {
-        state.status = "complete";
-        state.approvedBy = input.approvedBy ?? "owner";
-        state.summary = input.summary ?? "approved by owner";
-        state.updatedAt = now;
-        advanceCurrentNode(draft, now);
-      }
-    });
-    return {
-      flowId: updated.flowId,
-      decision,
-      binding: updated,
-      nextAction: describeNextAction(updated)
-    };
-  }
-  async bypass(input) {
-    const reason = input.reason.trim();
-    if (reason.length === 0)
-      throw new Error("bypass reason is required");
-    const target = await this.resolveTarget(input);
-    const minutes = Math.min(240, Math.max(1, Math.floor(input.durationMinutes ?? 30)));
-    const now = this.now();
-    const until = now + minutes * 60000;
-    this.bypasses.set(bindingKey(target.repoRoot, target.branch), {
-      until,
-      reason
-    });
-    const binding = this.bindings.get(bindingKey(target.repoRoot, target.branch)) ?? null;
-    if (binding) {
-      binding.bypassUntil = until;
-      binding.bypassReason = reason;
-      binding.updatedAt = now;
-      binding.observed.push({
-        id: randomUUID3(),
-        node: binding.currentNode,
-        kind: "bypass",
-        summary: `bypass enabled for ${minutes}m: ${reason}`,
-        createdAt: now
-      });
-      this.flushReportAsync(binding);
-    }
-    return {
-      bypassed: true,
-      flowId: binding?.flowId ?? null,
-      repoRoot: target.repoRoot,
-      branch: target.branch,
-      bypassUntil: until,
-      reason
-    };
-  }
-  async context(input) {
-    const repoRoot = canonicalRepoRoot(input.repoRoot);
-    const branch = input.branch.trim();
-    const binding = await this.lookupOrRehydrate(repoRoot, branch);
-    const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
-    const enforced = config !== null && isEnforcedConfig(config);
-    const bypass = this.activeBypass(repoRoot, branch);
-    if (!binding) {
-      if (!enforced) {
-        return {
-          enforced: false,
-          bound: false,
-          repoRoot,
-          branch,
-          flowId: null,
-          currentNode: null,
-          nodes: {},
-          bypassActive: false,
-          bypassUntil: null,
-          nextAction: "Repository has no workflow guards configured; workflow gate is inactive."
-        };
-      }
-      return {
-        enforced: true,
-        bound: false,
-        repoRoot,
-        branch,
-        flowId: null,
-        currentNode: null,
-        nodes: {},
-        bypassActive: bypass !== null,
-        bypassUntil: bypass?.until ?? null,
-        nextAction: `No active flow bound for (${repoRoot}, ${branch}). Call start_flow({ repoRoot: "${repoRoot}", branch: "${branch}" }) first.`
-      };
-    }
-    return {
-      enforced,
-      bound: true,
-      repoRoot,
-      branch,
-      flowId: binding.flowId,
-      currentNode: binding.currentNode,
-      nodes: binding.nodes,
-      bypassActive: bypass !== null,
-      bypassUntil: bypass?.until ?? null,
-      nextAction: describeNextAction(binding)
-    };
-  }
-  async check(input) {
-    const repoRoot = canonicalRepoRoot(input.repoRoot);
-    const branch = input.branch.trim();
-    const binding = await this.lookupOrRehydrate(repoRoot, branch);
-    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
-    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
-    if (!loaded.ok) {
-      return { decision: "deny", reason: loaded.error };
-    }
-    const config = loaded.config;
-    if (!config || !isEnforcedConfig(config)) {
-      return {
-        decision: "allow",
-        reason: "repo is not workflow-enforced",
-        ...binding ? { flowId: binding.flowId, currentNode: binding.currentNode } : {}
-      };
-    }
-    const bypass = this.activeBypass(repoRoot, branch);
-    if (bypass) {
-      return {
-        decision: "allow",
-        reason: `Temporary bypass active until ${new Date(bypass.until).toISOString()}`,
-        flowId: binding?.flowId,
-        currentNode: binding?.currentNode ?? null
-      };
-    }
-    if (!binding) {
-      return {
-        decision: "deny",
-        reason: indexedWorkflow ? `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed. Retry once the backend is reachable or start a new Flow.` : `Workflow enforcement active for ${repoRoot} (${branch}), but no Flow is bound. Start one with start_flow.`
-      };
-    }
-    return evaluatePolicy({
-      binding,
-      config,
-      tool: input.tool,
-      path: input.path,
-      command: input.command ?? "",
-      toRelative: (target) => toRepoRelativePath(binding.repoRoot, target)
-    });
-  }
-  observe(input) {
-    const binding = this.bindings.get(bindingKey(input.repoRoot, input.branch)) ?? null;
-    if (!binding)
-      return { recorded: false };
-    const now = this.now();
-    const event = {
-      id: randomUUID3(),
-      node: binding.currentNode,
-      kind: input.kind,
-      summary: input.summary,
-      createdAt: now
-    };
-    binding.observed.push(event);
-    binding.updatedAt = now;
-    this.flushReportAsync(binding);
-    return { recorded: true, event };
-  }
-  async stop(input) {
-    const repoRoot = canonicalRepoRoot(input.repoRoot);
-    const branch = input.branch.trim();
-    const binding = await this.lookupOrRehydrate(repoRoot, branch);
-    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
-    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
-    if (!loaded.ok) {
-      return { decision: "deny", reason: loaded.error };
-    }
-    const config = loaded.config;
-    if (!config || !isEnforcedConfig(config)) {
-      return { decision: "allow", reason: "no active enforced flow binding" };
-    }
-    if (!binding) {
-      if (this.activeBypass(repoRoot, branch) !== null) {
-        return { decision: "allow", reason: "temporary bypass active" };
-      }
-      if (indexedWorkflow) {
-        return {
-          decision: "deny",
-          reason: `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed.`
-        };
-      }
-      return { decision: "allow", reason: "no active enforced flow binding" };
-    }
-    return evaluateStopDecision({
-      binding,
-      config,
-      bypassActive: this.activeBypass(repoRoot, branch) !== null
-    });
-  }
-  close() {
-    for (const handle of this.streams.values())
-      handle.close();
-    this.streams.clear();
-  }
-  async buildLocalStartBody(params) {
-    const { input, name, workspace, branch, tabs, defaultTab } = params;
-    const ticketBody = input.ticketBody ?? (input.ticketUrl ? await fetchGitHubIssueBody(input.ticketUrl) ?? undefined : undefined);
-    const values = input.workflow ? { ...input.values ?? {}, workflow: input.workflow } : input.values;
-    return {
-      mode: "local",
-      ...input.parentId ? { parentId: input.parentId } : {},
-      name,
-      workspace,
-      repo: workspace,
-      ...input.base ? { base: input.base } : {},
-      branch,
-      ticket: input.ticket ?? null,
-      ticketUrl: input.ticketUrl ?? null,
-      ...tabs ? { tabs } : {},
-      ...defaultTab ? { defaultTab } : {},
-      ...input.endState ? { endState: input.endState } : {},
-      ...ticketBody ? { ticketBody } : {},
-      ...input.spec ? { spec: input.spec } : {},
-      ...values ? { values } : {}
-    };
-  }
-  getByFlowId(flowId) {
-    const key = this.flowIndex.get(flowId);
-    return key ? this.bindings.get(key) ?? null : null;
-  }
-  async resolveTarget(input) {
-    if (input.flowId) {
-      const byId = this.getByFlowId(input.flowId);
-      if (byId)
-        return { repoRoot: byId.repoRoot, branch: byId.branch };
-      if (!input.repoRoot && !input.branch) {
-        throw new Error(`no local flow binding found for flowId "${input.flowId}"`);
-      }
-    }
-    return resolveRepoBranch(input);
-  }
-  async loadGateConfig(repoRoot, workflowName) {
-    try {
-      return {
-        ok: true,
-        config: await loadWorkflowConfig(repoRoot, workflowName)
-      };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      console.error("[gate] loadWorkflowConfig failed", {
-        repoRoot,
-        workflowName,
-        error: detail
-      });
-      return { ok: false, error: `Workflow config error: ${detail}` };
-    }
-  }
-  async lookupIndexedWorkflowName(repoRoot, branch) {
-    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
-    if (!indexedFlowId)
-      return;
-    const localState = await readLocalFlow(indexedFlowId);
-    return localState?.workflow;
-  }
-  isReusableBinding(binding) {
-    if (binding.currentNode === null)
-      return false;
-    if (binding.flowState && !ACTIVE_FLOW_STATES.has(binding.flowState))
-      return false;
-    return !Object.values(binding.nodes).some((n) => n.status === "errored" || n.status === "rejected");
-  }
-  detachBinding(input) {
-    const key = bindingKey(input.repoRoot, input.branch);
-    this.bindings.delete(key);
-    this.flowIndex.delete(input.flowId);
-    const stream = this.streams.get(input.flowId);
-    if (stream) {
-      stream.close();
-      this.streams.delete(input.flowId);
-    }
-  }
-  async fetchHydratedFlow(flowId) {
-    let raw;
-    try {
-      raw = await this.backend.request(`/api/flow/${encodeURIComponent(flowId)}`);
-    } catch (error) {
-      if (error instanceof TransportHttpError && error.status === 404)
-        return null;
-      throw error;
-    }
-    const parsed = hydratedFlowResponseSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) {
-      throw new Error(`invalid flow response while rehydrating "${flowId}"`);
-    }
-    return parsed.data.flow;
-  }
-  async lookupReusableBinding(repoRoot, branch) {
-    const cached = this.bindings.get(bindingKey(repoRoot, branch));
-    const flowId = cached?.flowId ?? await resolveIndexedFlowId({ repoRoot, branch });
-    if (!flowId)
-      return null;
-    const flow = await this.fetchHydratedFlow(flowId);
-    if (!flow || flow.state && !ACTIVE_FLOW_STATES.has(flow.state)) {
-      this.detachBinding({ repoRoot, branch, flowId });
-      return null;
-    }
-    if (cached) {
-      this.applyHydratedFlow(cached, flow);
-      if (this.isReusableBinding(cached))
-        return cached;
-      this.detachBinding({ repoRoot, branch, flowId });
-      return null;
-    }
-    const hydrated = await this.hydrateValidatedFlow({
-      flow,
-      repoRoot,
-      branch
-    });
-    if (this.isReusableBinding(hydrated))
-      return hydrated;
-    this.detachBinding({ repoRoot, branch, flowId });
-    return null;
-  }
-  async lookupOrRehydrate(repoRoot, branch) {
-    const existing = this.bindings.get(bindingKey(repoRoot, branch));
-    if (existing)
-      return existing;
-    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
-    if (!indexedFlowId)
-      return null;
-    try {
-      return await this.rehydrateByFlowId({
-        flowId: indexedFlowId,
-        repoRoot,
-        branch
-      });
-    } catch (error) {
-      console.error("[gate] rehydrateByFlowId failed", {
-        flowId: indexedFlowId,
-        repoRoot,
-        branch,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      return null;
-    }
-  }
-  async resolveBinding(input) {
-    if (input.flowId) {
-      const byId = this.getByFlowId(input.flowId);
-      if (byId)
-        return byId;
-      return this.rehydrateByFlowId({
-        flowId: input.flowId,
-        repoRoot: input.repoRoot,
-        branch: input.branch
-      });
-    }
-    const { repoRoot, branch } = await this.resolveTarget(input);
-    const binding = this.bindings.get(bindingKey(repoRoot, branch));
-    if (binding)
-      return binding;
-    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
-    if (indexedFlowId)
-      return this.rehydrateByFlowId({
-        flowId: indexedFlowId,
-        repoRoot,
-        branch
-      });
-    throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
-  }
-  async rehydrateByFlowId(input) {
-    const flow = await this.fetchHydratedFlow(input.flowId);
-    if (!flow)
-      throw new Error(`flow "${input.flowId}" not found`);
-    return this.hydrateValidatedFlow({
-      flow,
-      repoRoot: input.repoRoot,
-      branch: input.branch
-    });
-  }
-  async hydrateValidatedFlow(input) {
-    const { flow } = input;
-    if (flow.mode !== "local") {
-      throw new Error(`cannot bind flow "${flow.id}": expected mode "local", got "${flow.mode ?? "unknown"}"`);
-    }
-    const requestedBranch = input.branch?.trim();
-    if (requestedBranch && flow.branch && requestedBranch !== flow.branch) {
-      throw new Error(`flow "${flow.id}" is bound to branch "${flow.branch}", not "${requestedBranch}"`);
-    }
-    const { repoRoot, branch } = await resolveRepoBranch({
-      repoRoot: input.repoRoot,
-      branch: requestedBranch || flow.branch || undefined
-    });
-    const repoName = await resolveWorkspaceName(repoRoot);
-    if (flow.workspace && repoName !== flow.workspace) {
-      throw new Error(`flow "${flow.id}" belongs to workspace "${flow.workspace}", not "${repoName}"`);
-    }
-    const localState = await readLocalFlow(flow.id);
-    const workflowName = localState?.workflow ?? flow.values?.workflow;
-    const config = await loadWorkflowConfig(repoRoot, workflowName) ?? BLANK_SLATE_CONFIG;
-    const binding = this.attachBinding({
-      repoRoot,
-      branch,
-      flowId: flow.id,
-      config,
-      workflowName
-    });
-    const hydrated = this.applyHydratedFlow(binding, flow);
-    if (!localState) {
-      await saveLocalFlow(emptyLocalFlow({
-        flowId: flow.id,
-        repoRoot,
-        branch,
-        ...workflowName ? { workflow: workflowName } : {},
-        now: this.now()
-      }));
-    }
-    return hydrated;
-  }
-  applyHydratedFlow(binding, flow) {
-    const now = this.now();
-    if (flow.state)
-      binding.flowState = flow.state;
-    if (flow.values && Object.keys(flow.values).length > 0) {
-      binding.values = { ...flow.values };
-    }
-    for (const step of flow.steps ?? []) {
-      const nodeState = Object.hasOwn(binding.nodes, step.id) ? binding.nodes[step.id] : undefined;
-      if (nodeState) {
-        const mapped = step.status ? mapEventStatus(step.status) : null;
-        if (mapped)
-          nodeState.status = mapped;
-        if (step.summary)
-          nodeState.summary = step.summary;
-        nodeState.updatedAt = now;
-      }
-    }
-    advanceCurrentNode(binding, now);
-    return binding;
-  }
-  attachBinding(input) {
-    const key = bindingKey(input.repoRoot, input.branch);
-    const now = this.now();
-    const nodes = {};
-    input.config.nodes.forEach((id, idx) => {
-      nodes[id] = {
-        id,
-        status: idx === 0 ? "active" : "pending",
-        updatedAt: now
-      };
-    });
-    const binding = {
-      repoRoot: input.repoRoot,
-      branch: input.branch,
-      flowId: input.flowId,
-      ...input.flowState ? { flowState: input.flowState } : {},
-      ...input.workflowName ? { workflowName: input.workflowName } : {},
-      config: input.config,
-      currentNode: input.config.nodes[0] ?? null,
-      nodes,
-      bypassUntil: null,
-      bypassReason: null,
-      observed: [],
-      lastEventSeq: 0,
-      updatedAt: now
-    };
-    const existing = this.bindings.get(key);
-    if (existing) {
-      this.streams.get(existing.flowId)?.close();
-      this.streams.delete(existing.flowId);
-      this.flowIndex.delete(existing.flowId);
-    }
-    this.bindings.set(key, binding);
-    this.flowIndex.set(input.flowId, key);
-    this.startBindingStream(input.flowId);
-    return binding;
-  }
-  startBindingStream(flowId) {
-    if (!this.enableStream || !this.backend.streamUrl)
-      return;
-    const streamUrl = this.backend.streamUrl(`/api/flow/${encodeURIComponent(flowId)}/stream`);
-    const handle = connectFlowStream({
-      url: streamUrl,
-      token: this.backend.token ?? "",
-      fetchImpl: this.fetchImpl,
-      baseDelayMs: this.streamBackoff?.baseDelayMs,
-      maxDelayMs: this.streamBackoff?.maxDelayMs,
-      onEvent: (frame) => this.applyStreamFrame(flowId, frame),
-      onError: (error) => {
-        console.error(JSON.stringify({
-          level: "error",
-          component: "nosta-gate",
-          event: "sse_stream_error",
-          flowId,
-          streamUrl,
-          lastEventSeq: this.getByFlowId(flowId)?.lastEventSeq ?? 0,
-          error: error instanceof Error ? error.message : String(error)
-        }));
-      }
-    });
-    this.streams.set(flowId, handle);
-  }
-  applyStreamFrame(flowId, frame) {
-    const binding = this.getByFlowId(flowId);
-    if (!binding)
-      return;
-    const parsed = stepEventSchema.safeParse(frame.data);
-    if (!parsed.success)
-      return;
-    const event = parsed.data;
-    const eventSeq = event.seq > 0 ? event.seq : frame.id ?? 0;
-    if (eventSeq > 0 && eventSeq <= binding.lastEventSeq)
-      return;
-    if (eventSeq > 0)
-      binding.lastEventSeq = eventSeq;
-    const stepId = event.stepId;
-    const mapped = mapEventStatus(event.status);
-    if (!stepId || !mapped || !Object.hasOwn(binding.nodes, stepId))
-      return;
-    if (binding.config.approvalNodes.includes(stepId) && mapped === "complete")
-      return;
-    if (mapped === "complete" && binding.currentNode !== stepId)
-      return;
-    const now = this.now();
-    const target = binding.nodes[stepId];
-    target.status = mapped;
-    if (event.summary.length > 0)
-      target.summary = event.summary;
-    target.updatedAt = now;
-    advanceCurrentNode(binding, now);
-  }
-  async persistAndCommit(binding, mutate) {
-    const key = bindingKey(binding.repoRoot, binding.branch);
-    const draft = cloneBinding(binding);
-    const now = this.now();
-    mutate(draft, now);
-    const report = buildCloudReport(draft, now);
-    await this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}/report`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(report)
-    });
-    const current = this.bindings.get(key);
-    if (current !== binding) {
-      throw new Error(`flow binding for (${binding.repoRoot}, ${binding.branch}) changed before commit`);
-    }
-    const nextBinding = {
-      ...current,
-      nodes: draft.nodes,
-      ...draft.values ? { values: draft.values } : {},
-      currentNode: draft.currentNode,
-      updatedAt: draft.updatedAt
-    };
-    this.bindings.set(key, nextBinding);
-    return nextBinding;
-  }
-  flushReportAsync(binding) {
-    const report = buildCloudReport(binding, this.now());
-    this.backend.request(`/api/flow/${encodeURIComponent(binding.flowId)}/report`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(report)
-    }).catch((error) => {
-      console.error(JSON.stringify({
-        level: "error",
-        component: "nosta-gate",
-        event: "report_flush_error",
-        flowId: binding.flowId,
-        error: error instanceof Error ? error.message : String(error)
-      }));
-    });
-  }
-  activeBypass(repoRoot, branch) {
-    const key = bindingKey(repoRoot, branch);
-    const entry = this.bypasses.get(key);
-    if (!entry)
-      return null;
-    if (this.now() >= entry.until) {
-      this.bypasses.delete(key);
-      return null;
-    }
-    return entry;
-  }
-}
-
-// src/sync.ts
-import { createHash } from "node:crypto";
-import { basename as basename4 } from "node:path";
-
-// ../../packages/shared/src/storage/pages.ts
-var MAX_PAGE_BYTES = 1500000;
-var MAX_MEDIA_BYTES = 50000000;
-var MAX_PAGE_TITLE = 200;
-var PAGE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
-var PAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-var PAGE_TAB = /^[A-Za-z0-9_-]{1,64}$/;
-var PAGE_SLOT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-var pageSlotSchema = string2().regex(PAGE_SLOT);
-var LINK_ID = /^[A-Za-z0-9:._-]{1,200}$/;
-var MEDIA_CONTENT_TYPES = {
-  ".mp4": "video/mp4",
-  ".webm": "video/webm",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".txt": "text/plain; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8"
-};
-function mediaContentType(name) {
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0)
-    return null;
-  return MEDIA_CONTENT_TYPES[name.slice(dot).toLowerCase()] ?? null;
-}
-function isDocumentKey(value) {
-  const parts = value.split("/");
-  const ticket = parts[0] ?? "";
-  const name = parts[1] ?? "";
-  return parts.length === 2 && PAGE_TICKET.test(ticket) && PAGE_NAME.test(name);
-}
-var pageRowSchema = object({
-  ticket: string2().regex(PAGE_TICKET),
-  name: string2().regex(PAGE_NAME),
-  title: string2().min(1),
-  stepId: string2(),
-  bytes: number2(),
-  created: string2().min(1),
-  kind: _enum(["html", "diff", "media"]).optional(),
-  slot: pageSlotSchema.optional(),
-  storage: _enum(["cloud", "local"]).optional(),
-  localPath: string2().min(1).max(1000).optional(),
-  localHost: string2().min(1).max(200).optional(),
-  flowId: string2().regex(LINK_ID).optional(),
-  linkedTo: array(string2().refine(isDocumentKey)).optional()
-});
-var localMediaInputSchema = object({
-  localPath: string2().trim().min(1).max(1000),
-  bytes: number2().int().min(0),
-  title: string2().trim().min(1).max(MAX_PAGE_TITLE).optional(),
-  stepId: string2().trim().max(128).optional(),
-  slot: pageSlotSchema.optional(),
-  flowId: string2().regex(LINK_ID).optional(),
-  localHost: string2().trim().min(1).max(200).optional()
-});
-var pageListResponseSchema = listOf("pages", pageRowSchema).extend({
-  nextCursor: string2().nullable().optional()
-});
-
-// src/sync.ts
-var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
-var MAX_SYNC_DIFF_BYTES = 512 * 1024;
-var syncDocInputSchema = object({
-  id: string2().min(1).max(160),
-  title: string2().min(1).max(200),
-  slot: flowDocSlotSchema.optional(),
-  name: string2().min(1).max(200).optional(),
-  sourcePath: string2().min(1).optional(),
-  html: string2().min(1).optional(),
-  stepId: string2().max(128).optional()
-});
-var syncEvidenceInputSchema = object({
-  id: string2().min(1).max(160),
-  title: string2().min(1).max(200),
-  name: string2().min(1).max(200).optional(),
-  sourcePath: string2().min(1),
-  stepId: string2().max(128).optional()
-});
-var syncCheckInputSchema = object({
-  id: string2().min(1).max(100).optional(),
-  command: string2().min(1).max(1000),
-  exitCode: number2().int(),
-  durationMs: number2().int().min(0).optional(),
-  summary: string2().max(500).optional(),
-  output: string2().optional()
-});
-var syncReviewInputSchema = object({
-  id: string2().min(1).max(100).optional(),
-  name: string2().min(1).max(160).optional(),
-  model: string2().min(1).max(120).optional(),
-  verdict: _enum(["PASS", "FAIL"]),
-  findings: array(findingSchema).max(100).optional(),
-  durationMs: number2().int().min(0).optional(),
-  summary: string2().max(500).optional(),
-  output: string2().optional(),
-  usage: usageSchema.optional()
-});
-var syncDiffOptionSchema = union([
-  boolean2(),
-  object({
-    base: string2().min(1).max(200).optional(),
-    head: string2().min(1).max(200).optional()
-  })
-]);
-var flowSyncInputSchema = object({
-  flowId: string2().min(1).optional().describe("Existing Flow ID to sync. Resolved from repoRoot/branch or ticket if omitted."),
-  repoRoot: string2().optional().describe("Git repository root for resolving the bound Flow or computing git diff."),
-  branch: string2().optional().describe("Git branch name for resolving the bound Flow."),
-  base: string2().optional().describe("Base branch/ref for git diff (defaults to main)."),
-  ticket: string2().optional().describe("Ticket identifier for artifact storage and index lookup."),
-  status: _enum(["running", "complete", "errored"]).optional().describe("Flow report status (default running)."),
-  tabs: array(flowTabSchema).max(16).optional().describe("Optional custom modular Flow tabs for this flow."),
-  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
-  docs: array(syncDocInputSchema).max(64).optional().describe("HTML documents to upload (by sha256) and attach to flow.docs."),
-  evidence: array(syncEvidenceInputSchema).max(64).optional().describe("Media or HTML evidence files to upload and attach to flow.evidence."),
-  checks: array(syncCheckInputSchema).max(64).optional().describe("Timed command gate runs recorded as kind=command steps."),
-  review: syncReviewInputSchema.optional().describe("Review run recorded as kind=agent, role=review step."),
-  diff: syncDiffOptionSchema.optional().describe("Compute and upload git diff + summary (files, migrations, +/- counts) in repoRoot."),
-  pr: object({
-    url: string2().url(),
-    number: number2().int().positive(),
-    base: string2().min(1)
-  }).optional(),
-  ship: flowShipMetaSchema.partial().optional().describe("Optional ship risk, deployOrder, and notes."),
-  values: record(string2(), string2()).optional().describe("Optional string metadata merged into flow.values."),
-  endState: string2().optional(),
-  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab."),
-  spec: string2().optional()
-});
-function sha256Of(data) {
-  return createHash("sha256").update(data).digest("hex");
-}
-function slugOf(raw, fallback) {
-  const clean = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return (clean || fallback).slice(0, 180);
-}
-function stepIdFor(prefix, seed) {
-  const slug = slugOf(seed.toLowerCase(), prefix).slice(0, 48);
-  const digest = sha256Of(seed).slice(0, 8);
-  return `${prefix}-${slug}-${digest}`.slice(0, 100);
-}
-function upsertById(list, item) {
-  const next = [...list];
-  const idx = next.findIndex((entry) => entry.id === item.id);
-  if (idx === -1)
-    next.push(item);
-  else
-    next[idx] = item;
-  return next;
-}
-function truncateDiff(raw) {
-  if (!raw.trim())
-    return { text: null, truncated: false };
-  const encoded = Buffer.from(raw, "utf8");
-  if (encoded.byteLength <= MAX_SYNC_DIFF_BYTES)
-    return { text: raw, truncated: false };
-  return {
-    text: encoded.subarray(0, MAX_SYNC_DIFF_BYTES).toString("utf8"),
-    truncated: true
-  };
-}
-async function resolveTargetFlowId(input) {
-  let repoRoot = input.args.repoRoot;
-  let branch = input.args.branch;
-  if (!repoRoot || !branch) {
-    try {
-      const resolved = await resolveRepoBranch({ repoRoot, branch });
-      repoRoot = resolved.repoRoot;
-      branch = resolved.branch;
-    } catch {}
-  }
-  const flowId = input.args.flowId ?? await resolveIndexedFlowId({
-    repoRoot,
-    branch,
-    ticket: input.args.ticket,
-    stateDir: input.stateDir
-  });
-  if (!flowId) {
-    throw new Error("no flow bound for this repo/branch or ticket; pass flowId or start a flow with start_flow");
-  }
-  return { flowId, repoRoot, branch };
-}
-async function publishMediaBytes(input) {
-  const qs = new URLSearchParams({
-    title: input.title,
-    flowId: input.flowId,
-    slot: input.slot
-  });
-  if (input.stepId)
-    qs.set("stepId", input.stepId);
-  await input.backend.request(`/api/media/${encodeURIComponent(input.ticket)}/${encodeURIComponent(input.name)}?${qs.toString()}`, {
-    method: "PUT",
-    headers: { "content-type": input.contentType },
-    body: new Uint8Array(input.bytes)
-  });
-}
-async function readDocPayload(doc, repoRoot) {
-  if (doc.html !== undefined) {
-    const rawBytes = new TextEncoder().encode(doc.html);
-    if (rawBytes.byteLength === 0)
-      throw new Error(`doc "${doc.id}" requires non-empty content`);
-    return {
-      rawBytes,
-      name: slugOf(doc.name ?? doc.id, "doc"),
-      kind: "html",
-      contentType: "text/html; charset=utf-8"
-    };
-  }
-  if (!doc.sourcePath)
-    throw new Error(`doc "${doc.id}" requires either html or sourcePath`);
-  const safeRoot = repoRoot ? await assertGitRepoRoot(repoRoot) : undefined;
-  const lowerHint = basename4(doc.sourcePath).toLowerCase();
-  const maxBytes = lowerHint.endsWith(".html") || lowerHint.endsWith(".htm") ? MAX_PAGE_BYTES : mediaContentType(doc.sourcePath) ? MAX_MEDIA_BYTES : MAX_PAGE_BYTES;
-  const { path: safePath, bytes: rawBytes } = await readBoundedWorkspaceFile({
-    filePath: doc.sourcePath,
-    maxBytes,
-    rootDir: safeRoot
-  });
-  if (rawBytes.byteLength === 0)
-    throw new Error(`doc "${doc.id}" requires non-empty content`);
-  const sourceBase = basename4(safePath);
-  const name = slugOf(doc.name ?? sourceBase, "doc");
-  const lowerSource = sourceBase.toLowerCase();
-  const detected = lowerSource.endsWith(".html") || lowerSource.endsWith(".htm") ? null : mediaContentType(sourceBase);
-  return {
-    rawBytes,
-    name,
-    kind: detected ? "media" : "html",
-    contentType: detected ?? "text/html; charset=utf-8"
-  };
-}
-async function syncDocs(input) {
-  let uploaded = 0;
-  const refs = [];
-  for (const doc of input.docs) {
-    const slot = doc.slot ?? "artifact";
-    const { rawBytes, name, kind, contentType } = await readDocPayload(doc, input.state.repoRoot);
-    const sha256 = sha256Of(rawBytes);
-    const existing = input.state.docs.find((entry) => entry.id === doc.id);
-    const changed = !existing || existing.sha256 !== sha256 || existing.title !== doc.title || existing.name !== name || existing.ticket !== input.ticket || existing.slot !== slot || existing.kind !== kind;
-    if (changed) {
-      if (kind === "html") {
-        await publishPage(input.backend, {
-          ticket: input.ticket,
-          name,
-          title: doc.title,
-          stepId: doc.stepId ?? "",
-          slot,
-          html: Buffer.from(rawBytes).toString("utf8"),
-          flowId: input.state.flowId
-        });
-      } else {
-        await publishMediaBytes({
-          backend: input.backend,
-          ticket: input.ticket,
-          name,
-          title: doc.title,
-          flowId: input.state.flowId,
-          slot,
-          stepId: doc.stepId,
-          contentType,
-          bytes: rawBytes
-        });
-      }
-      uploaded += 1;
-    }
-    refs.push({
-      id: doc.id,
-      ticket: input.ticket,
-      name,
-      title: doc.title,
-      slot,
-      kind,
-      stepId: doc.stepId ?? null,
-      sha256,
-      bytes: rawBytes.byteLength,
-      createdAt: input.now
-    });
-  }
-  return { refs, uploaded };
-}
-async function syncEvidence(input) {
-  let uploaded = 0;
-  const refs = [];
-  const safeRoot = input.state.repoRoot ? await assertGitRepoRoot(input.state.repoRoot) : undefined;
-  for (const item of input.evidence) {
-    const { path: safePath, bytes: raw } = await readBoundedWorkspaceFile({
-      filePath: item.sourcePath,
-      maxBytes: MAX_MEDIA_BYTES,
-      rootDir: safeRoot
-    });
-    const name = slugOf(item.name ?? basename4(safePath), "evidence.txt");
-    const isHtml = name.toLowerCase().endsWith(".html") || name.toLowerCase().endsWith(".htm");
-    const contentType = isHtml ? "text/html; charset=utf-8" : mediaContentType(name);
-    if (!contentType)
-      throw new Error(`unsupported evidence file extension: ${name}`);
-    const sha256 = sha256Of(raw);
-    const existing = input.state.evidence.find((entry) => entry.id === item.id);
-    if (!existing || existing.sha256 !== sha256 || existing.title !== item.title || existing.name !== name || existing.ticket !== input.ticket) {
-      if (isHtml) {
-        await publishPage(input.backend, {
-          ticket: input.ticket,
-          name,
-          title: item.title,
-          stepId: item.stepId ?? "",
-          slot: "evidence",
-          html: Buffer.from(raw).toString("utf8"),
-          flowId: input.state.flowId
-        });
-      } else {
-        await publishMediaBytes({
-          backend: input.backend,
-          ticket: input.ticket,
-          name,
-          title: item.title,
-          flowId: input.state.flowId,
-          slot: "evidence",
-          stepId: item.stepId,
-          contentType,
-          bytes: raw
-        });
-      }
-      uploaded += 1;
-    }
-    refs.push({
-      id: item.id,
-      ticket: input.ticket,
-      name,
-      title: item.title,
-      kind: isHtml ? "html" : "media",
-      contentType,
-      stepId: item.stepId ?? null,
-      sha256,
-      bytes: raw.byteLength,
-      createdAt: input.now
-    });
-  }
-  return { refs, uploaded };
-}
-function parseNumstat(numstat) {
-  const files = [];
-  const migrations = [];
-  let additions = 0;
-  let deletions = 0;
-  for (const line of numstat.split(/\r?\n/)) {
-    if (!line.trim())
-      continue;
-    const [rawAdd, rawDel, ...rest] = line.split("\t");
-    const file = rest.join("\t").trim();
-    if (!file)
-      continue;
-    files.push(file);
-    if (DATA_CHANGE_PATH.test(file))
-      migrations.push(file);
-    const add = Number(rawAdd);
-    const del = Number(rawDel);
-    if (Number.isFinite(add))
-      additions += add;
-    if (Number.isFinite(del))
-      deletions += del;
-  }
-  return {
-    files: files.slice(0, 500),
-    migrations: migrations.slice(0, 200),
-    additions,
-    deletions
-  };
-}
-async function computeDiff(input) {
-  const safeBase = assertSafeGitRef(input.base, "base");
-  const safeHead = assertSafeGitRef(input.head, "head");
-  const mergeBase = await runGit(input.repoRoot, ["merge-base", safeBase, safeHead]) ?? safeBase;
-  const numstat = await runGit(input.repoRoot, [
-    "diff",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--numstat",
-    `${mergeBase}..${safeHead}`,
-    "--"
-  ]) ?? "";
-  const headSha = await runGit(input.repoRoot, ["rev-parse", "--verify", safeHead]) ?? safeHead;
-  const sha256 = sha256Of(`${mergeBase}:${headSha}:${numstat}`);
-  const stats = parseNumstat(numstat);
-  const summary = {
-    base: safeBase,
-    head: headSha,
-    ticket: null,
-    name: null,
-    ...stats,
-    sha256
-  };
-  if (input.uploadedDiffSha256 && sha256 === input.uploadedDiffSha256) {
-    return { summary, uploadDiff: false, diff: null, diffTruncated: false };
-  }
-  const rawDiff = await runGit(input.repoRoot, [
-    "diff",
-    "--no-ext-diff",
-    "--no-textconv",
-    `${mergeBase}..${safeHead}`,
-    "--"
-  ]) ?? "";
-  const { text: diff, truncated: diffTruncated } = truncateDiff(rawDiff);
-  return { summary, uploadDiff: true, diff, diffTruncated };
-}
-function buildSteps(args, now) {
-  const steps = [];
-  for (const check of args.checks ?? []) {
-    steps.push({
-      id: check.id ?? stepIdFor("gate", check.command),
-      name: check.command.slice(0, 160),
-      kind: "command",
-      status: check.exitCode === 0 ? "complete" : "errored",
-      command: check.command,
-      exitCode: check.exitCode,
-      durationMs: check.durationMs ?? null,
-      summary: check.summary ?? `${check.exitCode === 0 ? "PASS" : `exit ${check.exitCode}`}`,
-      output: check.output ?? ""
-    });
-  }
-  if (args.review) {
-    const rev = args.review;
-    steps.push({
-      id: rev.id ?? stepIdFor("review", `${rev.name ?? "review"}-${rev.model ?? "agent"}-${now}`),
-      name: rev.name ?? "Code review",
-      kind: "agent",
-      role: "review",
-      status: "complete",
-      model: rev.model ?? null,
-      verdict: rev.verdict,
-      findings: rev.findings ?? [],
-      durationMs: rev.durationMs ?? null,
-      summary: rev.summary ?? `${rev.verdict} (${rev.findings?.length ?? 0} findings)`,
-      output: rev.output ?? "",
-      ...rev.usage ? { usage: rev.usage } : {}
-    });
-  }
-  return steps;
-}
-function mergeShip(existing, incoming) {
-  if (!incoming)
-    return existing;
-  return {
-    risk: incoming.risk ?? existing?.risk ?? null,
-    deployOrder: incoming.deployOrder ?? existing?.deployOrder ?? null,
-    notes: [
-      ...new Set([...existing?.notes ?? [], ...incoming.notes ?? []])
-    ]
-  };
-}
-function mergeRefs(existing, incoming) {
-  let out = existing;
-  for (const ref of incoming)
-    out = upsertById(out, ref);
-  return out;
-}
-async function resolveComputedDiff(input) {
-  if (!input.args.diff)
-    return null;
-  const repoRoot = input.repoRoot ?? input.existing.repoRoot;
-  if (!repoRoot)
-    throw new Error("diff sync requires a git repository (pass repoRoot)");
-  const safeRepoRoot = await assertGitRepoRoot(repoRoot);
-  const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
-  const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
-  const head = diffOpts.head ?? "HEAD";
-  return computeDiff({
-    repoRoot: safeRepoRoot,
-    base,
-    head,
-    uploadedDiffSha256: input.existing.diffUploadedSha256
-  });
-}
-async function attachPublishedArtifact(input) {
-  const now = input.now ?? Date.now();
-  const sha256 = sha256Of(input.html);
-  const existing = await readLocalFlow(input.flowId, input.stateDir) ?? emptyLocalFlow({ flowId: input.flowId, ticket: input.ticket, now });
-  const isEvidence = input.slot === "evidence";
-  const docRef = {
-    id: input.name,
-    ticket: input.ticket,
-    name: input.name,
-    title: input.title,
-    slot: input.slot,
-    kind: "html",
-    stepId: input.stepId || null,
-    sha256,
-    bytes: input.bytes,
-    createdAt: now
-  };
-  const evidenceRef = isEvidence ? {
-    id: input.name,
-    ticket: input.ticket,
-    name: input.name,
-    title: input.title,
-    kind: "html",
-    contentType: "text/html; charset=utf-8",
-    stepId: input.stepId || null,
-    sha256,
-    bytes: input.bytes,
-    createdAt: now
-  } : null;
-  await input.backend.request(`/api/flow/${encodeURIComponent(input.flowId)}/report`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      status: "running",
-      finishedAt: null,
-      steps: [],
-      docs: [docRef],
-      ...evidenceRef ? { evidence: [evidenceRef] } : {}
-    })
-  });
-  await saveLocalFlow({
-    ...existing,
-    ticket: existing.ticket ?? input.ticket,
-    docs: mergeRefs(existing.docs, [docRef]),
-    evidence: evidenceRef ? mergeRefs(existing.evidence, [evidenceRef]) : existing.evidence,
-    updatedAt: now
-  }, input.stateDir);
-}
-async function syncFlow(input) {
-  const now = (input.now ?? Date.now)();
-  const resolved = await resolveTargetFlowId({
-    args: input.args,
-    stateDir: input.stateDir
-  });
-  const existing = await readLocalFlow(resolved.flowId, input.stateDir) ?? emptyLocalFlow({
-    flowId: resolved.flowId,
-    repoRoot: resolved.repoRoot,
-    branch: resolved.branch,
-    base: input.args.base,
-    ticket: input.args.ticket,
-    now
-  });
-  const ticket = input.args.ticket ?? existing.ticket ?? resolved.flowId;
-  const docOut = input.args.docs ? await syncDocs({
-    state: existing,
-    docs: input.args.docs,
-    ticket,
-    backend: input.backend,
-    now
-  }) : { refs: [], uploaded: 0 };
-  const evOut = input.args.evidence ? await syncEvidence({
-    state: existing,
-    evidence: input.args.evidence,
-    ticket,
-    backend: input.backend,
-    now
-  }) : { refs: [], uploaded: 0 };
-  const computedDiff = await resolveComputedDiff({
-    args: input.args,
-    existing,
-    repoRoot: resolved.repoRoot
-  });
-  const diffSummary = computedDiff ? computedDiff.summary : existing.diffSummary;
-  const diffSummaryChanged = Boolean(computedDiff && (computedDiff.uploadDiff || JSON.stringify(computedDiff.summary) !== JSON.stringify(existing.diffSummary)));
-  const ship = mergeShip(existing.ship, input.args.ship);
-  const steps = buildSteps(input.args, now);
-  const status = input.args.status ?? "running";
-  const tabs = input.args.tabs !== undefined ? input.args.tabs : existing.tabs;
-  const defaultTab = input.args.defaultTab !== undefined ? input.args.defaultTab : existing.defaultTab;
-  await input.backend.request(`/api/flow/${encodeURIComponent(resolved.flowId)}/report`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      status,
-      finishedAt: status === "running" ? null : now,
-      steps,
-      ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
-      ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
-      ...computedDiff && diffSummaryChanged ? { diffSummary: computedDiff.summary } : {},
-      ...computedDiff?.uploadDiff ? {
-        diff: computedDiff.diff,
-        diffTruncated: computedDiff.diffTruncated
-      } : {},
-      ...input.args.tabs !== undefined ? { tabs: input.args.tabs } : {},
-      ...input.args.defaultTab !== undefined ? { defaultTab: input.args.defaultTab } : {},
-      ...input.args.ship ? { ship } : {},
-      ...input.args.pr ? { pr: input.args.pr } : {},
-      ...input.args.values ? { values: input.args.values } : {},
-      ...input.args.endState !== undefined ? { endState: input.args.endState } : {},
-      ...input.args.ticketBody !== undefined ? { ticketBody: input.args.ticketBody } : {},
-      ...input.args.spec !== undefined ? { spec: input.args.spec } : {},
-      ...resolved.branch ? { branch: resolved.branch } : {}
-    })
-  });
-  const diffUploadedSha256 = computedDiff?.uploadDiff ? computedDiff.summary.sha256 : existing.diffUploadedSha256;
-  await saveLocalFlow({
-    ...existing,
-    ...resolved.repoRoot ? { repoRoot: resolved.repoRoot } : {},
-    ...resolved.branch ? { branch: resolved.branch } : {},
-    ...input.args.base ? { base: input.args.base } : {},
-    ...tabs !== undefined ? { tabs } : {},
-    ...defaultTab !== undefined ? { defaultTab } : {},
-    ...diffUploadedSha256 !== undefined ? { diffUploadedSha256 } : {},
-    ticket,
-    docs: mergeRefs(existing.docs, docOut.refs),
-    evidence: mergeRefs(existing.evidence, evOut.refs),
-    diffSummary,
-    ship,
-    updatedAt: now
-  }, input.stateDir);
-  return {
-    flowId: resolved.flowId,
-    uploadedDocs: docOut.uploaded,
-    uploadedEvidence: evOut.uploaded,
-    uploadedDiff: Boolean(computedDiff?.uploadDiff),
-    stepsReported: steps.length,
-    diffSummary,
-    ...tabs !== undefined ? { tabs } : {},
-    ...defaultTab !== undefined ? { defaultTab } : {},
-    flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(resolved.flowId)}`
-  };
-}
-
-// src/flow.ts
-function trimmed(value) {
-  if (typeof value !== "string")
-    return;
-  const clean = value.trim();
-  return clean.length > 0 ? clean : undefined;
-}
-var flowStartInputSchema2 = object({
-  mode: _enum(["spec", "review", "local"]).optional().describe("Optional explicit flow mode."),
-  path: string2().optional().describe("Absolute path of a local spec file (spec mode)."),
-  baseSha: string2().optional().describe("40-hex Git SHA from the caller's checkout (spec mode)."),
-  ticketUrl: string2().optional().describe("HTTPS URL of the ticket this flow runs for."),
-  paths: array(string2()).optional().describe("Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."),
-  title: string2().optional().describe("Optional flow title (review or local mode)."),
-  parentId: string2().optional().describe("Optional parent flow ID to attach this local flow to."),
-  repoRoot: string2().optional().describe("Git repository root containing .nosta/workflows/<name>.yaml (or .nosta/workflow.yaml) for local mode."),
-  branch: string2().optional().describe("Git branch name to bind (local mode; defaults to current branch)."),
-  base: string2().optional().describe("Optional base branch name (local mode)."),
-  workflow: string2().optional().describe("Optional YAML workflow name in .nosta/workflows/<name>.yaml (local mode)."),
-  forceNew: boolean2().optional().describe("Start a fresh local flow instead of reusing an active (repoRoot, branch) binding."),
-  ticket: string2().optional().describe("Optional ticket key/identifier (local mode)."),
-  endState: string2().optional().describe("Optional target end state summary (local mode)."),
-  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab (auto-fetched from GitHub when ticketUrl is an issue URL)."),
-  spec: string2().optional().describe("Optional inline spec markdown text (local mode)."),
-  tabs: array(flowTabSchema).max(16).optional().describe("Optional Flow tabs overriding the workflow YAML tabs."),
-  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
-  values: record(string2(), string2()).optional().describe("Optional string key/value metadata map (local mode).")
-}).superRefine((data, ctx) => {
-  const hasSpec = data.path !== undefined;
-  const hasReview = data.paths !== undefined;
-  const isLocal = data.mode === "local" || !hasSpec && !hasReview && (data.repoRoot !== undefined || data.branch !== undefined || data.workflow !== undefined || data.forceNew !== undefined);
-  if (hasSpec && hasReview) {
-    ctx.addIssue({
-      code: "custom",
-      message: "provide either { path, baseSha, ticketUrl } or { paths }, not both"
-    });
-    return;
-  }
-  if (data.mode !== "local" && hasSpec) {
-    if (!data.path)
-      ctx.addIssue({
-        code: "custom",
-        path: ["path"],
-        message: "path must be a string"
-      });
-    if (!data.baseSha)
-      ctx.addIssue({
-        code: "custom",
-        path: ["baseSha"],
-        message: "baseSha must be a string"
-      });
-    if (!data.ticketUrl)
-      ctx.addIssue({
-        code: "custom",
-        path: ["ticketUrl"],
-        message: "ticketUrl must be a string"
-      });
-    return;
-  }
-  if (!isLocal && !hasSpec && !hasReview) {
-    ctx.addIssue({
-      code: "custom",
-      message: "provide { path, baseSha, ticketUrl } for a spec flow, { paths } for a review flow, or { mode: 'local', repoRoot, branch } for a local ticket flow"
-    });
-  }
-});
-var flowStatusInputSchema = object({
-  flowId: string2().optional().describe("ID from start_flow."),
-  repoRoot: string2().optional().describe("Git repository root to look up a bound local Ticket Flow."),
-  branch: string2().optional().describe("Git branch to look up a bound local Ticket Flow.")
-});
-var flowLogInputSchema = object({
-  flowId: string2().min(1).describe("ID from start_flow.")
-});
-var flowAdvanceInputSchema = object({
-  node: string2().min(1).describe("Name of the active non-approval node to complete."),
-  summary: string2().min(1).describe("Evidence summary for this node."),
-  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
-  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
-  branch: string2().optional().describe("Git branch name (optional if flowId is provided)."),
-  artifactUrl: string2().optional().describe("Optional artifact/spec/diff URL."),
-  prUrl: string2().optional().describe("Optional PR URL."),
-  commitSha: string2().optional().describe("Optional Git commit SHA produced by this node."),
-  proof: string2().optional().describe("Optional verification proof summary or command result."),
-  usage: usageSchema.optional().describe("Optional token usage recorded for this node."),
-  values: record(string2(), string2()).optional().describe("Optional metadata merged onto flow values.")
-});
-var flowApproveInputSchema = object({
-  flowId: string2().optional().describe("Flow ID waiting at its approval gate."),
-  decision: _enum(["approve", "reject"]).optional(),
-  version: number2().int().min(1).optional().describe("Flow version the caller read (cloud merge gate)."),
-  attempt: number2().int().min(1).optional().describe("Flow attempt the caller read (cloud merge gate)."),
-  decisionId: string2().optional().describe("Optional caller-supplied idempotency key for this decision."),
-  node: string2().optional().describe("Approval node name for a local Ticket Flow (e.g. 'go')."),
-  repoRoot: string2().optional().describe("Git repository root (local approval node)."),
-  branch: string2().optional().describe("Git branch name (local approval node)."),
-  approvedBy: string2().optional().describe("Optional approver identifier."),
-  summary: string2().optional().describe("Optional approval note.")
-}).superRefine((data, ctx) => {
-  const node = trimmed(data.node);
-  const hasCloudGateArgs = data.version !== undefined || data.attempt !== undefined;
-  if (node && hasCloudGateArgs) {
-    ctx.addIssue({
-      code: "custom",
-      message: "provide either { node } for a local approval node or { flowId, decision, version, attempt } for a cloud merge gate, not both"
-    });
-    return;
-  }
-  if (!node) {
-    if (!data.flowId)
-      ctx.addIssue({
-        code: "custom",
-        path: ["flowId"],
-        message: "flowId must be a string"
-      });
-    if (!data.decision)
-      ctx.addIssue({
-        code: "custom",
-        path: ["decision"],
-        message: "decision must be approve or reject"
-      });
-    if (data.version === undefined)
-      ctx.addIssue({
-        code: "custom",
-        path: ["version"],
-        message: "version must be a positive integer"
-      });
-    if (data.attempt === undefined)
-      ctx.addIssue({
-        code: "custom",
-        path: ["attempt"],
-        message: "attempt must be a positive integer"
-      });
-  }
-});
-var flowSignalInputSchema2 = object({
-  flowId: string2().trim().min(1).describe("Flow ID waiting on a signal."),
-  type: string2().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, "signal type must match [a-z0-9][a-z0-9_-]{0,63}").describe("Signal name declared in the workflow wait step."),
-  payload: record(string2(), string2()).optional().describe("Optional string payload merged into flow values."),
-  dedupeKey: string2().trim().min(1).max(128).optional().describe("Optional caller idempotency key.")
-});
-var flowRetryInputSchema = object({
-  flowId: string2().trim().min(1).describe("Flow ID to start or retry."),
-  stackBase: string2().trim().min(1).optional().describe("Optional stack base branch."),
-  awaitMergeReady: boolean2().optional().describe("Optional wait-for-merge-ready flag.")
-});
-var flowCancelInputSchema = object({
-  flowId: string2().trim().min(1).describe("Flow ID to cancel."),
-  reason: string2().trim().min(1).optional().describe("Optional cancellation reason.")
-});
-var flowBypassInputSchema = object({
-  reason: string2().min(1).describe("Mandatory explanation for the temporary workflow bypass."),
-  durationMinutes: number2().int().min(1).optional().describe("Bypass duration in minutes (default 30, max 240)."),
-  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
-  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
-  branch: string2().optional().describe("Git branch name (optional if flowId is provided).")
-});
-function stripSafeIntMax(node) {
-  if (Array.isArray(node))
-    return node.map(stripSafeIntMax);
-  if (!node || typeof node !== "object")
-    return node;
-  const out = {};
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "maximum" && value === Number.MAX_SAFE_INTEGER)
-      continue;
-    if (key === "minimum" && value === Number.MIN_SAFE_INTEGER)
-      continue;
-    out[key] = stripSafeIntMax(value);
-  }
-  return out;
-}
-function toMcpInputSchema(schema) {
-  const raw = toJSONSchema(schema, { target: "draft-07" });
-  const cleaned = stripSafeIntMax(raw);
-  delete cleaned.$schema;
-  if (cleaned.additionalProperties === false)
-    delete cleaned.additionalProperties;
-  return cleaned;
-}
-var READ_ONLY_TOOL = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false
-};
-var WRITE_TOOL = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: true
-};
-var DESTRUCTIVE_TOOL = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: false,
-  openWorldHint: true
-};
-var FLOW_TOOLS = [
-  {
-    name: "start_flow",
-    description: "Start one Nosta flow. Pass { workflow?, repoRoot?, branch?, title?, ticket?, ticketUrl?, forceNew? } for a YAML/local flow, { path, baseSha, ticketUrl } for a spec flow, or { paths, title? } for a 1-step review flow.",
-    inputSchema: toMcpInputSchema(flowStartInputSchema2),
-    annotations: WRITE_TOOL
-  },
-  {
-    name: "validate_flow",
-    description: "Validate a workflow YAML file or inline YAML locally: syntax, primitives, repo-relative skills/references, evidence declarations, and backend secret availability.",
-    inputSchema: toMcpInputSchema(validateFlowInputSchema),
-    annotations: READ_ONLY_TOOL
-  },
-  {
-    name: "list_flows",
-    description: "List Nosta flows with optional definition, view, and limit filters.",
-    inputSchema: toMcpInputSchema(flowListInputSchema),
-    annotations: READ_ONLY_TOOL
-  },
-  {
-    name: "get_flow",
-    description: "Get one flow with its direct steps, child flow records, and local gate binding status.",
-    inputSchema: toMcpInputSchema(flowStatusInputSchema),
-    annotations: READ_ONLY_TOOL
-  },
-  {
-    name: "get_flow_log",
-    description: "Get one flow's ordered step events.",
-    inputSchema: toMcpInputSchema(flowLogInputSchema),
-    annotations: READ_ONLY_TOOL
-  },
-  {
-    name: "get_flow_history",
-    description: "Aggregate recent run history for one workflow definition: pass/fail counts, failing steps with median duration, HITL pauses, and missing evidence.",
-    inputSchema: toMcpInputSchema(flowHistoryInputSchema),
-    annotations: READ_ONLY_TOOL
-  },
-  {
-    name: "advance_flow",
-    description: "Mark the current non-approval node of a bound local Ticket Flow complete with evidence and report progress to Nosta. Rejects approval nodes and out-of-order jumps.",
-    inputSchema: toMcpInputSchema(flowAdvanceInputSchema),
-    annotations: WRITE_TOOL
-  },
-  {
-    name: "sync_flow",
-    description: "Sync local docs, evidence files, command checks, review verdicts, git diff summary, PR link, and ship metadata into the bound Flow object (~/.nosta/flows/) and cloud Flow DO in one idempotent call.",
-    inputSchema: toMcpInputSchema(flowSyncInputSchema),
-    annotations: WRITE_TOOL
-  },
-  {
-    name: "signal_flow",
-    description: "Send a named signal with optional string payload to a waiting Nosta flow.",
-    inputSchema: toMcpInputSchema(flowSignalInputSchema2),
-    annotations: WRITE_TOOL
-  },
-  {
-    name: "retry_flow",
-    description: "Start or retry an existing Nosta flow.",
-    inputSchema: toMcpInputSchema(flowRetryInputSchema),
-    annotations: WRITE_TOOL
-  },
-  {
-    name: "cancel_flow",
-    description: "Cancel a running or waiting Nosta flow.",
-    inputSchema: toMcpInputSchema(flowCancelInputSchema),
-    annotations: DESTRUCTIVE_TOOL
-  },
-  {
-    name: "approve_flow",
-    description: "Approve or reject a cloud flow merge gate ({ flowId, decision, version, attempt }) or record owner approval for an approval node in a bound local Ticket Flow ({ node, decision?, flowId?, repoRoot?, branch?, summary? }).",
-    inputSchema: toMcpInputSchema(flowApproveInputSchema),
-    annotations: DESTRUCTIVE_TOOL
-  },
-  {
-    name: "bypass_flow",
-    description: "Temporarily unlock gated writes for a (repoRoot, branch) for a bounded duration with a mandatory reason. Always requires explicit owner confirmation.",
-    inputSchema: toMcpInputSchema(flowBypassInputSchema),
-    annotations: DESTRUCTIVE_TOOL
-  }
-];
-function formatZodError(error) {
-  return error.issues.map((issue) => {
-    const path = issue.path.join(".");
-    return path && !issue.message.startsWith(path) ? `${path}: ${issue.message}` : issue.message;
-  }).join("; ");
-}
-function parseToolArgs(schema, args) {
-  const parsed = schema.safeParse(args);
-  if (!parsed.success)
-    throw new Error(formatZodError(parsed.error));
-  return parsed.data;
-}
-var FLOW_HANDLERS = {
-  start_flow: (ctx) => startFlow({
-    args: parseToolArgs(flowStartInputSchema2, ctx.args),
-    backend: ctx.backend,
-    gate: ctx.gate
-  }),
-  validate_flow: async (ctx) => JSON.stringify(await validateFlow({
-    args: parseToolArgs(validateFlowInputSchema, ctx.args),
-    backend: ctx.backend
-  })),
-  list_flows: (ctx) => listFlows(parseToolArgs(flowListInputSchema, ctx.args), ctx.backend),
-  get_flow: (ctx) => statusFlow({
-    args: parseToolArgs(flowStatusInputSchema, ctx.args),
-    backend: ctx.backend,
-    gate: ctx.gate
-  }),
-  get_flow_log: (ctx) => readLog(parseToolArgs(flowLogInputSchema, ctx.args), ctx.backend),
-  get_flow_history: async (ctx) => JSON.stringify(await getFlowHistory({
-    args: parseToolArgs(flowHistoryInputSchema, ctx.args),
-    backend: ctx.backend
-  })),
-  advance_flow: (ctx) => advanceLocal(parseToolArgs(flowAdvanceInputSchema, ctx.args), ctx.gate),
-  sync_flow: async (ctx) => JSON.stringify(await syncFlow({
-    args: parseToolArgs(flowSyncInputSchema, ctx.args),
-    backend: ctx.backend
-  })),
-  signal_flow: (ctx) => signalFlow(parseToolArgs(flowSignalInputSchema2, ctx.args), ctx.backend),
-  retry_flow: (ctx) => retryFlow(parseToolArgs(flowRetryInputSchema, ctx.args), ctx.backend),
-  cancel_flow: (ctx) => cancelFlow(parseToolArgs(flowCancelInputSchema, ctx.args), ctx.backend),
-  approve_flow: (ctx) => approveFlow({
-    args: parseToolArgs(flowApproveInputSchema, ctx.args),
-    backend: ctx.backend,
-    gate: ctx.gate
-  }),
-  bypass_flow: (ctx) => bypassLocal(parseToolArgs(flowBypassInputSchema, ctx.args), ctx.gate)
-};
-async function callFlowTool(input) {
-  if (!Object.hasOwn(FLOW_HANDLERS, input.name))
-    return null;
-  const handler = FLOW_HANDLERS[input.name];
-  if (!handler)
-    return null;
-  const gate = input.gate ?? new WorkflowGate({ backend: input.backend, enableStream: false });
-  return handler({ args: input.args, backend: input.backend, gate });
-}
-function enrichFlowReply(raw, baseUrl) {
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    console.error(`[nosta-mcp] non-JSON flow reply: ${error instanceof Error ? error.message : String(error)}`);
-    return raw;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    return raw;
-  const record2 = parsed;
-  const flowObj = record2.flow && typeof record2.flow === "object" ? record2.flow : null;
-  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record2.flowId === "string" ? record2.flowId : typeof record2.id === "string" ? record2.id : null;
-  if (!flowId)
-    return raw;
-  return JSON.stringify({
-    ...record2,
-    flowUrl: `${baseUrl}/flows/${encodeURIComponent(flowId)}`
-  });
-}
-async function resolveReviewParentId(args) {
-  const explicit = trimmed(args.parentId);
-  if (explicit)
-    return explicit;
-  try {
-    const { repoRoot, branch } = await resolveRepoBranch({
-      repoRoot: trimmed(args.repoRoot),
-      branch: trimmed(args.branch)
-    });
-    return await resolveIndexedFlowId({
-      repoRoot,
-      branch,
-      ticket: trimmed(args.ticket)
-    }) ?? undefined;
-  } catch {
-    return trimmed(args.ticket) ? await resolveIndexedFlowId({ ticket: trimmed(args.ticket) }) ?? undefined : undefined;
-  }
-}
-async function startReviewFlow(args, backend) {
-  const packet = await buildPacket({ paths: args.paths, title: args.title });
-  const parentId = await resolveReviewParentId(args);
-  const raw = await backend.request("/api/flow", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "Idempotency-Key": randomUUID4()
-    },
-    body: JSON.stringify({
-      mode: "review",
-      title: packet.title,
-      files: packet.files,
-      ...parentId ? { parentId } : {}
-    })
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-async function startSpecFlow(args, backend) {
-  const { bytes } = await readBoundedWorkspaceFile({
-    filePath: args.path,
-    maxBytes: MAX_PACKET_BYTES
-  });
-  const spec = Buffer.from(bytes).toString("utf8");
-  const baseSha = args.baseSha;
-  const ticketUrl = args.ticketUrl;
-  const key = createHash2("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
-  const raw = await backend.request("/api/flow", {
-    method: "POST",
-    headers: { "content-type": "application/json", "Idempotency-Key": key },
-    body: JSON.stringify({ mode: "spec", spec, baseSha, ticketUrl })
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-async function startFlow(input) {
-  const { args, backend, gate } = input;
-  const hasSpec = args.path !== undefined;
-  const hasReview = args.paths !== undefined;
-  const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined || args.workflow !== undefined || args.forceNew !== undefined);
-  if (isLocal) {
-    const raw = JSON.stringify(await gate.start({
-      parentId: trimmed(args.parentId),
-      repoRoot: trimmed(args.repoRoot),
-      branch: trimmed(args.branch),
-      base: trimmed(args.base),
-      workflow: trimmed(args.workflow),
-      forceNew: args.forceNew,
-      title: trimmed(args.title),
-      ticket: trimmed(args.ticket),
-      ticketUrl: trimmed(args.ticketUrl),
-      endState: trimmed(args.endState),
-      ticketBody: trimmed(args.ticketBody),
-      spec: trimmed(args.spec),
-      tabs: args.tabs,
-      defaultTab: trimmed(args.defaultTab),
-      values: args.values
-    }));
-    return enrichFlowReply(raw, backend.baseUrl);
-  }
-  if (hasReview)
-    return startReviewFlow(args, backend);
-  return startSpecFlow(args, backend);
-}
-function listFlows(args, backend) {
-  return backend.request(getListFlowsUrl({
-    ...args.definition ? { definition: args.definition } : {},
-    ...args.limit !== undefined ? { limit: args.limit } : {},
-    ...args.view ? { view: args.view } : {},
-    ...args.showAll !== undefined ? { showAll: args.showAll } : {}
-  }));
-}
-async function signalFlow(args, backend) {
-  const body = {
-    type: args.type,
-    payload: args.payload ?? {},
-    ...args.dedupeKey ? { dedupeKey: args.dedupeKey } : {}
-  };
-  const raw = await backend.request(getSignalFlowUrl(encodeURIComponent(args.flowId)), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-async function retryFlow(args, backend) {
-  const body = {
-    ...args.stackBase ? { stackBase: args.stackBase } : {},
-    ...args.awaitMergeReady !== undefined ? { awaitMergeReady: args.awaitMergeReady } : {}
-  };
-  const raw = await backend.request(getStartFlowUrl(encodeURIComponent(args.flowId)), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-async function cancelFlow(args, backend) {
-  const body = args.reason ? { reason: args.reason } : {};
-  const raw = await backend.request(getCancelFlowUrl(encodeURIComponent(args.flowId)), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-function readLog(args, backend) {
-  return backend.request(getListFlowEventsUrl(encodeURIComponent(args.flowId)));
-}
-async function statusFlow(input) {
-  const raw = JSON.stringify(await input.gate.status({
-    flowId: trimmed(input.args.flowId),
-    repoRoot: trimmed(input.args.repoRoot),
-    branch: trimmed(input.args.branch)
-  }));
-  return enrichFlowReply(raw, input.backend.baseUrl);
-}
-async function advanceLocal(args, gate) {
-  return JSON.stringify(await gate.advance({
-    node: args.node,
-    summary: args.summary,
-    flowId: trimmed(args.flowId),
-    repoRoot: trimmed(args.repoRoot),
-    branch: trimmed(args.branch),
-    artifactUrl: trimmed(args.artifactUrl),
-    prUrl: trimmed(args.prUrl),
-    commitSha: trimmed(args.commitSha),
-    proof: trimmed(args.proof),
-    usage: args.usage,
-    values: args.values
-  }));
-}
-async function approveFlow(input) {
-  const { args, backend, gate } = input;
-  const node = trimmed(args.node);
-  if (node) {
-    return JSON.stringify(await gate.approve({
-      node,
-      decision: args.decision ?? "approve",
-      flowId: trimmed(args.flowId),
-      repoRoot: trimmed(args.repoRoot),
-      branch: trimmed(args.branch),
-      approvedBy: trimmed(args.approvedBy),
-      summary: trimmed(args.summary)
-    }));
-  }
-  const decisionId = args.decisionId && args.decisionId.length > 0 ? args.decisionId : randomUUID4();
-  const body = {
-    decision: args.decision,
-    version: args.version,
-    attempt: args.attempt,
-    decisionId
-  };
-  const raw = await backend.request(getApproveFlowUrl(encodeURIComponent(args.flowId)), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "Idempotency-Key": decisionId
-    },
-    body: JSON.stringify(body)
-  });
-  return enrichFlowReply(raw, backend.baseUrl);
-}
-async function bypassLocal(args, gate) {
-  return JSON.stringify(await gate.bypass({
-    reason: args.reason,
-    durationMinutes: args.durationMinutes,
-    flowId: trimmed(args.flowId),
-    repoRoot: trimmed(args.repoRoot),
-    branch: trimmed(args.branch)
-  }));
 }
 
 // src/server.ts
@@ -27574,6 +26055,4304 @@ function parseFragment(fragmentContext, html, options) {
   return parser.getFragment();
 }
 
+// src/flow.ts
+import { createHash as createHash2, randomUUID as randomUUID5 } from "node:crypto";
+
+// src/api/generated/nosta.ts
+var getFlowsListUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["columns", "excludeDefinitions"];
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? "null" : String(v));
+      });
+      return;
+    }
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/toolkits/flows/list?${stringifiedParams}` : `/api/toolkits/flows/list`;
+};
+var getFlowsGetUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/toolkits/flows/get?${stringifiedParams}` : `/api/toolkits/flows/get`;
+};
+var getFlowsGetPageUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/toolkits/flows/get_page?${stringifiedParams}` : `/api/toolkits/flows/get_page`;
+};
+var getFlowsListEventsUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/toolkits/flows/list_events?${stringifiedParams}` : `/api/toolkits/flows/list_events`;
+};
+var getFlowsCreateUrl = () => {
+  return `/api/toolkits/flows/create`;
+};
+var getFlowsApproveUrl = () => {
+  return `/api/toolkits/flows/approve`;
+};
+var getFlowsReportUrl = () => {
+  return `/api/toolkits/flows/report`;
+};
+var getPagesPublishUrl = () => {
+  return `/api/toolkits/pages/publish`;
+};
+var getRuntimeSecretsListUrl = () => {
+  return `/api/toolkits/runtime/secrets_list`;
+};
+var getRuntimeBundlesLatestUrl = (params) => {
+  const normalizedParams = new URLSearchParams;
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+  const stringifiedParams = normalizedParams.toString();
+  return stringifiedParams.length > 0 ? `/api/toolkits/runtime/bundles_latest?${stringifiedParams}` : `/api/toolkits/runtime/bundles_latest`;
+};
+
+// ../../packages/shared/src/utils/json.ts
+function parseJsonResponse(input) {
+  let decoded;
+  try {
+    decoded = JSON.parse(input.raw);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid ${input.label} response: ${detail}`);
+  }
+  const parsed = input.schema.safeParse(decoded);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => i.message).join("; ");
+    throw new Error(`invalid ${input.label} response: ${issues}`);
+  }
+  return parsed.data;
+}
+var UNSAFE_JSON_PATH_SEGMENTS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype"
+]);
+
+// src/transport.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+var flowIdReplySchema = object({ flow: object({ id: string2() }) });
+function unwrapToolkitData(raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && raw.ok === true && "data" in raw) {
+    return raw.data;
+  }
+  return raw;
+}
+function validateBaseUrl(rawUrl) {
+  const normalized = rawUrl.replace(/\/+$/, "");
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+    throw new Error("NOSTA_BACKEND_URL must use https:// for non-loopback hosts");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("NOSTA_BACKEND_URL must use https:// or http://");
+  }
+  return normalized;
+}
+
+class TransportHttpError extends Error {
+  status;
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+async function sendText(cfg, req) {
+  const init = req.init ?? {};
+  const headers = new Headers(init.headers);
+  headers.set("authorization", `Bearer ${cfg.token}`);
+  if (cfg.actor && !headers.has("x-nosta-actor"))
+    headers.set("x-nosta-actor", cfg.actor);
+  const method = (init.method ?? "GET").toUpperCase();
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    ...init,
+    headers,
+    signal: init.signal ?? AbortSignal.timeout(cfg.timeoutMs)
+  });
+  const text = await res.text();
+  if (!res.ok)
+    throw new TransportHttpError(`nosta ${method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`, res.status);
+  return text;
+}
+async function sendJson(cfg, req) {
+  const headers = {
+    authorization: `Bearer ${cfg.token}`,
+    ...cfg.actor ? { "x-nosta-actor": cfg.actor } : {},
+    ...req.body !== undefined ? { "content-type": "application/json" } : {},
+    ...req.headers ?? {}
+  };
+  const res = await cfg.fetch(`${cfg.baseUrl}${req.path}`, {
+    method: req.method,
+    headers,
+    ...req.body !== undefined ? { body: JSON.stringify(req.body) } : {},
+    signal: AbortSignal.timeout(cfg.timeoutMs)
+  });
+  if (req.allow404 && res.status === 404)
+    return null;
+  const text = await res.text();
+  if (!res.ok)
+    throw new Error(`nosta ${req.method} ${req.path} failed (${res.status}): ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : {};
+}
+function bundleHeaders(input) {
+  return {
+    "content-type": "application/gzip",
+    "x-bundle-sha256": input.sha256,
+    ...input.commitSha ? { "x-bundle-commit": input.commitSha } : {},
+    ...input.dirty !== undefined ? { "x-bundle-dirty": input.dirty ? "1" : "0" } : {},
+    ...input.repoCount !== undefined ? { "x-bundle-repos": String(input.repoCount) } : {}
+  };
+}
+function createNostaTransport(config) {
+  const cfg = {
+    baseUrl: validateBaseUrl(config.baseUrl),
+    token: config.token,
+    actor: config.actor,
+    timeoutMs: config.timeoutMs ?? 120000,
+    fetch: config.fetch ?? fetch
+  };
+  return {
+    baseUrl: cfg.baseUrl,
+    token: cfg.token,
+    streamUrl(path) {
+      return `${cfg.baseUrl}${path}`;
+    },
+    request(path, init) {
+      return sendText(cfg, { path, init });
+    },
+    requestJson(req) {
+      return sendJson(cfg, req);
+    },
+    async getLatestBundle(workspace) {
+      const raw = await sendJson(cfg, {
+        method: "GET",
+        path: getRuntimeBundlesLatestUrl({ workspace }),
+        allow404: true
+      });
+      return raw === null ? null : bundlePointerSchema.parse(unwrapToolkitData(raw));
+    },
+    async putBundle(input) {
+      const text = await sendText(cfg, {
+        path: `/api/bundles/${encodeURIComponent(input.workspace)}`,
+        init: {
+          method: "PUT",
+          headers: bundleHeaders(input),
+          body: Buffer.from(input.bytes)
+        }
+      });
+      return bundlePointerSchema.parse(JSON.parse(text));
+    },
+    async createLocalFlow(input) {
+      return flowIdReplySchema.parse(unwrapToolkitData(await sendJson(cfg, {
+        method: "POST",
+        path: getFlowsCreateUrl(),
+        headers: { "Idempotency-Key": input.id },
+        body: { mode: "local", ...input }
+      })));
+    },
+    async reportFlow(input) {
+      const { flowId, ...body } = input;
+      return flowIdReplySchema.parse(unwrapToolkitData(await sendJson(cfg, {
+        method: "POST",
+        path: getFlowsReportUrl(),
+        body: { id: flowId, ...body }
+      })));
+    },
+    async runCloudStep(input) {
+      const { flowId, ...body } = input;
+      const raw = await sendJson(cfg, {
+        method: "POST",
+        path: "/api/toolkits/flows/run_cloud_step",
+        body: { id: flowId, ...body }
+      });
+      return cloudStepReplySchema.parse(unwrapToolkitData(raw));
+    },
+    async startYamlFlow(input) {
+      const { idempotencyKey, ...rest } = input;
+      return flowIdReplySchema.parse(unwrapToolkitData(await sendJson(cfg, {
+        method: "POST",
+        path: getFlowsCreateUrl(),
+        body: { mode: "yaml", ...rest },
+        headers: { "Idempotency-Key": idempotencyKey }
+      })));
+    },
+    async getFlow(flowId) {
+      return unwrapToolkitData(await sendJson(cfg, {
+        method: "GET",
+        path: getFlowsGetUrl({ id: flowId })
+      }));
+    },
+    async listFlowEvents(flowId) {
+      const text = await sendText(cfg, {
+        path: getFlowsListEventsUrl({ id: flowId })
+      });
+      try {
+        return JSON.stringify(unwrapToolkitData(JSON.parse(text)));
+      } catch {
+        return text;
+      }
+    },
+    async approveFlow(input) {
+      const { flowId, ...rest } = input;
+      const decisionId = rest.decisionId && rest.decisionId.length > 0 ? rest.decisionId : randomUUID2();
+      const body = { id: flowId, ...rest, decisionId };
+      const text = await sendText(cfg, {
+        path: getFlowsApproveUrl(),
+        init: {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "Idempotency-Key": decisionId
+          },
+          body: JSON.stringify(body)
+        }
+      });
+      try {
+        return JSON.stringify(unwrapToolkitData(JSON.parse(text)));
+      } catch {
+        return text;
+      }
+    }
+  };
+}
+function publishPage(backend, page) {
+  const body = {
+    ticket: page.ticket,
+    name: page.name,
+    title: page.title,
+    stepId: page.stepId ?? "",
+    html: page.html,
+    ...page.slot ? { slot: page.slot } : {},
+    ...page.flowId ? { flowId: page.flowId } : {},
+    ...page.linkedTo && page.linkedTo.length > 0 ? { linkedTo: page.linkedTo } : {}
+  };
+  return backend.request(getPagesPublishUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+}
+function transportFromEnv(env = process.env) {
+  return createNostaTransport({
+    baseUrl: env.NOSTA_BACKEND_URL ?? "http://127.0.0.1:18086",
+    token: env.NOSTA_PLUGIN_TOKEN ?? "",
+    timeoutMs: 30000
+  });
+}
+
+// src/flows/history.ts
+var flowHistoryInputSchema = object({
+  definition: string2().trim().min(1).describe("Workflow definition name to analyze across recent runs."),
+  workspace: string2().trim().min(1).optional().describe("Optional workspace filter."),
+  limit: number2().int().min(1).max(100).optional().describe("Maximum recent runs to inspect (default 20).")
+});
+function recordPageStats(page, acc) {
+  if (page.flow.evidence.length === 0)
+    acc.missingEvidenceCount += 1;
+  const currentSteps = page.flow.steps.filter((step) => step.attempt === page.flow.attempt);
+  for (const step of currentSteps) {
+    if (step.kind === "approval" && step.decision !== null) {
+      acc.approvalCount += 1;
+    }
+    if (step.endedAt !== null && step.endedAt >= step.startedAt) {
+      const list = acc.stepDurations.get(step.id) ?? [];
+      list.push(step.endedAt - step.startedAt);
+      acc.stepDurations.set(step.id, list);
+    }
+    if (step.status === "errored" || step.status === "rejected") {
+      acc.stepFailures.set(step.id, (acc.stepFailures.get(step.id) ?? 0) + 1);
+    }
+  }
+}
+async function fetchFlowPage(flowId, backend) {
+  const url = getFlowsGetPageUrl({ id: flowId });
+  const raw = await backend.request(url);
+  return parseJsonResponse({
+    raw: JSON.stringify(unwrapToolkitData(JSON.parse(raw))),
+    schema: flowPageSchema,
+    label: `/api/toolkits/flows/get_page?id=${flowId}`
+  });
+}
+async function getFlowHistory(input) {
+  const limit = input.args.limit ?? 20;
+  const listUrl = getFlowsListUrl({
+    definition: input.args.definition,
+    workspace: input.args.workspace,
+    limit
+  });
+  const listRaw = await input.backend.request(listUrl);
+  const parsedList = parseJsonResponse({
+    raw: JSON.stringify(unwrapToolkitData(JSON.parse(listRaw))),
+    schema: flowListSchema,
+    label: "/api/toolkits/flows/list"
+  });
+  const flows = [...parsedList.flows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+  const acc = {
+    missingEvidenceCount: 0,
+    approvalCount: 0,
+    stepFailures: new Map,
+    stepDurations: new Map
+  };
+  let completeCount = 0;
+  let failedCount = 0;
+  const topFailingFlowIds = [];
+  for (const summary of flows) {
+    if (summary.state === "idle" && summary.outcome === "complete") {
+      completeCount += 1;
+    } else if (isFailingLifecycle(summary)) {
+      failedCount += 1;
+      if (topFailingFlowIds.length < 10)
+        topFailingFlowIds.push(summary.flowId);
+    }
+  }
+  const pages = await Promise.all(flows.map((summary) => fetchFlowPage(summary.flowId, input.backend)));
+  for (const page of pages)
+    recordPageStats(page, acc);
+  const failingSteps = Array.from(acc.stepFailures.entries()).map(([stepId, failures]) => ({
+    stepId,
+    failures,
+    medianMs: median(acc.stepDurations.get(stepId) ?? [])
+  })).sort((a, b) => b.failures - a.failures || a.stepId.localeCompare(b.stepId));
+  return {
+    definition: input.args.definition,
+    totalRuns: flows.length,
+    completeCount,
+    failedCount,
+    missingEvidenceCount: acc.missingEvidenceCount,
+    failingSteps,
+    approvalCount: acc.approvalCount,
+    topFailingFlowIds
+  };
+}
+
+// src/flows/validate.ts
+import { join as join6 } from "node:path";
+
+// ../../node_modules/.bun/yaml@2.9.1/node_modules/yaml/dist/index.js
+var composer = require_composer();
+var Document = require_Document();
+var Schema = require_Schema();
+var errors3 = require_errors();
+var Alias = require_Alias();
+var identity = require_identity();
+var Pair = require_Pair();
+var Scalar = require_Scalar();
+var YAMLMap = require_YAMLMap();
+var YAMLSeq = require_YAMLSeq();
+var cst = require_cst();
+var lexer = require_lexer();
+var lineCounter = require_line_counter();
+var parser = require_parser();
+var publicApi = require_public_api();
+var visit = require_visit();
+var $Composer = composer.Composer;
+var $Document = Document.Document;
+var $Schema = Schema.Schema;
+var $YAMLError = errors3.YAMLError;
+var $YAMLParseError = errors3.YAMLParseError;
+var $YAMLWarning = errors3.YAMLWarning;
+var $Alias = Alias.Alias;
+var $isAlias = identity.isAlias;
+var $isCollection = identity.isCollection;
+var $isDocument = identity.isDocument;
+var $isMap = identity.isMap;
+var $isNode = identity.isNode;
+var $isPair = identity.isPair;
+var $isScalar = identity.isScalar;
+var $isSeq = identity.isSeq;
+var $Pair = Pair.Pair;
+var $Scalar = Scalar.Scalar;
+var $YAMLMap = YAMLMap.YAMLMap;
+var $YAMLSeq = YAMLSeq.YAMLSeq;
+var $Lexer = lexer.Lexer;
+var $LineCounter = lineCounter.LineCounter;
+var $Parser = parser.Parser;
+var $parse = publicApi.parse;
+var $parseAllDocuments = publicApi.parseAllDocuments;
+var $parseDocument = publicApi.parseDocument;
+var $stringify = publicApi.stringify;
+var $visit = visit.visit;
+var $visitAsync = visit.visitAsync;
+
+// ../../packages/shared/src/schema/runtime/cloud-session.ts
+var CLOUD_SESSION_ARTIFACTS = [
+  "in.tgz",
+  "values-in.json",
+  "keys.json",
+  "started.txt",
+  "exit.txt",
+  "values.json",
+  "usage.json",
+  "out.tgz",
+  "error.txt"
+];
+var cloudSessionArtifactSchema = _enum(CLOUD_SESSION_ARTIFACTS);
+var CLOUD_SESSION_JOB_ID_PATTERN = /^[A-Za-z0-9:._-]{1,160}$/;
+var cloudSessionRepoSchema = object({
+  repository: string2().min(1).max(200),
+  ref: string2().min(1).max(200),
+  base: string2().min(1).max(200).optional()
+});
+var cloudSessionLinksSchema = object({
+  inputs: string2().url().optional(),
+  values_in: string2().url().optional(),
+  keys: string2().url().optional(),
+  keys_clear: string2().url().optional(),
+  started: string2().url(),
+  exit: string2().url(),
+  values: string2().url(),
+  usage: string2().url(),
+  out: string2().url(),
+  error: string2().url()
+});
+var cloudSessionJobSchema = object({
+  jobId: string2().regex(CLOUD_SESSION_JOB_ID_PATTERN),
+  kind: _enum(["agent", "command"]),
+  repo: cloudSessionRepoSchema.optional(),
+  prompt: string2().min(1).optional(),
+  command: string2().min(1).optional(),
+  minutes: number2().int().min(1).max(120),
+  links: cloudSessionLinksSchema
+});
+var cloudSessionUsageSchema = object({
+  model: string2().min(1).max(120).optional(),
+  inputTokens: number2().int().min(0).default(0),
+  cachedInputTokens: number2().int().min(0).optional(),
+  outputTokens: number2().int().min(0).default(0),
+  reasoningTokens: number2().int().min(0).optional(),
+  durationMs: number2().int().min(0).default(0),
+  status: number2().int().nullable().optional(),
+  error: string2().max(2000).nullable().optional()
+});
+
+// ../../packages/shared/src/workflow.ts
+var RESERVED_VALUE_KEYS = new Set([
+  "flow",
+  "run",
+  "round",
+  "end",
+  "part",
+  "reason"
+]);
+var idRe = SIGNAL_NAME;
+var CALL_NAME_RE = /^[A-Za-z][A-Za-z0-9._:/-]{0,127}$/;
+var RESERVED_SECRET_NAMES = new Set(["NOSTA_VALUES_FILE", "HOME", "PATH"]);
+var MAX_STEP_SECRETS = 32;
+var secretListSchema = array(string2().regex(ENV_NAME).refine((name) => !RESERVED_SECRET_NAMES.has(name), "reserved secret name")).max(MAX_STEP_SECRETS);
+var whereSchema = _enum(["local", "cloud"]);
+var stringMap = record(string2(), string2());
+var outputPathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret output path");
+var safeFilePathSchema = string2().refine((value) => isSafeRelativePath(value) && !isSecretPath(value), "unsafe or secret path").transform((value) => normalizeRelativePath(value));
+var MAX_STEP_MINUTES = 60;
+var MAX_CLOUD_COMMAND_MINUTES = 10;
+var MAX_CLOUD_SESSION_MINUTES = 120;
+var baseFields = {
+  id: string2().regex(idRe),
+  where: whereSchema.optional(),
+  minutes: number2().int().min(1).max(MAX_CLOUD_SESSION_MINUTES).optional(),
+  secrets: secretListSchema.optional(),
+  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
+  runtime: stepRuntimeSchema.optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  repo: cloudSessionRepoSchema.optional()
+};
+var stepHookSchema = object({
+  event: _enum(["pre", "post"]),
+  run: string2().min(1),
+  secrets: secretListSchema.optional()
+});
+var flowGuardsSchema = object({
+  approvalNodes: array(string2().regex(idRe)).max(32).optional(),
+  allowBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
+  gateBeforeApproval: array(string2().min(1).max(256)).max(64).optional(),
+  prGateAfter: array(string2().regex(idRe)).max(32).optional()
+});
+var flowEvidenceSchema = object({
+  required: boolean2().optional(),
+  artifacts: array(safeFilePathSchema).max(32).optional(),
+  checks: array(string2().regex(idRe)).max(32).optional()
+});
+function unsupportedCloudSessionPrimitives(step) {
+  const unsupported = [];
+  if (step.hooks && step.hooks.length > 0)
+    unsupported.push("hooks");
+  if (step.tools !== undefined)
+    unsupported.push("tools");
+  if (step.toolkits && step.toolkits.length > 0)
+    unsupported.push("toolkits");
+  if (step.hosts && step.hosts.length > 0)
+    unsupported.push("hosts");
+  if (step.mcpServers && step.mcpServers.length > 0)
+    unsupported.push("mcpServers");
+  if (step.vmProfileId)
+    unsupported.push("vmProfileId");
+  return unsupported;
+}
+function cloudCommandTimeoutMessage(step) {
+  if (step.kind === "command" && step.where === "cloud" && step.runtime !== "cloud_session" && step.minutes !== undefined && step.minutes > MAX_CLOUD_COMMAND_MINUTES) {
+    return `minutes must be at most ${MAX_CLOUD_COMMAND_MINUTES} for cloud command steps unless runtime is cloud_session`;
+  }
+  return null;
+}
+function checkStepMinutes(step, ctx) {
+  const cloudMsg = cloudCommandTimeoutMessage(step);
+  if (cloudMsg) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["minutes"],
+      message: cloudMsg
+    });
+  } else if (step.minutes !== undefined && step.minutes > MAX_STEP_MINUTES) {
+    const supportsCloudSession = step.kind === "command" || step.kind === "restricted_agent";
+    if (!supportsCloudSession || step.runtime !== "cloud_session") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["minutes"],
+        message: `minutes must be at most ${MAX_STEP_MINUTES} unless runtime is cloud_session`
+      });
+    }
+  }
+  if (step.kind === "restricted_agent" && step.runtime === "cloud_session") {
+    const unsupported = unsupportedCloudSessionPrimitives(step);
+    if (unsupported.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["runtime"],
+        message: `restricted_agent with runtime cloud_session does not support: ${unsupported.join(", ")}`
+      });
+    }
+  }
+}
+var MAX_STEP_RETRIES = 3;
+var DEFAULT_CALL_RETRY_POLICY = {
+  max: 0,
+  delayMs: 500,
+  maxDelayMs: 30000,
+  backoff: 2
+};
+var callRetryObjectSchema = object({
+  max: number2().int().min(0).max(MAX_STEP_RETRIES).default(DEFAULT_CALL_RETRY_POLICY.max),
+  delayMs: number2().int().min(0).max(300000).default(DEFAULT_CALL_RETRY_POLICY.delayMs),
+  maxDelayMs: number2().int().min(0).max(1800000).default(DEFAULT_CALL_RETRY_POLICY.maxDelayMs),
+  backoff: number2().min(1).max(10).default(DEFAULT_CALL_RETRY_POLICY.backoff)
+});
+var callRetrySchema = union([
+  number2().int().min(0).max(MAX_STEP_RETRIES),
+  callRetryObjectSchema
+]);
+var stepOnErrorSchema = _enum(["fail", "continue"]);
+var stepProviderSchema = string2().trim().min(1).max(64);
+var commandSchema = object({
+  ...baseFields,
+  kind: literal("command"),
+  run: string2().min(1),
+  ends: stringMap.optional(),
+  retries: callRetrySchema.optional(),
+  onError: stepOnErrorSchema.optional(),
+  provider: stepProviderSchema.optional()
+});
+var reviewSchema = object({
+  ...baseFields,
+  kind: literal("review"),
+  skill: string2().min(1),
+  files: array(string2().refine(isValidFileName)).min(1).max(MAX_FILES)
+});
+var agentSchema = object({
+  id: string2().regex(idRe),
+  where: literal("local").optional(),
+  runtime: literal("local").optional(),
+  minutes: number2().int().min(1).max(MAX_STEP_MINUTES).optional(),
+  outputs: array(outputPathSchema).max(MAX_STEP_ARTIFACTS).optional(),
+  providerInstanceId: string2().min(1).max(64).optional(),
+  kind: literal("agent"),
+  prompt: string2().min(1)
+}).strict();
+var restrictedAgentSchema = object({
+  ...baseFields,
+  kind: literal("restricted_agent"),
+  prompt: string2().min(1),
+  skills: array(safeFilePathSchema).max(32).optional(),
+  references: array(safeFilePathSchema).max(32).optional(),
+  tools: array(_enum(SANDBOX_TOOL_NAMES)).max(32).optional(),
+  toolkits: array(string2().regex(TOOLKIT_NAME_RE)).max(16).optional(),
+  hooks: array(stepHookSchema).max(16).optional(),
+  hosts: array(string2().trim().min(1).max(255)).max(64).optional(),
+  mcpServers: array(string2().trim().min(1).max(64)).max(16).optional(),
+  vmProfileId: string2().min(1).max(64).optional()
+});
+var callSchema = object({
+  id: string2().regex(idRe),
+  where: literal("cloud").optional(),
+  minutes: number2().int().min(1).max(60).optional(),
+  secrets: secretListSchema.optional(),
+  kind: literal("call"),
+  call: string2().regex(CALL_NAME_RE),
+  version: number2().int().min(1).optional(),
+  args: record(string2(), unknown()).optional(),
+  outputs: stringMap.optional(),
+  retries: callRetrySchema.optional(),
+  onError: stepOnErrorSchema.optional(),
+  provider: stepProviderSchema.optional()
+});
+var leafCoreSchema = discriminatedUnion("kind", [
+  commandSchema,
+  reviewSchema,
+  agentSchema,
+  restrictedAgentSchema,
+  callSchema
+]).superRefine(checkStepMinutes);
+var MAX_AGAIN_IF_ROUNDS = 100;
+var MAX_WAIT_HOURS = 2160;
+var stepSchema = lazy(() => discriminatedUnion("kind", [
+  commandSchema.extend({ when: leafCoreSchema.optional() }),
+  reviewSchema.extend({ when: leafCoreSchema.optional() }),
+  agentSchema.extend({ when: leafCoreSchema.optional() }).strict(),
+  restrictedAgentSchema.extend({ when: leafCoreSchema.optional() }),
+  callSchema.extend({ when: leafCoreSchema.optional() }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("flow"),
+    mode: _enum(["yaml", "review", "spec"]).optional(),
+    name: string2().regex(idRe).optional(),
+    flow: string2().regex(idRe).optional(),
+    workspace: string2().min(1).max(64).optional(),
+    bundleSha: string2().min(1).optional(),
+    title: string2().min(1).optional(),
+    files: array(string2().refine(isValidFileName)).optional(),
+    spec: string2().min(1).optional(),
+    baseSha: string2().min(1).optional(),
+    ticketUrl: string2().min(1).optional(),
+    secrets: secretListSchema.optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("choose"),
+    value: string2().min(1),
+    cases: record(string2(), array(stepSchema)),
+    default: array(stepSchema).optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("parallel"),
+    steps: array(stepSchema).min(1).max(16),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("wait"),
+    signal: string2().regex(idRe),
+    hours: number2().positive().max(MAX_WAIT_HOURS).optional(),
+    unsignalled: string2().min(1).optional(),
+    when: leafCoreSchema.optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("again_if"),
+    value: string2().min(1),
+    rounds: union([
+      number2().int().min(1).max(MAX_AGAIN_IF_ROUNDS),
+      string2().min(1)
+    ]),
+    from: string2().regex(idRe).optional()
+  }),
+  object({
+    id: string2().regex(idRe),
+    kind: literal("end"),
+    state: string2().min(1)
+  })
+]).superRefine(checkStepMinutes));
+var envHookSchema = object({
+  id: string2().regex(idRe),
+  setup: string2().min(1),
+  teardown: string2().min(1).optional(),
+  minutes: number2().int().min(1).max(60).optional(),
+  where: whereSchema.optional(),
+  secrets: secretListSchema.optional()
+});
+var flowScheduleSchema = union([
+  cronExpressionSchema,
+  object({
+    id: scheduleIdSchema.optional(),
+    cron: cronExpressionSchema,
+    enabled: boolean2().optional(),
+    values: stringMap.optional()
+  })
+]);
+var flowConfigSchema2 = object({
+  name: string2().regex(idRe),
+  version: number2().int().min(1),
+  workspace: string2().regex(WORKSPACE_SHAPE),
+  visibility: workflowVisibilitySchema.optional(),
+  schedule: flowScheduleSchema.optional(),
+  tabs: array(flowTabSchema).max(16).optional(),
+  defaultTab: flowTabIdSchema.optional(),
+  guards: flowGuardsSchema.optional(),
+  evidence: flowEvidenceSchema.optional(),
+  defaults: object({ where: whereSchema }).optional(),
+  values: stringMap.optional(),
+  conditions: array(leafCoreSchema).max(16).optional(),
+  prepare: array(leafCoreSchema).max(16).optional(),
+  environment: array(envHookSchema).max(16).optional(),
+  steps: array(stepSchema).min(1).max(64),
+  checks: array(leafCoreSchema).max(16).optional(),
+  record: array(leafCoreSchema).max(16).optional(),
+  alerts: array(leafCoreSchema).max(16).optional()
+});
+function dedupeStrings(items) {
+  if (!items || items.length === 0)
+    return;
+  return Array.from(new Set(items));
+}
+function normalizeStepHooks(hooks) {
+  if (!hooks || hooks.length === 0)
+    return;
+  return hooks.map((hook) => {
+    const secrets = dedupeStrings(hook.secrets);
+    return {
+      event: hook.event,
+      run: hook.run,
+      ...secrets ? { secrets } : {}
+    };
+  });
+}
+function normalizeGuards(raw) {
+  if (!raw)
+    return;
+  const approvalNodes = dedupeStrings(raw.approvalNodes);
+  const allowBeforeApproval = dedupeStrings(raw.allowBeforeApproval);
+  const gateBeforeApproval = dedupeStrings(raw.gateBeforeApproval);
+  const prGateAfter = dedupeStrings(raw.prGateAfter);
+  return {
+    ...approvalNodes ? { approvalNodes } : {},
+    ...allowBeforeApproval ? { allowBeforeApproval } : {},
+    ...gateBeforeApproval ? { gateBeforeApproval } : {},
+    ...prGateAfter ? { prGateAfter } : {}
+  };
+}
+function normalizeEvidence(raw) {
+  if (!raw)
+    return;
+  return {
+    required: raw.required ?? false,
+    artifacts: dedupeStrings(raw.artifacts) ?? [],
+    checks: dedupeStrings(raw.checks) ?? []
+  };
+}
+function normalizeCallRetries(retries) {
+  if (retries === undefined)
+    return;
+  if (typeof retries === "number")
+    return { ...DEFAULT_CALL_RETRY_POLICY, max: retries };
+  return retries;
+}
+function resolveLeafCore(raw, defaultWhere) {
+  if (raw.kind === "agent") {
+    return { ...raw, where: "local" };
+  }
+  const secrets = dedupeStrings(raw.secrets);
+  if (raw.kind === "call") {
+    const retries = normalizeCallRetries(raw.retries);
+    return {
+      id: raw.id,
+      kind: "call",
+      call: raw.call,
+      ...raw.version !== undefined ? { version: raw.version } : {},
+      args: raw.args ?? {},
+      ...raw.outputs ? { outputs: raw.outputs } : {},
+      ...retries ? { retries } : {},
+      ...raw.onError ? { onError: raw.onError } : {},
+      ...raw.provider ? { provider: raw.provider } : {},
+      where: "cloud",
+      ...raw.minutes !== undefined ? { minutes: raw.minutes } : {},
+      ...secrets ? { secrets } : {}
+    };
+  }
+  if (raw.kind === "command") {
+    const retries = normalizeCallRetries(raw.retries);
+    const { secrets: _omit, retries: _omitRetries, ...rest } = raw;
+    return {
+      ...rest,
+      where: raw.where ?? defaultWhere,
+      ...retries ? { retries } : {},
+      ...secrets ? { secrets } : {}
+    };
+  }
+  if (raw.kind === "restricted_agent") {
+    const {
+      secrets: _omitSecrets,
+      skills: rawSkills,
+      references: rawReferences,
+      tools: rawTools,
+      toolkits: rawToolkits,
+      hooks: rawHooks,
+      hosts: rawHosts,
+      mcpServers: rawMcpServers,
+      ...rest
+    } = raw;
+    const skills = dedupeStrings(rawSkills);
+    const references = dedupeStrings(rawReferences);
+    const tools = rawTools !== undefined ? Array.from(new Set(rawTools)) : undefined;
+    const toolkits = dedupeStrings(rawToolkits);
+    const hooks = normalizeStepHooks(rawHooks);
+    const hosts = dedupeStrings(rawHosts);
+    const mcpServers = dedupeStrings(rawMcpServers);
+    return {
+      ...rest,
+      where: raw.where ?? defaultWhere,
+      ...secrets ? { secrets } : {},
+      ...skills ? { skills } : {},
+      ...references ? { references } : {},
+      ...tools !== undefined ? { tools } : {},
+      ...toolkits ? { toolkits } : {},
+      ...hooks ? { hooks } : {},
+      ...hosts ? { hosts } : {},
+      ...mcpServers ? { mcpServers } : {}
+    };
+  }
+  const { secrets: _omit, ...rest } = raw;
+  return {
+    ...rest,
+    where: raw.where ?? defaultWhere,
+    ...secrets ? { secrets } : {}
+  };
+}
+function resolveLeaf(raw, defaultWhere) {
+  const { when, ...core } = raw;
+  const resolved = resolveLeafCore(core, defaultWhere);
+  if (when)
+    resolved.when = resolveLeafCore(when, defaultWhere);
+  return resolved;
+}
+function resolveStep(raw, defaultWhere) {
+  if (raw.kind === "command" || raw.kind === "review" || raw.kind === "agent" || raw.kind === "restricted_agent" || raw.kind === "call") {
+    return resolveLeaf(raw, defaultWhere);
+  }
+  if (raw.kind === "again_if" || raw.kind === "end")
+    return raw;
+  const when = raw.when ? resolveLeaf(raw.when, defaultWhere) : undefined;
+  if (raw.kind === "choose") {
+    const cases = {};
+    for (const [k, list] of Object.entries(raw.cases))
+      cases[k] = list.map((rawStep) => resolveStep(rawStep, defaultWhere));
+    const fallback = raw.default?.map((rawStep) => resolveStep(rawStep, defaultWhere));
+    return {
+      id: raw.id,
+      kind: "choose",
+      value: raw.value,
+      cases,
+      ...fallback ? { default: fallback } : {},
+      ...when ? { when } : {}
+    };
+  }
+  if (raw.kind === "parallel") {
+    return {
+      id: raw.id,
+      kind: "parallel",
+      steps: raw.steps.map((rawStep) => resolveStep(rawStep, defaultWhere)),
+      ...when ? { when } : {}
+    };
+  }
+  if (raw.kind === "flow") {
+    const secrets = dedupeStrings(raw.secrets);
+    const { when: _ignored, secrets: _omit, flow: flowAlias, ...rest } = raw;
+    const name = rest.name ?? flowAlias;
+    return {
+      ...rest,
+      ...name ? { name } : {},
+      ...secrets ? { secrets } : {},
+      ...when ? { when } : {}
+    };
+  }
+  const { when: _ignored, ...rest } = raw;
+  return { ...rest, ...when ? { when } : {} };
+}
+function* walkSteps(steps, nested = false) {
+  for (const step of steps) {
+    yield { step, nested };
+    if ("when" in step && step.when)
+      yield { step: step.when, nested: true };
+    if (step.kind === "choose") {
+      for (const branch of Object.values(step.cases))
+        yield* walkSteps(branch, true);
+      if (step.default)
+        yield* walkSteps(step.default, true);
+    } else if (step.kind === "parallel") {
+      yield* walkSteps(step.steps, true);
+    }
+  }
+}
+function allSteps(config) {
+  return [
+    ...config.conditions,
+    ...config.prepare,
+    ...config.steps,
+    ...config.checks,
+    ...config.record,
+    ...config.alerts
+  ];
+}
+function validateAgainIfList(steps, allowAgainIf) {
+  const localIds = new Set(steps.map((s) => s.id));
+  for (const step of steps) {
+    if (step.kind === "again_if") {
+      if (!allowAgainIf)
+        return `nested_again_if:${step.id}`;
+      if (step.from && !localIds.has(step.from))
+        return `unknown_again_if_from:${step.from}`;
+    } else if (step.kind === "choose") {
+      for (const branch of Object.values(step.cases)) {
+        const err = validateAgainIfList(branch, allowAgainIf);
+        if (err)
+          return err;
+      }
+      if (step.default) {
+        const err = validateAgainIfList(step.default, allowAgainIf);
+        if (err)
+          return err;
+      }
+    } else if (step.kind === "parallel") {
+      for (const branch of step.steps) {
+        if (branch.kind === "again_if")
+          return `nested_again_if:${branch.id}`;
+        if (branch.kind === "choose" || branch.kind === "parallel") {
+          const err = validateAgainIfList([branch], allowAgainIf);
+          if (err)
+            return err;
+        }
+      }
+    }
+  }
+  return null;
+}
+function collectWorkflowStepIds(steps, include) {
+  const out = [];
+  const seen = new Set;
+  const visit = (list) => {
+    for (const step of list) {
+      if (step.kind === "again_if" || step.kind === "end")
+        continue;
+      if ((!include || include(step)) && !seen.has(step.id)) {
+        seen.add(step.id);
+        out.push(step.id);
+      }
+      if (step.kind === "choose") {
+        for (const branch of Object.values(step.cases))
+          visit(branch);
+        if (step.default)
+          visit(step.default);
+      } else if (step.kind === "parallel") {
+        visit(step.steps);
+      }
+    }
+  };
+  visit(steps);
+  return out;
+}
+function validateCloudCommandMinutes(config) {
+  for (const hook of config.environment) {
+    const msg = cloudCommandTimeoutMessage({
+      kind: "command",
+      where: hook.where,
+      minutes: hook.minutes
+    });
+    if (msg)
+      return `invalid_workflow: environment.${hook.id}.minutes: ${msg}`;
+  }
+  for (const { step } of walkSteps(allSteps(config))) {
+    const msg = cloudCommandTimeoutMessage(step);
+    if (msg)
+      return `invalid_workflow: ${step.id}.minutes: ${msg}`;
+  }
+  return null;
+}
+function validateRefs(config) {
+  const tabErr = validateFlowTabs(config)?.code ?? null;
+  if (tabErr)
+    return tabErr;
+  const seen = new Set;
+  for (const hook of config.environment) {
+    if (seen.has(hook.id))
+      return `duplicate_step_id:${hook.id}`;
+    seen.add(hook.id);
+    if (hook.teardown) {
+      const td = `${hook.id}_teardown`;
+      if (seen.has(td))
+        return `duplicate_step_id:${td}`;
+      seen.add(td);
+    }
+  }
+  for (const { step } of walkSteps(allSteps(config))) {
+    if (seen.has(step.id))
+      return `duplicate_step_id:${step.id}`;
+    seen.add(step.id);
+  }
+  const bodyAndChecks = [...config.steps, ...config.checks];
+  const guardable = new Set(collectWorkflowStepIds(bodyAndChecks));
+  const evidenceChecks = new Set(collectWorkflowStepIds(bodyAndChecks, isLeafStep));
+  if (config.guards) {
+    for (const id of [
+      ...config.guards.approvalNodes ?? [],
+      ...config.guards.prGateAfter ?? []
+    ]) {
+      if (!guardable.has(id))
+        return `unknown_guard_node:${id}`;
+    }
+  }
+  if (config.evidence) {
+    for (const id of config.evidence.checks) {
+      if (!evidenceChecks.has(id))
+        return `unknown_evidence_check:${id}`;
+    }
+  }
+  const nonBodySteps = [
+    ...config.conditions,
+    ...config.prepare,
+    ...config.checks,
+    ...config.record,
+    ...config.alerts
+  ];
+  const nonBodyErr = validateAgainIfList(nonBodySteps, false);
+  if (nonBodyErr)
+    return nonBodyErr;
+  return validateAgainIfList(config.steps, true);
+}
+function isLeafStep(step) {
+  return step.kind === "command" || step.kind === "review" || step.kind === "agent" || step.kind === "restricted_agent" || step.kind === "call";
+}
+function normalizeSchedule(raw) {
+  if (!raw)
+    return;
+  if (typeof raw === "string")
+    return { cron: raw, enabled: true };
+  return {
+    ...raw.id ? { id: raw.id } : {},
+    cron: raw.cron,
+    enabled: raw.enabled ?? true,
+    ...raw.values ? { values: raw.values } : {}
+  };
+}
+function parseWorkflowYaml(raw) {
+  let doc;
+  try {
+    doc = $parse(raw);
+  } catch {
+    return "invalid_yaml";
+  }
+  const parsed = flowConfigSchema2.safeParse(doc);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    if (!first)
+      return "invalid_workflow";
+    const path = first.path.reduce((acc, part) => typeof part === "number" ? `${acc}[${part}]` : acc ? `${acc}.${String(part)}` : String(part), "");
+    return path ? `invalid_workflow: ${path}: ${first.message}` : `invalid_workflow: ${first.message}`;
+  }
+  const defaultWhere = parsed.data.defaults?.where ?? "local";
+  const schedule = normalizeSchedule(parsed.data.schedule);
+  const guards = normalizeGuards(parsed.data.guards);
+  const evidence = normalizeEvidence(parsed.data.evidence);
+  const config = {
+    name: parsed.data.name,
+    version: parsed.data.version,
+    workspace: parsed.data.workspace,
+    ...parsed.data.visibility ? { visibility: parsed.data.visibility } : {},
+    ...schedule ? { schedule } : {},
+    ...parsed.data.tabs ? { tabs: parsed.data.tabs } : {},
+    ...parsed.data.defaultTab ? { defaultTab: parsed.data.defaultTab } : {},
+    ...guards ? { guards } : {},
+    ...evidence ? { evidence } : {},
+    values: parsed.data.values ?? {},
+    conditions: (parsed.data.conditions ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    prepare: (parsed.data.prepare ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    environment: (parsed.data.environment ?? []).map((h) => {
+      const secrets = dedupeStrings(h.secrets);
+      const { secrets: _omit, ...rest } = h;
+      return {
+        ...rest,
+        where: h.where ?? defaultWhere,
+        ...secrets ? { secrets } : {}
+      };
+    }),
+    steps: parsed.data.steps.map((s) => resolveStep(s, defaultWhere)),
+    checks: (parsed.data.checks ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    record: (parsed.data.record ?? []).map((s) => resolveLeaf(s, defaultWhere)),
+    alerts: (parsed.data.alerts ?? []).map((s) => resolveLeaf(s, defaultWhere))
+  };
+  const err = validateCloudCommandMinutes(config) ?? validateRefs(config);
+  return err ?? config;
+}
+
+// src/gate/git.ts
+import { execFile } from "node:child_process";
+import { existsSync as existsSync3 } from "node:fs";
+import { readFile as readFile2 } from "node:fs/promises";
+import {
+  basename as basename3,
+  dirname as dirname3,
+  isAbsolute as isAbsolute2,
+  join as join5,
+  relative as relative2,
+  resolve as resolve3,
+  sep as sep2
+} from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { promisify } from "node:util";
+
+// src/packet.ts
+import { constants as fsConstants, realpathSync } from "node:fs";
+import { lstat, mkdir as mkdir3, open as open2, realpath, stat } from "node:fs/promises";
+import {
+  basename,
+  dirname as dirname2,
+  isAbsolute,
+  join as join4,
+  relative,
+  resolve as resolve2,
+  sep
+} from "node:path";
+
+// ../../packages/shared/src/utils/bytes.ts
+function concatChunks(chunks, total) {
+  const out = new Uint8Array(new ArrayBuffer(total));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+// src/packet.ts
+function resolveRealPath(targetPath) {
+  const abs = resolve2(targetPath);
+  const tail = [];
+  let cursor = abs;
+  while (true) {
+    try {
+      const real = realpathSync(cursor);
+      return tail.length > 0 ? join4(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname2(cursor);
+      if (parent === cursor)
+        return abs;
+      tail.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+function defaultWorkspaceRoot(env = process.env) {
+  return env.NOSTA_WORKSPACE_ROOT || process.cwd();
+}
+function checkWorkspaceContainment(input) {
+  const rel = relative(input.resolvedRoot, input.resolvedTarget);
+  if (!rel || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
+    return { kind: "escapes" };
+  }
+  const normalizedRel = rel.split(sep).join("/");
+  if (input.checkSecret && isSecretPath(normalizedRel)) {
+    return { kind: "secret", normalizedRel };
+  }
+  return { kind: "ok", normalizedRel };
+}
+async function assertConfinedWorkspaceDir(dirPath, rootDir = defaultWorkspaceRoot()) {
+  const [resolvedRoot, resolvedDir] = await Promise.all([
+    realpath(rootDir),
+    realpath(dirPath)
+  ]);
+  if (resolvedDir === resolvedRoot)
+    return resolvedDir;
+  const rel = relative(resolvedRoot, resolvedDir);
+  if (!rel || rel.startsWith("..") || rel.startsWith(sep) || isAbsolute(rel)) {
+    throw new Error(`directory outside workspace root is not allowed: ${dirPath}`);
+  }
+  return resolvedDir;
+}
+async function assertReadableWorkspaceFile(filePath, rootDir = defaultWorkspaceRoot()) {
+  const [resolvedRoot, resolvedFile] = await Promise.all([
+    realpath(rootDir),
+    realpath(filePath)
+  ]);
+  const checked = checkWorkspaceContainment({
+    resolvedRoot,
+    resolvedTarget: resolvedFile,
+    checkSecret: true
+  });
+  if (checked.kind === "escapes") {
+    throw new Error(`path outside workspace root is not allowed: ${filePath}`);
+  }
+  if (checked.kind === "secret") {
+    throw new Error(`secret path is not allowed: ${checked.normalizedRel}`);
+  }
+  return resolvedFile;
+}
+async function readBoundedWorkspaceFile(input) {
+  const root = input.rootDir ?? defaultWorkspaceRoot();
+  const target = isAbsolute(input.filePath) ? input.filePath : resolve2(root, input.filePath);
+  const resolved = await assertReadableWorkspaceFile(target, root);
+  const handle = await open2(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      throw new Error(`path is not a regular file: ${input.filePath}`);
+    }
+    if (info.size > input.maxBytes) {
+      throw new Error(`file exceeds ${input.maxBytes} bytes: ${input.filePath}`);
+    }
+    const chunks = [];
+    let total = 0;
+    const chunkSize = Math.min(64 * 1024, input.maxBytes + 1);
+    while (total <= input.maxBytes) {
+      const slice = Buffer.allocUnsafe(Math.min(chunkSize, input.maxBytes + 1 - total));
+      const { bytesRead } = await handle.read(slice, 0, slice.length, total);
+      if (bytesRead === 0)
+        break;
+      total += bytesRead;
+      if (total > input.maxBytes) {
+        throw new Error(`file exceeds ${input.maxBytes} bytes: ${input.filePath}`);
+      }
+      chunks.push(new Uint8Array(slice.subarray(0, bytesRead)));
+    }
+    return { path: resolved, bytes: concatChunks(chunks, total) };
+  } finally {
+    await handle.close();
+  }
+}
+async function rejectSymlinkTarget(targetPath, input) {
+  try {
+    const info = await lstat(targetPath);
+    if (info.isSymbolicLink()) {
+      throw new Error(`symlink write path is not allowed: ${input.filePath}`);
+    }
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
+  }
+}
+async function writeConfinedWorkspaceFile(input) {
+  const root = input.rootDir ?? defaultWorkspaceRoot();
+  const resolvedRoot = await realpath(root);
+  const target = isAbsolute(input.filePath) ? resolve2(input.filePath) : resolve2(resolvedRoot, input.filePath);
+  await rejectSymlinkTarget(target, input);
+  const resolvedTarget = resolveRealPath(target);
+  await rejectSymlinkTarget(resolvedTarget, input);
+  const checked = checkWorkspaceContainment({
+    resolvedRoot,
+    resolvedTarget,
+    checkSecret: true
+  });
+  if (checked.kind === "escapes") {
+    throw new Error(`write path outside workspace root is not allowed: ${input.filePath}`);
+  }
+  if (checked.kind === "secret") {
+    throw new Error(`secret write path is not allowed: ${checked.normalizedRel}`);
+  }
+  if (input.allowedExtensions && !input.allowedExtensions.some((ext) => resolvedTarget.toLowerCase().endsWith(ext))) {
+    throw new Error(`write path must end with ${input.allowedExtensions.join(" or ")}`);
+  }
+  await mkdir3(dirname2(resolvedTarget), { recursive: true });
+  const handle = await open2(resolvedTarget, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 420);
+  try {
+    await handle.writeFile(input.content, "utf8");
+  } finally {
+    await handle.close();
+  }
+  return resolvedTarget;
+}
+async function workspaceFileKind(input) {
+  try {
+    const resolvedRoot = await realpath(input.rootDir);
+    const target = isAbsolute(input.filePath) ? resolve2(input.filePath) : resolve2(resolvedRoot, input.filePath);
+    const resolvedTarget = resolveRealPath(target);
+    const checked = checkWorkspaceContainment({
+      resolvedRoot,
+      resolvedTarget,
+      checkSecret: true
+    });
+    if (checked.kind !== "ok") {
+      return "escapes";
+    }
+    const info = await stat(resolvedTarget);
+    return info.isFile() ? "file" : "not_file";
+  } catch {
+    return "missing";
+  }
+}
+async function buildPacket(args) {
+  const paths = args.paths;
+  if (!Array.isArray(paths) || paths.length === 0 || paths.length > MAX_FILES) {
+    throw new Error(`paths must list 1..${MAX_FILES} files`);
+  }
+  let hasNonString = false;
+  for (const path of paths) {
+    if (typeof path !== "string")
+      hasNonString = true;
+  }
+  if (hasNonString) {
+    throw new Error(`paths must list 1..${MAX_FILES} files`);
+  }
+  const root = defaultWorkspaceRoot();
+  const files = [];
+  let totalBytes = 0;
+  for (const filePath of paths) {
+    const remaining = MAX_PACKET_BYTES - totalBytes;
+    const { path: resolved, bytes } = await readBoundedWorkspaceFile({
+      filePath,
+      maxBytes: Math.max(0, remaining),
+      rootDir: root
+    });
+    totalBytes += bytes.byteLength;
+    if (totalBytes > MAX_PACKET_BYTES) {
+      throw new Error("packet exceeds 256 KiB");
+    }
+    files.push({
+      name: basename(resolved),
+      content: Buffer.from(bytes).toString("utf8")
+    });
+  }
+  const result = validatePacket({ title: args.title, files });
+  if (!result.ok)
+    throw new Error(result.error);
+  return result.packet;
+}
+
+// src/gate/policy.ts
+import { basename as basename2 } from "node:path";
+var workflowConfigSchema = object({
+  version: literal(1),
+  nodes: array(string2().min(1)).min(1),
+  approvalNodes: array(string2().min(1)).default(["go"]),
+  allowBeforeGo: array(string2().min(1)).default([]),
+  gateBeforeGo: array(string2().min(1)).default([]),
+  prGateAfter: array(string2().min(1)).default([]),
+  tabs: array(flowTabSchema).max(16).optional(),
+  defaultTab: flowTabIdSchema.optional()
+}).superRefine((data, ctx) => {
+  const nodeSet = new Set(data.nodes);
+  if (nodeSet.size !== data.nodes.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["nodes"],
+      message: "nodes must not contain duplicates"
+    });
+  }
+  for (const node of data.approvalNodes) {
+    if (!nodeSet.has(node)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["approvalNodes"],
+        message: `approvalNode "${node}" is not in nodes`
+      });
+    }
+  }
+  for (const node of data.prGateAfter) {
+    if (!nodeSet.has(node)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["prGateAfter"],
+        message: `prGateAfter "${node}" is not in nodes`
+      });
+    }
+  }
+  const tabError = validateFlowTabs(data);
+  if (tabError) {
+    ctx.addIssue({
+      code: "custom",
+      path: [tabError.path],
+      message: tabError.message
+    });
+  }
+});
+var BLANK_SLATE_CONFIG = {
+  version: 1,
+  nodes: ["work"],
+  approvalNodes: [],
+  allowBeforeGo: [],
+  gateBeforeGo: [],
+  prGateAfter: []
+};
+function isEnforcedConfig(config) {
+  return config.approvalNodes.length > 0 || config.gateBeforeGo.length > 0 || config.prGateAfter.length > 0;
+}
+var PR_GATE_TOOLS = new Set([
+  "pull_request_create",
+  "mcp_t3-code_pull_request_create",
+  "mcp__t3-code__pull_request_create"
+]);
+var WRITE_TOOLS = new Set([
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "write_file",
+  "edit_file"
+]);
+var SHELL_TOOLS = new Set(["Bash", "run_command"]);
+var MUTATING_SHELL_CMDS = new Set([
+  "tee",
+  "rm",
+  "mv",
+  "cp",
+  "touch",
+  "truncate",
+  "sed"
+]);
+function commandSegments(command) {
+  return command.split(/(?:&&|\|\||[;|\n])/).map((seg) => seg.trim().split(/\s+/).filter(Boolean)).filter((tokens) => tokens.length > 0);
+}
+function stripQuotes(token) {
+  return token.replace(/^['"]|['"]$/g, "");
+}
+function isGhPrMutate(command) {
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename2(stripQuotes(tokens[0]));
+    if (cmd !== "gh")
+      continue;
+    const prIdx = tokens.indexOf("pr", 1);
+    const sub = prIdx !== -1 ? tokens[prIdx + 1] : undefined;
+    if (sub === "create" || sub === "ready")
+      return true;
+  }
+  return false;
+}
+function isGitCommit(command) {
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename2(stripQuotes(tokens[0]));
+    if (cmd === "git" && tokens.slice(1).includes("commit"))
+      return true;
+  }
+  return false;
+}
+function shellMutatedPaths(command) {
+  const paths = [];
+  for (const match of command.matchAll(/(?:^|[\s0-9&])>>?\s*([^\s;|&]+)/g)) {
+    if (match[1])
+      paths.push(stripQuotes(match[1]));
+  }
+  for (const tokens of commandSegments(command)) {
+    const cmd = basename2(stripQuotes(tokens[0]));
+    if (!MUTATING_SHELL_CMDS.has(cmd))
+      continue;
+    if (cmd === "sed" && !tokens.some((t) => t === "-i" || t.startsWith("-i")))
+      continue;
+    for (const token of tokens.slice(1)) {
+      if (token.startsWith("-") || token.includes(">"))
+        continue;
+      paths.push(stripQuotes(token));
+    }
+  }
+  return paths;
+}
+function globCharPattern(normalized, index) {
+  const ch = normalized[index];
+  if (ch === "*") {
+    if (normalized[index + 1] !== "*")
+      return { chunk: "[^/]*", advance: 1 };
+    return normalized[index + 2] === "/" ? { chunk: "(?:.*/)?", advance: 3 } : { chunk: ".*", advance: 2 };
+  }
+  if (ch === "?")
+    return { chunk: "[^/]", advance: 1 };
+  if ("\\^$.|+()[]{}".includes(ch))
+    return { chunk: `\\${ch}`, advance: 1 };
+  return { chunk: ch, advance: 1 };
+}
+function globToRegExp(pattern) {
+  const normalized = pattern.replace(/\\/g, "/").replace(/^\.\//, "");
+  let out = "^";
+  for (let i = 0;i < normalized.length; ) {
+    const { chunk, advance } = globCharPattern(normalized, i);
+    out += chunk;
+    i += advance;
+  }
+  return new RegExp(`${out}$`);
+}
+function matchesAnyGlob(relativePath, patterns) {
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return patterns.some((pattern) => globToRegExp(pattern).test(normalized));
+}
+function mapEventStatus(status) {
+  if (status === "complete")
+    return "complete";
+  if (status === "running")
+    return "active";
+  if (status === "errored" || status === "terminated")
+    return "errored";
+  if (status === "rejected")
+    return "rejected";
+  return null;
+}
+function computeNextNode(config, nodes) {
+  for (const id of config.nodes) {
+    if (nodes[id]?.status !== "complete")
+      return id;
+  }
+  return null;
+}
+function advanceCurrentNode(binding, now) {
+  const next = computeNextNode(binding.config, binding.nodes);
+  binding.currentNode = next;
+  if (next && binding.nodes[next]?.status === "pending") {
+    binding.nodes[next].status = "active";
+    binding.nodes[next].updatedAt = now;
+  }
+  binding.updatedAt = now;
+}
+function describeNextAction(binding) {
+  const current = binding.currentNode;
+  if (!current)
+    return "All workflow nodes are complete.";
+  if (binding.config.approvalNodes.includes(current)) {
+    return `Request owner approval via approve_flow(node: "${current}") before editing gated product files.`;
+  }
+  return `Complete "${current}" and call advance_flow(node: "${current}", summary: "...").`;
+}
+function toStepReportStatus(status) {
+  if (status === "active")
+    return "running";
+  if (status === "complete" || status === "errored" || status === "rejected")
+    return status;
+  return "queued";
+}
+function toStepReport(binding, id) {
+  const state = binding.nodes[id];
+  const kind = binding.config.approvalNodes.includes(id) ? "approval" : "agent";
+  const status = toStepReportStatus(state?.status);
+  const parts = [
+    state?.summary,
+    state?.artifactUrl,
+    state?.prUrl,
+    state?.commitSha ? `commit:${state.commitSha}` : undefined,
+    state?.proof ? `proof:${state.proof}` : undefined,
+    state?.approvedBy ? `approvedBy:${state.approvedBy}` : undefined
+  ].filter((v) => typeof v === "string" && v.length > 0);
+  return {
+    id,
+    name: id,
+    kind,
+    status,
+    ...state?.summary ? { summary: state.summary } : {},
+    ...kind === "approval" && state?.approvedBy ? { actor: state.approvedBy } : {},
+    ...kind === "approval" ? { decision: approvalDecisionForStatus(status) } : {},
+    ...state?.usage ? { usage: state.usage } : {},
+    output: parts.join(" | ")
+  };
+}
+function buildCloudReport(binding, now) {
+  const steps = binding.config.nodes.map((id) => toStepReport(binding, id));
+  const hasError = Object.values(binding.nodes).some((n) => n.status === "errored");
+  const status = hasError ? "errored" : binding.currentNode === null ? "complete" : "running";
+  const values = binding.values && Object.keys(binding.values).length > 0 ? binding.values : undefined;
+  return {
+    status,
+    finishedAt: status === "running" ? null : now,
+    steps,
+    ...values ? { values } : {}
+  };
+}
+function cloneBinding(binding) {
+  const nodes = {};
+  for (const [k, v] of Object.entries(binding.nodes))
+    nodes[k] = { ...v };
+  return {
+    ...binding,
+    nodes,
+    ...binding.values ? { values: { ...binding.values } } : {}
+  };
+}
+function checkGatedPath(input) {
+  const { binding, config, targetPath, toRelative } = input;
+  const rel = toRelative(targetPath);
+  if (rel !== null && matchesAnyGlob(rel, config.gateBeforeGo) && !matchesAnyGlob(rel, config.allowBeforeGo)) {
+    return {
+      decision: "deny",
+      reason: `Editing "${rel}" is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return null;
+}
+function evaluatePrAction(binding, config) {
+  const missing = config.prGateAfter.filter((id) => binding.nodes[id]?.status !== "complete");
+  if (missing.length > 0) {
+    return {
+      decision: "deny",
+      reason: `PR creation/ready is blocked until [${missing.join(", ")}] complete (flow ${binding.flowId}, current node: ${binding.currentNode ?? "complete"}).`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return {
+    decision: "allow",
+    reason: "prGateAfter nodes are complete",
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
+}
+function evaluatePreApproval(input) {
+  const { binding, config, tool, path, command, toRelative } = input;
+  if (WRITE_TOOLS.has(tool) && path) {
+    const blocked = checkGatedPath({
+      binding,
+      config,
+      targetPath: path,
+      toRelative
+    });
+    if (blocked)
+      return blocked;
+  }
+  if (!SHELL_TOOLS.has(tool) || command.length === 0)
+    return null;
+  if (isGitCommit(command)) {
+    return {
+      decision: "deny",
+      reason: `git commit is blocked before owner approval (flow ${binding.flowId}, current node: ${binding.currentNode ?? "none"}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  for (const target of shellMutatedPaths(command)) {
+    const blocked = checkGatedPath({
+      binding,
+      config,
+      targetPath: target,
+      toRelative
+    });
+    if (blocked)
+      return blocked;
+  }
+  return null;
+}
+function evaluatePolicy(input) {
+  const { binding, config, tool, command } = input;
+  if (PR_GATE_TOOLS.has(tool) || SHELL_TOOLS.has(tool) && isGhPrMutate(command)) {
+    return evaluatePrAction(binding, config);
+  }
+  const approvalsDone = config.approvalNodes.every((id) => binding.nodes[id]?.status === "complete");
+  if (!approvalsDone) {
+    const blocked = evaluatePreApproval(input);
+    if (blocked)
+      return blocked;
+  }
+  return {
+    decision: "allow",
+    reason: "action permitted by active workflow phase",
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
+}
+function evaluateStopDecision(input) {
+  const { binding, config, bypassActive } = input;
+  if (bypassActive) {
+    return {
+      decision: "allow",
+      reason: "temporary bypass active",
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  if (!binding.currentNode) {
+    return {
+      decision: "allow",
+      reason: "all workflow nodes complete",
+      flowId: binding.flowId,
+      currentNode: null
+    };
+  }
+  if (config.approvalNodes.includes(binding.currentNode)) {
+    return {
+      decision: "allow",
+      reason: `waiting for owner approval on "${binding.currentNode}"`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  const hasEvidence = binding.observed.some((ev) => ev.node === binding.currentNode);
+  if (!hasEvidence) {
+    return {
+      decision: "deny",
+      reason: `Active node "${binding.currentNode}" has no recorded evidence yet (flow ${binding.flowId}). ${describeNextAction(binding)}`,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode
+    };
+  }
+  return {
+    decision: "allow",
+    reason: `evidence recorded for active node "${binding.currentNode}"`,
+    flowId: binding.flowId,
+    currentNode: binding.currentNode
+  };
+}
+
+// src/gate/git.ts
+var execFileAsync = promisify(execFile);
+function canonicalRepoRoot(repoRoot) {
+  return resolveRealPath(repoRoot);
+}
+function bindingKey(repoRoot, branch) {
+  return `${canonicalRepoRoot(repoRoot)}::${branch.trim()}`;
+}
+var SAFE_GIT_REF_RE = /^[^-\s\x00][^\s\x00]*$/;
+function assertSafeGitRef(raw, label) {
+  const trimmed = raw.trim();
+  if (!trimmed || !SAFE_GIT_REF_RE.test(trimmed) || trimmed.includes("..")) {
+    throw new Error(`invalid git ${label} ref: ${raw}`);
+  }
+  return trimmed;
+}
+async function assertSafeRepoDir(repoRoot) {
+  const resolved = process.env.NOSTA_WORKSPACE_ROOT ? await assertConfinedWorkspaceDir(repoRoot) : canonicalRepoRoot(repoRoot);
+  if (dirname3(resolved) === resolved) {
+    throw new Error(`filesystem root is not allowed as repoRoot: ${repoRoot}`);
+  }
+  return resolved;
+}
+async function assertGitRepoRoot(repoRoot) {
+  const canonical = await assertSafeRepoDir(repoRoot);
+  const top = await runGit(canonical, ["rev-parse", "--show-toplevel"]);
+  if (!top || canonicalRepoRoot(top) !== canonical) {
+    throw new Error(`not a git repository root: ${repoRoot}`);
+  }
+  return canonical;
+}
+var SAFE_GIT_FLAGS = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "diff.external=",
+  "-c",
+  "core.pager=cat"
+];
+async function runGit(cwd, args) {
+  try {
+    const { stdout } = await execFileAsync("git", [...SAFE_GIT_FLAGS, ...args], {
+      cwd,
+      timeout: 3000
+    });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+async function resolveRepoBranch(input) {
+  const safeExplicit = input.repoRoot ? await assertSafeRepoDir(input.repoRoot) : undefined;
+  if (safeExplicit && input.branch) {
+    return {
+      repoRoot: safeExplicit,
+      branch: input.branch.trim()
+    };
+  }
+  const cwd = safeExplicit ?? process.cwd();
+  const root = await runGit(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!root)
+    throw new Error("could not resolve git repository context; pass { repoRoot, branch }");
+  const branch = input.branch?.trim() || await runGit(cwd, ["symbolic-ref", "--short", "HEAD"]) || await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]) || await runGit(cwd, ["rev-parse", "--short", "HEAD"]) || "HEAD";
+  return {
+    repoRoot: safeExplicit ?? await assertSafeRepoDir(root),
+    branch
+  };
+}
+async function resolveWorkspaceName(repoRoot) {
+  const canonical = canonicalRepoRoot(repoRoot);
+  const commonDir = await runGit(canonical, ["rev-parse", "--git-common-dir"]);
+  if (commonDir) {
+    const resolved = resolveRealPath(isAbsolute2(commonDir) ? commonDir : resolve3(canonical, commonDir));
+    const base = basename3(resolved);
+    if (base === ".git") {
+      const parentName = basename3(dirname3(resolved));
+      if (parentName)
+        return parentName;
+    } else if (base) {
+      return base.replace(/\.git$/, "") || base;
+    }
+  }
+  return basename3(canonical) || "workspace";
+}
+var WORKFLOW_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+var WORKFLOW_CONFIG_FILES = [
+  "workflow.yaml",
+  "workflow.yml",
+  "workflow.json"
+];
+function flowDefinitionToWorkflowConfig(def) {
+  const nodes = collectWorkflowStepIds([...def.steps, ...def.checks]);
+  const seen = new Set(nodes);
+  for (const id of [
+    ...def.guards?.approvalNodes ?? [],
+    ...def.guards?.prGateAfter ?? []
+  ]) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      nodes.push(id);
+    }
+  }
+  const parsed = workflowConfigSchema.safeParse({
+    version: 1,
+    nodes: nodes.length > 0 ? nodes : ["work"],
+    approvalNodes: def.guards?.approvalNodes ?? [],
+    allowBeforeGo: def.guards?.allowBeforeApproval ?? [],
+    gateBeforeGo: def.guards?.gateBeforeApproval ?? [],
+    prGateAfter: def.guards?.prGateAfter ?? [],
+    ...def.tabs ? { tabs: def.tabs } : {},
+    ...def.defaultTab ? { defaultTab: def.defaultTab } : {}
+  });
+  if (!parsed.success) {
+    throw new Error(`invalid workflow config: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  return parsed.data;
+}
+async function readBundledWorkflowYaml(workflowName) {
+  if (!WORKFLOW_NAME_RE.test(workflowName))
+    return null;
+  const here = dirname3(fileURLToPath2(import.meta.url));
+  let assetsDir;
+  try {
+    assetsDir = resolveAssetsDir(here);
+  } catch {
+    return null;
+  }
+  const dir = join5(assetsDir, "workflows");
+  for (const ext of ["yaml", "yml"]) {
+    const filePath = join5(dir, `${workflowName}.${ext}`);
+    if (existsSync3(filePath))
+      return readFile2(filePath, "utf8");
+  }
+  return null;
+}
+async function loadNamedYamlWorkflowConfig(repoRoot, workflowName) {
+  if (!WORKFLOW_NAME_RE.test(workflowName)) {
+    throw new Error(`invalid workflow name: ${workflowName}`);
+  }
+  const dir = join5(canonicalRepoRoot(repoRoot), ".nosta", "workflows");
+  for (const ext of ["yaml", "yml"]) {
+    const label = `.nosta/workflows/${workflowName}.${ext}`;
+    const filePath = join5(dir, `${workflowName}.${ext}`);
+    if (toRepoRelativePath(repoRoot, filePath) === null) {
+      throw new Error(`workflow config escapes repository root: ${label}`);
+    }
+    try {
+      const { bytes } = await readBoundedWorkspaceFile({
+        filePath,
+        maxBytes: MAX_PACKET_BYTES,
+        rootDir: repoRoot
+      });
+      const parsed = parseWorkflowYaml(Buffer.from(bytes).toString("utf8"));
+      if (typeof parsed === "string") {
+        throw new Error(`invalid ${label}: ${parsed}`);
+      }
+      return flowDefinitionToWorkflowConfig(parsed);
+    } catch (error) {
+      if (error.code === "ENOENT")
+        continue;
+      throw error;
+    }
+  }
+  const bundled = await readBundledWorkflowYaml(workflowName);
+  if (bundled !== null) {
+    const parsed = parseWorkflowYaml(bundled);
+    if (typeof parsed === "string") {
+      throw new Error(`invalid bundled workflow ${workflowName}: ${parsed}`);
+    }
+    return flowDefinitionToWorkflowConfig(parsed);
+  }
+  throw new Error(`workflow_not_found:${workflowName}`);
+}
+async function loadWorkflowConfig(repoRoot, workflowName) {
+  if (workflowName)
+    return loadNamedYamlWorkflowConfig(repoRoot, workflowName);
+  const baseDir = join5(canonicalRepoRoot(repoRoot), ".nosta");
+  let fileName = null;
+  let filePath = "";
+  let text = "";
+  for (const candidate of WORKFLOW_CONFIG_FILES) {
+    const candidatePath = join5(baseDir, candidate);
+    if (toRepoRelativePath(repoRoot, candidatePath) === null) {
+      throw new Error(`workflow config escapes repository root: .nosta/${candidate}`);
+    }
+    try {
+      const { bytes } = await readBoundedWorkspaceFile({
+        filePath: candidatePath,
+        maxBytes: MAX_PACKET_BYTES,
+        rootDir: repoRoot
+      });
+      text = Buffer.from(bytes).toString("utf8");
+      fileName = candidate;
+      filePath = candidatePath;
+      break;
+    } catch (error) {
+      if (error.code === "ENOENT")
+        continue;
+      throw error;
+    }
+  }
+  if (!fileName)
+    return null;
+  let raw;
+  try {
+    raw = fileName.endsWith(".json") ? JSON.parse(text) : $parse(text);
+  } catch (error) {
+    const label = fileName.endsWith(".json") ? "JSON" : "YAML";
+    throw new Error(`invalid ${label} in ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const parsed = workflowConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(`invalid .nosta/${fileName}: ${parsed.error.issues.map((i) => i.message).join("; ")}`);
+  }
+  return parsed.data;
+}
+var GITHUB_ISSUE_URL_RE = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/issues\/(\d+)(?:[/?#].*)?$/;
+function parseGitHubIssueUrl(ticketUrl) {
+  const match = GITHUB_ISSUE_URL_RE.exec(ticketUrl.trim());
+  if (!match?.[1] || !match[2])
+    return null;
+  return { repo: match[1], number: match[2] };
+}
+async function fetchGitHubIssueBody(ticketUrl) {
+  const issue = parseGitHubIssueUrl(ticketUrl);
+  if (!issue)
+    return null;
+  try {
+    const { stdout } = await execFileAsync("gh", [
+      "issue",
+      "view",
+      issue.number,
+      "--repo",
+      issue.repo,
+      "--json",
+      "body",
+      "--jq",
+      ".body"
+    ], { timeout: 5000 });
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (error) {
+    console.error("[gate] fetchGitHubIssueBody failed", {
+      repo: issue.repo,
+      number: issue.number,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  }
+}
+function toRepoRelativePath(repoRoot, targetPath) {
+  const root = canonicalRepoRoot(repoRoot);
+  const absTarget = isAbsolute2(targetPath) ? resolve3(targetPath) : resolve3(root, targetPath);
+  const realTarget = resolveRealPath(absTarget);
+  const rel = relative2(root, realTarget);
+  if (rel.startsWith("..") || isAbsolute2(rel))
+    return null;
+  return rel.split(sep2).join("/");
+}
+
+// src/flows/validate.ts
+var validateFlowInputSchema = object({
+  path: string2().trim().min(1).optional().describe("Path to a workflow YAML file (absolute or relative to repoRoot)."),
+  workflow: string2().trim().min(1).optional().describe("Workflow name under .nosta/workflows/<name>.yaml."),
+  yaml: string2().min(1).optional().describe("Inline YAML text to validate without reading from disk."),
+  repoRoot: string2().trim().min(1).optional().describe("Git repository root for resolving relative skills, references, and workflows."),
+  checkSecrets: boolean2().optional().describe("When true (default), verify declared secret names against backend /api/secrets.")
+}).superRefine((data, ctx) => {
+  const sources = [
+    data.path !== undefined,
+    data.workflow !== undefined,
+    data.yaml !== undefined
+  ].filter(Boolean).length;
+  if (sources !== 1) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide exactly one of { path }, { workflow }, or { yaml }"
+    });
+  }
+});
+function collectLeafPrimitives(step, acc) {
+  if ("outputs" in step && step.outputs) {
+    const count = Array.isArray(step.outputs) ? step.outputs.length : Object.keys(step.outputs).length;
+    if (count > 0)
+      acc.hasOutputs = true;
+  }
+  if ("secrets" in step) {
+    for (const s of step.secrets ?? [])
+      acc.secrets.add(s);
+  }
+  if (step.kind === "restricted_agent") {
+    for (const s of step.skills ?? [])
+      acc.skills.add(s);
+    for (const r of step.references ?? [])
+      acc.references.add(r);
+    for (const hook of step.hooks ?? []) {
+      for (const s of hook.secrets ?? [])
+        acc.secrets.add(s);
+    }
+  }
+}
+function collectDefinitionPrimitives(def) {
+  const acc = {
+    skills: new Set,
+    references: new Set,
+    secrets: new Set,
+    hasOutputs: false
+  };
+  for (const env of def.environment) {
+    for (const s of env.secrets ?? [])
+      acc.secrets.add(s);
+  }
+  const all = [
+    ...def.conditions,
+    ...def.prepare,
+    ...def.steps,
+    ...def.checks,
+    ...def.record,
+    ...def.alerts
+  ];
+  for (const { step } of walkSteps(all)) {
+    if ("when" in step && step.when)
+      collectLeafPrimitives(step.when, acc);
+    if (isLeafStep(step))
+      collectLeafPrimitives(step, acc);
+    else if (step.kind === "flow") {
+      for (const s of step.secrets ?? [])
+        acc.secrets.add(s);
+    }
+  }
+  return {
+    skills: Array.from(acc.skills),
+    references: Array.from(acc.references),
+    secrets: Array.from(acc.secrets),
+    hasOutputs: acc.hasOutputs
+  };
+}
+async function resolveOptionalRepoRoot(explicit) {
+  if (explicit)
+    return assertSafeRepoDir(explicit);
+  try {
+    const resolved = await resolveRepoBranch({});
+    return resolved.repoRoot;
+  } catch {
+    return null;
+  }
+}
+async function readWorkflowSource(input) {
+  if (input.args.yaml !== undefined)
+    return { ok: true, text: input.args.yaml };
+  if (input.args.workflow !== undefined) {
+    const name = input.args.workflow;
+    if (!WORKFLOW_NAME_RE.test(name))
+      return { ok: false, error: `invalid workflow name: ${name}` };
+    if (input.repoRoot) {
+      for (const ext of ["yaml", "yml"]) {
+        const candidate = join6(".nosta", "workflows", `${name}.${ext}`);
+        try {
+          const { bytes } = await readBoundedWorkspaceFile({
+            filePath: candidate,
+            maxBytes: MAX_PACKET_BYTES,
+            rootDir: input.repoRoot
+          });
+          return { ok: true, text: Buffer.from(bytes).toString("utf8") };
+        } catch (error) {
+          if (error.code === "ENOENT")
+            continue;
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error)
+          };
+        }
+      }
+    }
+    const bundled = await readBundledWorkflowYaml(name);
+    if (bundled !== null)
+      return { ok: true, text: bundled };
+    return { ok: false, error: `workflow_not_found:${name}` };
+  }
+  const rawPath = input.args.path;
+  const boundaryRoot = input.repoRoot ?? defaultWorkspaceRoot();
+  try {
+    const { bytes } = await readBoundedWorkspaceFile({
+      filePath: rawPath,
+      maxBytes: MAX_PACKET_BYTES,
+      rootDir: boundaryRoot
+    });
+    return { ok: true, text: Buffer.from(bytes).toString("utf8") };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+async function checkRepoFiles(input) {
+  const resolved = [];
+  for (const rel of input.paths) {
+    const kind = await workspaceFileKind({
+      filePath: rel,
+      rootDir: input.repoRoot
+    });
+    if (kind === "escapes")
+      input.errors.push(`${input.kind}_escapes_repo:${rel}`);
+    else if (kind === "not_file")
+      input.errors.push(`${input.kind}_not_a_file:${rel}`);
+    else if (kind === "missing")
+      input.errors.push(`missing_${input.kind}:${rel}`);
+    else
+      resolved.push(rel);
+  }
+  return resolved;
+}
+async function findMissingSecrets(input) {
+  if (!input.backend || input.required.length === 0)
+    return [];
+  const raw = await input.backend.request(getRuntimeSecretsListUrl());
+  const parsed = parseJsonResponse({
+    raw: JSON.stringify(unwrapToolkitData(JSON.parse(raw))),
+    schema: secretListReplySchema,
+    label: "/api/toolkits/runtime/secrets_list"
+  });
+  const available = new Set(parsed.names);
+  return input.required.filter((name) => !available.has(name));
+}
+async function validateFlow(input) {
+  const repoRoot = await resolveOptionalRepoRoot(input.args.repoRoot);
+  const source = await readWorkflowSource({ args: input.args, repoRoot });
+  if (!source.ok) {
+    return {
+      ok: false,
+      errors: [source.error],
+      warnings: [],
+      resolvedSkills: [],
+      resolvedReferences: [],
+      missingSecrets: [],
+      hasEvidence: false,
+      stepPlan: []
+    };
+  }
+  const parsed = parseWorkflowYaml(source.text);
+  if (typeof parsed === "string") {
+    return {
+      ok: false,
+      errors: [parsed],
+      warnings: [],
+      resolvedSkills: [],
+      resolvedReferences: [],
+      missingSecrets: [],
+      hasEvidence: false,
+      stepPlan: []
+    };
+  }
+  const errors = [];
+  const warnings = [];
+  const prims = collectDefinitionPrimitives(parsed);
+  let resolvedSkills = [];
+  let resolvedReferences = [];
+  if (repoRoot) {
+    resolvedSkills = await checkRepoFiles({
+      repoRoot,
+      paths: prims.skills,
+      kind: "skill",
+      errors
+    });
+    resolvedReferences = await checkRepoFiles({
+      repoRoot,
+      paths: prims.references,
+      kind: "reference",
+      errors
+    });
+  } else if (prims.skills.length > 0 || prims.references.length > 0) {
+    errors.push("repo_root_required_for_skills_or_references");
+  }
+  const hasEvidence = Boolean(parsed.evidence && (parsed.evidence.artifacts.length > 0 || parsed.evidence.checks.length > 0) || parsed.checks.length > 0 || prims.hasOutputs);
+  if (!hasEvidence) {
+    if (parsed.evidence?.required)
+      errors.push("evidence_required_but_none_declared");
+    else
+      warnings.push("workflow declares no evidence checks, artifacts, or step outputs");
+  }
+  const missingSecrets = input.args.checkSecrets === false ? [] : await findMissingSecrets({
+    backend: input.backend,
+    required: prims.secrets
+  });
+  for (const name of missingSecrets)
+    errors.push(`missing_secret:${name}`);
+  const stepPlan = collectWorkflowStepIds([...parsed.steps, ...parsed.checks]);
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    resolvedSkills,
+    resolvedReferences,
+    missingSecrets,
+    hasEvidence,
+    stepPlan
+  };
+}
+
+// src/gate/index.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/store.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { realpathSync as realpathSync2 } from "node:fs";
+import { mkdir as mkdir4, readFile as readFile3, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { join as join7, resolve as resolve4 } from "node:path";
+function canonicalRoot(repoRoot) {
+  const abs = resolve4(repoRoot);
+  try {
+    return realpathSync2(abs);
+  } catch {
+    return abs;
+  }
+}
+function branchIndexKey(repoRoot, branch) {
+  return `${canonicalRoot(repoRoot)}::${branch.trim()}`;
+}
+function flowsDir(stateDir) {
+  const root = stateDir ?? process.env.NOSTA_STATE_DIR ?? join7(homedir2(), ".nosta");
+  return join7(root, "flows");
+}
+function safeFlowFile(flowId) {
+  return `${flowId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
+}
+async function readJsonFile(filePath) {
+  try {
+    const raw = await readFile3(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+async function writeJsonAtomic(filePath, value) {
+  const tmp = `${filePath}.${process.pid}.${randomUUID3()}.tmp`;
+  await writeFile2(tmp, `${JSON.stringify(value, null, 2)}
+`, "utf8");
+  await rename2(tmp, filePath);
+}
+async function readFlowIndex(stateDir) {
+  const loaded = await readJsonFile(join7(flowsDir(stateDir), "index.json"));
+  return {
+    byBranch: loaded?.byBranch ? { ...loaded.byBranch } : {},
+    byTicket: loaded?.byTicket ? { ...loaded.byTicket } : {}
+  };
+}
+async function readLocalFlow(flowId, stateDir) {
+  const loaded = await readJsonFile(join7(flowsDir(stateDir), safeFlowFile(flowId)));
+  if (!loaded || typeof loaded.flowId !== "string")
+    return null;
+  return {
+    ...loaded,
+    docs: Array.isArray(loaded.docs) ? loaded.docs : [],
+    evidence: Array.isArray(loaded.evidence) ? loaded.evidence : [],
+    diffSummary: loaded.diffSummary ?? null,
+    ship: loaded.ship ?? null
+  };
+}
+async function resolveIndexedFlowId(input) {
+  const index = await readFlowIndex(input.stateDir);
+  if (input.repoRoot && input.branch) {
+    const hit = index.byBranch[branchIndexKey(input.repoRoot, input.branch)];
+    if (hit)
+      return hit;
+  }
+  if (input.ticket) {
+    const hit = index.byTicket[input.ticket.trim()];
+    if (hit)
+      return hit;
+  }
+  return null;
+}
+async function saveLocalFlow(state, stateDir) {
+  const dir = flowsDir(stateDir);
+  await mkdir4(dir, { recursive: true });
+  const normalized = {
+    ...state,
+    ...state.repoRoot ? { repoRoot: canonicalRoot(state.repoRoot) } : {}
+  };
+  await writeJsonAtomic(join7(dir, safeFlowFile(normalized.flowId)), normalized);
+  const index = await readFlowIndex(stateDir);
+  if (normalized.repoRoot && normalized.branch) {
+    index.byBranch[branchIndexKey(normalized.repoRoot, normalized.branch)] = normalized.flowId;
+  }
+  if (normalized.ticket) {
+    index.byTicket[normalized.ticket.trim()] = normalized.flowId;
+  }
+  await writeJsonAtomic(join7(dir, "index.json"), index);
+  return normalized;
+}
+function emptyLocalFlow(input) {
+  return {
+    flowId: input.flowId,
+    ...input.repoRoot ? { repoRoot: canonicalRoot(input.repoRoot) } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.base ? { base: input.base } : {},
+    ...input.ticket ? { ticket: input.ticket } : {},
+    ...input.title ? { title: input.title } : {},
+    ...input.workflow ? { workflow: input.workflow } : {},
+    ...input.tabs !== undefined ? { tabs: input.tabs } : {},
+    ...input.defaultTab !== undefined ? { defaultTab: input.defaultTab } : {},
+    docs: [],
+    evidence: [],
+    diffSummary: null,
+    ship: null,
+    updatedAt: input.now ?? Date.now()
+  };
+}
+
+// ../../packages/shared/src/utils/sse.ts
+var MAX_SSE_BUFFER_BYTES = 1024 * 1024;
+function parseSseBlock(block) {
+  let id = null;
+  let event = "message";
+  const dataLines = [];
+  for (const rawLine of block.split(/\r?\n/)) {
+    if (rawLine.length === 0 || rawLine.startsWith(":"))
+      continue;
+    const colon = rawLine.indexOf(":");
+    const field = colon === -1 ? rawLine : rawLine.slice(0, colon);
+    const rawValue = colon === -1 ? "" : rawLine.slice(colon + 1);
+    const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+    if (field === "id") {
+      const parsed = Number(value.trim());
+      if (Number.isSafeInteger(parsed) && parsed > 0)
+        id = parsed;
+    } else if (field === "event") {
+      if (value.trim().length > 0)
+        event = value.trim();
+    } else if (field === "data") {
+      dataLines.push(value);
+    }
+  }
+  if (dataLines.length === 0)
+    return null;
+  const rawData = dataLines.join(`
+`);
+  let data = rawData;
+  try {
+    data = JSON.parse(rawData);
+  } catch {
+    data = rawData;
+  }
+  return { id, event, data };
+}
+function drainSseFrames(buffer) {
+  const frames = [];
+  let remaining = buffer;
+  let match = /\r?\n\r?\n/.exec(remaining);
+  while (match !== null) {
+    const block = remaining.slice(0, match.index);
+    remaining = remaining.slice(match.index + match[0].length);
+    const frame = parseSseBlock(block);
+    if (frame)
+      frames.push(frame);
+    match = /\r?\n\r?\n/.exec(remaining);
+  }
+  return { frames, rest: remaining };
+}
+
+// src/gate/stream.ts
+function waitAbortable(ms, signal) {
+  if (signal.aborted)
+    return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+function connectFlowStream(options) {
+  const fetchFn = options.fetchImpl ?? fetch;
+  const baseDelayMs = options.baseDelayMs ?? 250;
+  const maxDelayMs = options.maxDelayMs ?? 15000;
+  const controller = new AbortController;
+  let lastId = options.initialLastEventId ?? 0;
+  async function consumeStream(body) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder;
+    let buffer = "";
+    try {
+      while (!controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done)
+          break;
+        buffer += decoder.decode(value, { stream: true });
+        if (Buffer.byteLength(buffer, "utf8") > MAX_SSE_BUFFER_BYTES) {
+          throw new Error("SSE frame buffer exceeded 1 MiB");
+        }
+        const drained = drainSseFrames(buffer);
+        buffer = drained.rest;
+        for (const frame of drained.frames) {
+          if (frame.id !== null && frame.id > lastId)
+            lastId = frame.id;
+          options.onEvent(frame);
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  async function loop() {
+    let attempt = 0;
+    while (!controller.signal.aborted) {
+      try {
+        const headers = {
+          accept: "text/event-stream"
+        };
+        if (options.token)
+          headers.authorization = `Bearer ${options.token}`;
+        if (lastId > 0)
+          headers["last-event-id"] = String(lastId);
+        const response = await fetchFn(options.url, {
+          method: "GET",
+          headers,
+          signal: controller.signal
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`SSE stream answered ${response.status}`);
+        }
+        attempt = 0;
+        await consumeStream(response.body);
+      } catch (error) {
+        if (controller.signal.aborted)
+          return;
+        options.onError?.(error);
+      }
+      if (controller.signal.aborted)
+        return;
+      const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
+      attempt += 1;
+      const shouldContinue = await waitAbortable(delay, controller.signal);
+      if (!shouldContinue)
+        return;
+    }
+  }
+  loop();
+  return {
+    close: () => {
+      controller.abort();
+    },
+    lastEventId: () => lastId
+  };
+}
+
+// src/gate/index.ts
+var ACTIVE_FLOW_STATES = new Set(["running", "queued", "waiting"]);
+var hydratedFlowResponseSchema = object({
+  flow: object({
+    id: string2().min(1),
+    mode: string2().optional(),
+    state: string2().optional(),
+    workspace: string2().nullable().optional(),
+    branch: string2().nullable().optional(),
+    values: record(string2(), string2()).optional(),
+    steps: array(object({
+      id: string2().min(1),
+      status: string2().optional(),
+      summary: string2().optional()
+    })).optional()
+  })
+});
+
+class WorkflowGate {
+  bindings = new Map;
+  bypasses = new Map;
+  flowIndex = new Map;
+  streams = new Map;
+  backend;
+  now;
+  fetchImpl;
+  enableStream;
+  streamBackoff;
+  constructor(options) {
+    this.backend = options.backend;
+    this.now = options.now ?? (() => Date.now());
+    this.fetchImpl = options.fetchImpl;
+    this.enableStream = options.enableStream ?? true;
+    this.streamBackoff = options.streamBackoff;
+  }
+  async start(input) {
+    const { repoRoot, branch } = await resolveRepoBranch(input);
+    if (!input.forceNew) {
+      const existing = await this.lookupReusableBinding(repoRoot, branch);
+      if (existing && (!input.workflow || existing.workflowName === input.workflow)) {
+        const tabs = input.tabs ?? existing.config.tabs;
+        const defaultTab = input.defaultTab ?? existing.config.defaultTab;
+        return {
+          flow: {
+            id: existing.flowId,
+            mode: "local",
+            state: existing.flowState ?? "running"
+          },
+          binding: existing,
+          ...tabs ? { tabs } : {},
+          ...defaultTab ? { defaultTab } : {},
+          nextAction: describeNextAction(existing),
+          reused: true
+        };
+      }
+    }
+    const config = await loadWorkflowConfig(repoRoot, input.workflow) ?? BLANK_SLATE_CONFIG;
+    const workspace = await resolveWorkspaceName(repoRoot);
+    const name = (input.title?.trim() || `${workspace}:${branch}`).slice(0, 80);
+    const tabs = input.tabs ?? config.tabs;
+    const defaultTab = input.defaultTab ?? config.defaultTab;
+    const body = await this.buildLocalStartBody({
+      input,
+      name,
+      workspace,
+      branch,
+      tabs,
+      defaultTab
+    });
+    const parsed = unwrapToolkitData(JSON.parse(await this.backend.request(getFlowsCreateUrl(), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "Idempotency-Key": randomUUID4()
+      },
+      body: JSON.stringify(body)
+    })));
+    const flowId = parsed.flow?.id;
+    if (!flowId)
+      throw new Error("backend did not return flow.id");
+    const binding = this.attachBinding({
+      repoRoot,
+      branch,
+      flowId,
+      config,
+      workflowName: input.workflow,
+      flowState: parsed.flow?.state ?? "running"
+    });
+    const existing = await readLocalFlow(flowId);
+    await saveLocalFlow(existing ?? emptyLocalFlow({
+      flowId,
+      repoRoot,
+      branch,
+      base: input.base,
+      ticket: input.ticket,
+      title: name,
+      ...input.workflow ? { workflow: input.workflow } : {},
+      ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
+      now: this.now()
+    }));
+    return {
+      flow: parsed.flow,
+      binding,
+      ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
+      nextAction: describeNextAction(binding)
+    };
+  }
+  async status(input) {
+    if (input.flowId) {
+      const raw = await this.backend.request(getFlowsGetUrl({ id: input.flowId }));
+      const payload = unwrapToolkitData(JSON.parse(raw));
+      const binding = this.getByFlowId(input.flowId);
+      const tabs = binding?.config.tabs;
+      return binding ? {
+        ...payload,
+        binding,
+        ...tabs ? { tabs } : {},
+        nextAction: describeNextAction(binding)
+      } : payload;
+    }
+    const binding = await this.resolveBinding(input);
+    const raw = await this.backend.request(getFlowsGetUrl({ id: binding.flowId }));
+    const payload = unwrapToolkitData(JSON.parse(raw));
+    const tabs = binding.config.tabs;
+    return {
+      ...payload,
+      binding,
+      ...tabs ? { tabs } : {},
+      nextAction: describeNextAction(binding)
+    };
+  }
+  async advance(input) {
+    const binding = await this.resolveBinding(input);
+    if (binding.config.approvalNodes.includes(input.node)) {
+      throw new Error(`node "${input.node}" requires owner approval via approve_flow`);
+    }
+    if (binding.currentNode !== input.node) {
+      throw new Error(`cannot advance "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
+    }
+    const updated = await this.persistAndCommit(binding, (draft, now) => {
+      const state = draft.nodes[input.node];
+      state.status = "complete";
+      state.summary = input.summary;
+      if (input.artifactUrl)
+        state.artifactUrl = input.artifactUrl;
+      if (input.prUrl)
+        state.prUrl = input.prUrl;
+      if (input.commitSha)
+        state.commitSha = input.commitSha;
+      if (input.proof)
+        state.proof = input.proof;
+      if (input.usage)
+        state.usage = input.usage;
+      if (input.values || input.commitSha) {
+        draft.values = {
+          ...draft.values ?? {},
+          ...input.values ?? {},
+          ...input.commitSha ? { commitSha: input.commitSha } : {}
+        };
+      }
+      state.updatedAt = now;
+      advanceCurrentNode(draft, now);
+    });
+    return {
+      flowId: updated.flowId,
+      binding: updated,
+      nextAction: describeNextAction(updated)
+    };
+  }
+  async approve(input) {
+    const binding = await this.resolveBinding(input);
+    if (!binding.config.approvalNodes.includes(input.node)) {
+      throw new Error(`node "${input.node}" is not an approval node; use advance_flow instead`);
+    }
+    if (binding.currentNode !== input.node) {
+      throw new Error(`cannot approve "${input.node}": current active node is "${binding.currentNode ?? "complete"}"`);
+    }
+    const decision = input.decision ?? "approve";
+    const updated = await this.persistAndCommit(binding, (draft, now) => {
+      const state = draft.nodes[input.node];
+      if (decision === "reject") {
+        state.status = "rejected";
+        state.summary = input.summary ?? "rejected by owner";
+        state.updatedAt = now;
+        draft.updatedAt = now;
+      } else {
+        state.status = "complete";
+        state.approvedBy = input.approvedBy ?? "owner";
+        state.summary = input.summary ?? "approved by owner";
+        state.updatedAt = now;
+        advanceCurrentNode(draft, now);
+      }
+    });
+    return {
+      flowId: updated.flowId,
+      decision,
+      binding: updated,
+      nextAction: describeNextAction(updated)
+    };
+  }
+  async bypass(input) {
+    const reason = input.reason.trim();
+    if (reason.length === 0)
+      throw new Error("bypass reason is required");
+    const target = await this.resolveTarget(input);
+    const minutes = Math.min(240, Math.max(1, Math.floor(input.durationMinutes ?? 30)));
+    const now = this.now();
+    const until = now + minutes * 60000;
+    this.bypasses.set(bindingKey(target.repoRoot, target.branch), {
+      until,
+      reason
+    });
+    const binding = this.bindings.get(bindingKey(target.repoRoot, target.branch)) ?? null;
+    if (binding) {
+      binding.bypassUntil = until;
+      binding.bypassReason = reason;
+      binding.updatedAt = now;
+      binding.observed.push({
+        id: randomUUID4(),
+        node: binding.currentNode,
+        kind: "bypass",
+        summary: `bypass enabled for ${minutes}m: ${reason}`,
+        createdAt: now
+      });
+      this.flushReportAsync(binding);
+    }
+    return {
+      bypassed: true,
+      flowId: binding?.flowId ?? null,
+      repoRoot: target.repoRoot,
+      branch: target.branch,
+      bypassUntil: until,
+      reason
+    };
+  }
+  async context(input) {
+    const repoRoot = canonicalRepoRoot(input.repoRoot);
+    const branch = input.branch.trim();
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
+    const config = binding?.config ?? await loadWorkflowConfig(repoRoot);
+    const enforced = config !== null && isEnforcedConfig(config);
+    const bypass = this.activeBypass(repoRoot, branch);
+    if (!binding) {
+      if (!enforced) {
+        return {
+          enforced: false,
+          bound: false,
+          repoRoot,
+          branch,
+          flowId: null,
+          currentNode: null,
+          nodes: {},
+          bypassActive: false,
+          bypassUntil: null,
+          nextAction: "Repository has no workflow guards configured; workflow gate is inactive."
+        };
+      }
+      return {
+        enforced: true,
+        bound: false,
+        repoRoot,
+        branch,
+        flowId: null,
+        currentNode: null,
+        nodes: {},
+        bypassActive: bypass !== null,
+        bypassUntil: bypass?.until ?? null,
+        nextAction: `No active flow bound for (${repoRoot}, ${branch}). Call start_flow({ repoRoot: "${repoRoot}", branch: "${branch}" }) first.`
+      };
+    }
+    return {
+      enforced,
+      bound: true,
+      repoRoot,
+      branch,
+      flowId: binding.flowId,
+      currentNode: binding.currentNode,
+      nodes: binding.nodes,
+      bypassActive: bypass !== null,
+      bypassUntil: bypass?.until ?? null,
+      nextAction: describeNextAction(binding)
+    };
+  }
+  async check(input) {
+    const repoRoot = canonicalRepoRoot(input.repoRoot);
+    const branch = input.branch.trim();
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
+    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
+    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
+    if (!loaded.ok) {
+      return { decision: "deny", reason: loaded.error };
+    }
+    const config = loaded.config;
+    if (!config || !isEnforcedConfig(config)) {
+      return {
+        decision: "allow",
+        reason: "repo is not workflow-enforced",
+        ...binding ? { flowId: binding.flowId, currentNode: binding.currentNode } : {}
+      };
+    }
+    const bypass = this.activeBypass(repoRoot, branch);
+    if (bypass) {
+      return {
+        decision: "allow",
+        reason: `Temporary bypass active until ${new Date(bypass.until).toISOString()}`,
+        flowId: binding?.flowId,
+        currentNode: binding?.currentNode ?? null
+      };
+    }
+    if (!binding) {
+      return {
+        decision: "deny",
+        reason: indexedWorkflow ? `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed. Retry once the backend is reachable or start a new Flow.` : `Workflow enforcement active for ${repoRoot} (${branch}), but no Flow is bound. Start one with start_flow.`
+      };
+    }
+    return evaluatePolicy({
+      binding,
+      config,
+      tool: input.tool,
+      path: input.path,
+      command: input.command ?? "",
+      toRelative: (target) => toRepoRelativePath(binding.repoRoot, target)
+    });
+  }
+  observe(input) {
+    const binding = this.bindings.get(bindingKey(input.repoRoot, input.branch)) ?? null;
+    if (!binding)
+      return { recorded: false };
+    const now = this.now();
+    const event = {
+      id: randomUUID4(),
+      node: binding.currentNode,
+      kind: input.kind,
+      summary: input.summary,
+      createdAt: now
+    };
+    binding.observed.push(event);
+    binding.updatedAt = now;
+    this.flushReportAsync(binding);
+    return { recorded: true, event };
+  }
+  async stop(input) {
+    const repoRoot = canonicalRepoRoot(input.repoRoot);
+    const branch = input.branch.trim();
+    const binding = await this.lookupOrRehydrate(repoRoot, branch);
+    const indexedWorkflow = binding ? undefined : await this.lookupIndexedWorkflowName(repoRoot, branch);
+    const loaded = binding ? { ok: true, config: binding.config } : await this.loadGateConfig(repoRoot, indexedWorkflow);
+    if (!loaded.ok) {
+      return { decision: "deny", reason: loaded.error };
+    }
+    const config = loaded.config;
+    if (!config || !isEnforcedConfig(config)) {
+      return { decision: "allow", reason: "no active enforced flow binding" };
+    }
+    if (!binding) {
+      if (this.activeBypass(repoRoot, branch) !== null) {
+        return { decision: "allow", reason: "temporary bypass active" };
+      }
+      if (indexedWorkflow) {
+        return {
+          decision: "deny",
+          reason: `Workflow "${indexedWorkflow}" enforcement is active for ${repoRoot} (${branch}), but rehydrating the bound Flow failed.`
+        };
+      }
+      return { decision: "allow", reason: "no active enforced flow binding" };
+    }
+    return evaluateStopDecision({
+      binding,
+      config,
+      bypassActive: this.activeBypass(repoRoot, branch) !== null
+    });
+  }
+  close() {
+    for (const handle of this.streams.values())
+      handle.close();
+    this.streams.clear();
+  }
+  async buildLocalStartBody(params) {
+    const { input, name, workspace, branch, tabs, defaultTab } = params;
+    const ticketBody = input.ticketBody ?? (input.ticketUrl ? await fetchGitHubIssueBody(input.ticketUrl) ?? undefined : undefined);
+    const values = input.workflow ? { ...input.values ?? {}, workflow: input.workflow } : input.values;
+    return {
+      mode: "local",
+      ...input.parentId ? { parentId: input.parentId } : {},
+      name,
+      workspace,
+      repo: workspace,
+      ...input.base ? { base: input.base } : {},
+      branch,
+      ticket: input.ticket ?? null,
+      ticketUrl: input.ticketUrl ?? null,
+      ...tabs ? { tabs } : {},
+      ...defaultTab ? { defaultTab } : {},
+      ...input.endState ? { endState: input.endState } : {},
+      ...ticketBody ? { ticketBody } : {},
+      ...input.spec ? { spec: input.spec } : {},
+      ...values ? { values } : {}
+    };
+  }
+  getByFlowId(flowId) {
+    const key = this.flowIndex.get(flowId);
+    return key ? this.bindings.get(key) ?? null : null;
+  }
+  async resolveTarget(input) {
+    if (input.flowId) {
+      const byId = this.getByFlowId(input.flowId);
+      if (byId)
+        return { repoRoot: byId.repoRoot, branch: byId.branch };
+      if (!input.repoRoot && !input.branch) {
+        throw new Error(`no local flow binding found for flowId "${input.flowId}"`);
+      }
+    }
+    return resolveRepoBranch(input);
+  }
+  async loadGateConfig(repoRoot, workflowName) {
+    try {
+      return {
+        ok: true,
+        config: await loadWorkflowConfig(repoRoot, workflowName)
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("[gate] loadWorkflowConfig failed", {
+        repoRoot,
+        workflowName,
+        error: detail
+      });
+      return { ok: false, error: `Workflow config error: ${detail}` };
+    }
+  }
+  async lookupIndexedWorkflowName(repoRoot, branch) {
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (!indexedFlowId)
+      return;
+    const localState = await readLocalFlow(indexedFlowId);
+    return localState?.workflow;
+  }
+  isReusableBinding(binding) {
+    if (binding.currentNode === null)
+      return false;
+    if (binding.flowState && !ACTIVE_FLOW_STATES.has(binding.flowState))
+      return false;
+    return !Object.values(binding.nodes).some((n) => n.status === "errored" || n.status === "rejected");
+  }
+  detachBinding(input) {
+    const key = bindingKey(input.repoRoot, input.branch);
+    this.bindings.delete(key);
+    this.flowIndex.delete(input.flowId);
+    const stream = this.streams.get(input.flowId);
+    if (stream) {
+      stream.close();
+      this.streams.delete(input.flowId);
+    }
+  }
+  async fetchHydratedFlow(flowId) {
+    let raw;
+    try {
+      raw = await this.backend.request(getFlowsGetUrl({ id: flowId }));
+    } catch (error) {
+      if (error instanceof TransportHttpError && error.status === 404)
+        return null;
+      throw error;
+    }
+    const parsed = hydratedFlowResponseSchema.safeParse(unwrapToolkitData(JSON.parse(raw)));
+    if (!parsed.success) {
+      throw new Error(`invalid flow response while rehydrating "${flowId}"`);
+    }
+    return parsed.data.flow;
+  }
+  async lookupReusableBinding(repoRoot, branch) {
+    const cached = this.bindings.get(bindingKey(repoRoot, branch));
+    const flowId = cached?.flowId ?? await resolveIndexedFlowId({ repoRoot, branch });
+    if (!flowId)
+      return null;
+    const flow = await this.fetchHydratedFlow(flowId);
+    if (!flow || flow.state && !ACTIVE_FLOW_STATES.has(flow.state)) {
+      this.detachBinding({ repoRoot, branch, flowId });
+      return null;
+    }
+    if (cached) {
+      this.applyHydratedFlow(cached, flow);
+      if (this.isReusableBinding(cached))
+        return cached;
+      this.detachBinding({ repoRoot, branch, flowId });
+      return null;
+    }
+    const hydrated = await this.hydrateValidatedFlow({
+      flow,
+      repoRoot,
+      branch
+    });
+    if (this.isReusableBinding(hydrated))
+      return hydrated;
+    this.detachBinding({ repoRoot, branch, flowId });
+    return null;
+  }
+  async lookupOrRehydrate(repoRoot, branch) {
+    const existing = this.bindings.get(bindingKey(repoRoot, branch));
+    if (existing)
+      return existing;
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (!indexedFlowId)
+      return null;
+    try {
+      return await this.rehydrateByFlowId({
+        flowId: indexedFlowId,
+        repoRoot,
+        branch
+      });
+    } catch (error) {
+      console.error("[gate] rehydrateByFlowId failed", {
+        flowId: indexedFlowId,
+        repoRoot,
+        branch,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+  async resolveBinding(input) {
+    if (input.flowId) {
+      const byId = this.getByFlowId(input.flowId);
+      if (byId)
+        return byId;
+      return this.rehydrateByFlowId({
+        flowId: input.flowId,
+        repoRoot: input.repoRoot,
+        branch: input.branch
+      });
+    }
+    const { repoRoot, branch } = await this.resolveTarget(input);
+    const binding = this.bindings.get(bindingKey(repoRoot, branch));
+    if (binding)
+      return binding;
+    const indexedFlowId = await resolveIndexedFlowId({ repoRoot, branch });
+    if (indexedFlowId)
+      return this.rehydrateByFlowId({
+        flowId: indexedFlowId,
+        repoRoot,
+        branch
+      });
+    throw new Error(`no local flow binding found for (${repoRoot}, ${branch})`);
+  }
+  async rehydrateByFlowId(input) {
+    const flow = await this.fetchHydratedFlow(input.flowId);
+    if (!flow)
+      throw new Error(`flow "${input.flowId}" not found`);
+    return this.hydrateValidatedFlow({
+      flow,
+      repoRoot: input.repoRoot,
+      branch: input.branch
+    });
+  }
+  async hydrateValidatedFlow(input) {
+    const { flow } = input;
+    if (flow.mode !== "local") {
+      throw new Error(`cannot bind flow "${flow.id}": expected mode "local", got "${flow.mode ?? "unknown"}"`);
+    }
+    const requestedBranch = input.branch?.trim();
+    if (requestedBranch && flow.branch && requestedBranch !== flow.branch) {
+      throw new Error(`flow "${flow.id}" is bound to branch "${flow.branch}", not "${requestedBranch}"`);
+    }
+    const { repoRoot, branch } = await resolveRepoBranch({
+      repoRoot: input.repoRoot,
+      branch: requestedBranch || flow.branch || undefined
+    });
+    const repoName = await resolveWorkspaceName(repoRoot);
+    if (flow.workspace && repoName !== flow.workspace) {
+      throw new Error(`flow "${flow.id}" belongs to workspace "${flow.workspace}", not "${repoName}"`);
+    }
+    const localState = await readLocalFlow(flow.id);
+    const workflowName = localState?.workflow ?? flow.values?.workflow;
+    const config = await loadWorkflowConfig(repoRoot, workflowName) ?? BLANK_SLATE_CONFIG;
+    const binding = this.attachBinding({
+      repoRoot,
+      branch,
+      flowId: flow.id,
+      config,
+      workflowName
+    });
+    const hydrated = this.applyHydratedFlow(binding, flow);
+    if (!localState) {
+      await saveLocalFlow(emptyLocalFlow({
+        flowId: flow.id,
+        repoRoot,
+        branch,
+        ...workflowName ? { workflow: workflowName } : {},
+        now: this.now()
+      }));
+    }
+    return hydrated;
+  }
+  applyHydratedFlow(binding, flow) {
+    const now = this.now();
+    if (flow.state)
+      binding.flowState = flow.state;
+    if (flow.values && Object.keys(flow.values).length > 0) {
+      binding.values = { ...flow.values };
+    }
+    for (const step of flow.steps ?? []) {
+      const nodeState = Object.hasOwn(binding.nodes, step.id) ? binding.nodes[step.id] : undefined;
+      if (nodeState) {
+        const mapped = step.status ? mapEventStatus(step.status) : null;
+        if (mapped)
+          nodeState.status = mapped;
+        if (step.summary)
+          nodeState.summary = step.summary;
+        nodeState.updatedAt = now;
+      }
+    }
+    advanceCurrentNode(binding, now);
+    return binding;
+  }
+  attachBinding(input) {
+    const key = bindingKey(input.repoRoot, input.branch);
+    const now = this.now();
+    const nodes = {};
+    input.config.nodes.forEach((id, idx) => {
+      nodes[id] = {
+        id,
+        status: idx === 0 ? "active" : "pending",
+        updatedAt: now
+      };
+    });
+    const binding = {
+      repoRoot: input.repoRoot,
+      branch: input.branch,
+      flowId: input.flowId,
+      ...input.flowState ? { flowState: input.flowState } : {},
+      ...input.workflowName ? { workflowName: input.workflowName } : {},
+      config: input.config,
+      currentNode: input.config.nodes[0] ?? null,
+      nodes,
+      bypassUntil: null,
+      bypassReason: null,
+      observed: [],
+      lastEventSeq: 0,
+      updatedAt: now
+    };
+    const existing = this.bindings.get(key);
+    if (existing) {
+      this.streams.get(existing.flowId)?.close();
+      this.streams.delete(existing.flowId);
+      this.flowIndex.delete(existing.flowId);
+    }
+    this.bindings.set(key, binding);
+    this.flowIndex.set(input.flowId, key);
+    this.startBindingStream(input.flowId);
+    return binding;
+  }
+  startBindingStream(flowId) {
+    if (!this.enableStream || !this.backend.streamUrl)
+      return;
+    const streamUrl = this.backend.streamUrl(`/api/flow/${encodeURIComponent(flowId)}/stream`);
+    const handle = connectFlowStream({
+      url: streamUrl,
+      token: this.backend.token ?? "",
+      fetchImpl: this.fetchImpl,
+      baseDelayMs: this.streamBackoff?.baseDelayMs,
+      maxDelayMs: this.streamBackoff?.maxDelayMs,
+      onEvent: (frame) => this.applyStreamFrame(flowId, frame),
+      onError: (error) => {
+        console.error(JSON.stringify({
+          level: "error",
+          component: "nosta-gate",
+          event: "sse_stream_error",
+          flowId,
+          streamUrl,
+          lastEventSeq: this.getByFlowId(flowId)?.lastEventSeq ?? 0,
+          error: error instanceof Error ? error.message : String(error)
+        }));
+      }
+    });
+    this.streams.set(flowId, handle);
+  }
+  applyStreamFrame(flowId, frame) {
+    const binding = this.getByFlowId(flowId);
+    if (!binding)
+      return;
+    const parsed = stepEventSchema.safeParse(frame.data);
+    if (!parsed.success)
+      return;
+    const event = parsed.data;
+    const eventSeq = event.seq > 0 ? event.seq : frame.id ?? 0;
+    if (eventSeq > 0 && eventSeq <= binding.lastEventSeq)
+      return;
+    if (eventSeq > 0)
+      binding.lastEventSeq = eventSeq;
+    const stepId = event.stepId;
+    const mapped = mapEventStatus(event.status);
+    if (!stepId || !mapped || !Object.hasOwn(binding.nodes, stepId))
+      return;
+    if (binding.config.approvalNodes.includes(stepId) && mapped === "complete")
+      return;
+    if (mapped === "complete" && binding.currentNode !== stepId)
+      return;
+    const now = this.now();
+    const target = binding.nodes[stepId];
+    target.status = mapped;
+    if (event.summary.length > 0)
+      target.summary = event.summary;
+    target.updatedAt = now;
+    advanceCurrentNode(binding, now);
+  }
+  async persistAndCommit(binding, mutate) {
+    const key = bindingKey(binding.repoRoot, binding.branch);
+    const draft = cloneBinding(binding);
+    const now = this.now();
+    mutate(draft, now);
+    const report = buildCloudReport(draft, now);
+    await this.backend.request(getFlowsReportUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: binding.flowId, ...report })
+    });
+    const current = this.bindings.get(key);
+    if (current !== binding) {
+      throw new Error(`flow binding for (${binding.repoRoot}, ${binding.branch}) changed before commit`);
+    }
+    const nextBinding = {
+      ...current,
+      nodes: draft.nodes,
+      ...draft.values ? { values: draft.values } : {},
+      currentNode: draft.currentNode,
+      updatedAt: draft.updatedAt
+    };
+    this.bindings.set(key, nextBinding);
+    return nextBinding;
+  }
+  flushReportAsync(binding) {
+    const report = buildCloudReport(binding, this.now());
+    this.backend.request(getFlowsReportUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: binding.flowId, ...report })
+    }).catch((error) => {
+      console.error(JSON.stringify({
+        level: "error",
+        component: "nosta-gate",
+        event: "report_flush_error",
+        flowId: binding.flowId,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+    });
+  }
+  activeBypass(repoRoot, branch) {
+    const key = bindingKey(repoRoot, branch);
+    const entry = this.bypasses.get(key);
+    if (!entry)
+      return null;
+    if (this.now() >= entry.until) {
+      this.bypasses.delete(key);
+      return null;
+    }
+    return entry;
+  }
+}
+
+// src/sync.ts
+import { createHash } from "node:crypto";
+import { basename as basename4 } from "node:path";
+var DATA_CHANGE_PATH = /(?:^|\/)(?:migrations\/|prisma\/migrations\/|drizzle\/|alembic\/versions\/|schema\.sql$|[^/]+\.sql$)/i;
+var MAX_SYNC_DIFF_BYTES = 512 * 1024;
+var syncDocInputSchema = object({
+  id: string2().min(1).max(160),
+  title: string2().min(1).max(200),
+  slot: flowDocSlotSchema.optional(),
+  name: string2().min(1).max(200).optional(),
+  sourcePath: string2().min(1).optional(),
+  html: string2().min(1).optional(),
+  stepId: string2().max(128).optional()
+});
+var syncEvidenceInputSchema = object({
+  id: string2().min(1).max(160),
+  title: string2().min(1).max(200),
+  name: string2().min(1).max(200).optional(),
+  sourcePath: string2().min(1),
+  stepId: string2().max(128).optional()
+});
+var syncCheckInputSchema = object({
+  id: string2().min(1).max(100).optional(),
+  command: string2().min(1).max(1000),
+  exitCode: number2().int(),
+  durationMs: number2().int().min(0).optional(),
+  summary: string2().max(500).optional(),
+  output: string2().optional()
+});
+var syncReviewInputSchema = object({
+  id: string2().min(1).max(100).optional(),
+  name: string2().min(1).max(160).optional(),
+  model: string2().min(1).max(120).optional(),
+  verdict: _enum(["PASS", "FAIL"]),
+  findings: array(findingSchema).max(100).optional(),
+  durationMs: number2().int().min(0).optional(),
+  summary: string2().max(500).optional(),
+  output: string2().optional(),
+  usage: usageSchema.optional()
+});
+var syncDiffOptionSchema = union([
+  boolean2(),
+  object({
+    base: string2().min(1).max(200).optional(),
+    head: string2().min(1).max(200).optional()
+  })
+]);
+var flowSyncInputSchema = object({
+  flowId: string2().min(1).optional().describe("Existing Flow ID to sync. Resolved from repoRoot/branch or ticket if omitted."),
+  repoRoot: string2().optional().describe("Git repository root for resolving the bound Flow or computing git diff."),
+  branch: string2().optional().describe("Git branch name for resolving the bound Flow."),
+  base: string2().optional().describe("Base branch/ref for git diff (defaults to main)."),
+  ticket: string2().optional().describe("Ticket identifier for artifact storage and index lookup."),
+  status: _enum(["running", "complete", "errored"]).optional().describe("Flow report status (default running)."),
+  tabs: array(flowTabSchema).max(16).optional().describe("Optional custom modular Flow tabs for this flow."),
+  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
+  docs: array(syncDocInputSchema).max(64).optional().describe("HTML documents to upload (by sha256) and attach to flow.docs."),
+  evidence: array(syncEvidenceInputSchema).max(64).optional().describe("Media or HTML evidence files to upload and attach to flow.evidence."),
+  checks: array(syncCheckInputSchema).max(64).optional().describe("Timed command gate runs recorded as kind=command steps."),
+  review: syncReviewInputSchema.optional().describe("Review run recorded as kind=agent, role=review step."),
+  diff: syncDiffOptionSchema.optional().describe("Compute and upload git diff + summary (files, migrations, +/- counts) in repoRoot."),
+  pr: object({
+    url: string2().url(),
+    number: number2().int().positive(),
+    base: string2().min(1)
+  }).optional(),
+  ship: flowShipMetaSchema.partial().optional().describe("Optional ship risk, deployOrder, and notes."),
+  values: record(string2(), string2()).optional().describe("Optional string metadata merged into flow.values."),
+  endState: string2().optional(),
+  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab."),
+  spec: string2().optional()
+});
+function sha256Of(data) {
+  return createHash("sha256").update(data).digest("hex");
+}
+function slugOf(raw, fallback) {
+  const clean = raw.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return (clean || fallback).slice(0, 180);
+}
+function stepIdFor(prefix, seed) {
+  const slug = slugOf(seed.toLowerCase(), prefix).slice(0, 48);
+  const digest = sha256Of(seed).slice(0, 8);
+  return `${prefix}-${slug}-${digest}`.slice(0, 100);
+}
+function upsertById(list, item) {
+  const next = [...list];
+  const idx = next.findIndex((entry) => entry.id === item.id);
+  if (idx === -1)
+    next.push(item);
+  else
+    next[idx] = item;
+  return next;
+}
+function truncateDiff(raw) {
+  if (!raw.trim())
+    return { text: null, truncated: false };
+  const encoded = Buffer.from(raw, "utf8");
+  if (encoded.byteLength <= MAX_SYNC_DIFF_BYTES)
+    return { text: raw, truncated: false };
+  return {
+    text: encoded.subarray(0, MAX_SYNC_DIFF_BYTES).toString("utf8"),
+    truncated: true
+  };
+}
+async function resolveTargetFlowId(input) {
+  let repoRoot = input.args.repoRoot;
+  let branch = input.args.branch;
+  if (!repoRoot || !branch) {
+    try {
+      const resolved = await resolveRepoBranch({ repoRoot, branch });
+      repoRoot = resolved.repoRoot;
+      branch = resolved.branch;
+    } catch {}
+  }
+  const flowId = input.args.flowId ?? await resolveIndexedFlowId({
+    repoRoot,
+    branch,
+    ticket: input.args.ticket,
+    stateDir: input.stateDir
+  });
+  if (!flowId) {
+    throw new Error("no flow bound for this repo/branch or ticket; pass flowId or start a flow with start_flow");
+  }
+  return { flowId, repoRoot, branch };
+}
+async function publishMediaBytes(input) {
+  const qs = new URLSearchParams({
+    title: input.title,
+    flowId: input.flowId,
+    slot: input.slot
+  });
+  if (input.stepId)
+    qs.set("stepId", input.stepId);
+  await input.backend.request(`/api/media/${encodeURIComponent(input.ticket)}/${encodeURIComponent(input.name)}?${qs.toString()}`, {
+    method: "PUT",
+    headers: { "content-type": input.contentType },
+    body: new Uint8Array(input.bytes)
+  });
+}
+async function readDocPayload(doc, repoRoot) {
+  if (doc.html !== undefined) {
+    const rawBytes = new TextEncoder().encode(doc.html);
+    if (rawBytes.byteLength === 0)
+      throw new Error(`doc "${doc.id}" requires non-empty content`);
+    return {
+      rawBytes,
+      name: slugOf(doc.name ?? doc.id, "doc"),
+      kind: "html",
+      contentType: "text/html; charset=utf-8"
+    };
+  }
+  if (!doc.sourcePath)
+    throw new Error(`doc "${doc.id}" requires either html or sourcePath`);
+  const safeRoot = repoRoot ? await assertGitRepoRoot(repoRoot) : undefined;
+  const lowerHint = basename4(doc.sourcePath).toLowerCase();
+  const maxBytes = lowerHint.endsWith(".html") || lowerHint.endsWith(".htm") ? MAX_PAGE_BYTES : mediaContentType(doc.sourcePath) ? MAX_MEDIA_BYTES : MAX_PAGE_BYTES;
+  const { path: safePath, bytes: rawBytes } = await readBoundedWorkspaceFile({
+    filePath: doc.sourcePath,
+    maxBytes,
+    rootDir: safeRoot
+  });
+  if (rawBytes.byteLength === 0)
+    throw new Error(`doc "${doc.id}" requires non-empty content`);
+  const sourceBase = basename4(safePath);
+  const name = slugOf(doc.name ?? sourceBase, "doc");
+  const lowerSource = sourceBase.toLowerCase();
+  const detected = lowerSource.endsWith(".html") || lowerSource.endsWith(".htm") ? null : mediaContentType(sourceBase);
+  return {
+    rawBytes,
+    name,
+    kind: detected ? "media" : "html",
+    contentType: detected ?? "text/html; charset=utf-8"
+  };
+}
+async function syncDocs(input) {
+  let uploaded = 0;
+  const refs = [];
+  for (const doc of input.docs) {
+    const slot = doc.slot ?? "artifact";
+    const { rawBytes, name, kind, contentType } = await readDocPayload(doc, input.state.repoRoot);
+    const sha256 = sha256Of(rawBytes);
+    const existing = input.state.docs.find((entry) => entry.id === doc.id);
+    const changed = !existing || existing.sha256 !== sha256 || existing.title !== doc.title || existing.name !== name || existing.ticket !== input.ticket || existing.slot !== slot || existing.kind !== kind;
+    if (changed) {
+      if (kind === "html") {
+        await publishPage(input.backend, {
+          ticket: input.ticket,
+          name,
+          title: doc.title,
+          stepId: doc.stepId ?? "",
+          slot,
+          html: Buffer.from(rawBytes).toString("utf8"),
+          flowId: input.state.flowId
+        });
+      } else {
+        await publishMediaBytes({
+          backend: input.backend,
+          ticket: input.ticket,
+          name,
+          title: doc.title,
+          flowId: input.state.flowId,
+          slot,
+          stepId: doc.stepId,
+          contentType,
+          bytes: rawBytes
+        });
+      }
+      uploaded += 1;
+    }
+    refs.push({
+      id: doc.id,
+      ticket: input.ticket,
+      name,
+      title: doc.title,
+      slot,
+      kind,
+      stepId: doc.stepId ?? null,
+      sha256,
+      bytes: rawBytes.byteLength,
+      createdAt: input.now
+    });
+  }
+  return { refs, uploaded };
+}
+async function syncEvidence(input) {
+  let uploaded = 0;
+  const refs = [];
+  const safeRoot = input.state.repoRoot ? await assertGitRepoRoot(input.state.repoRoot) : undefined;
+  for (const item of input.evidence) {
+    const { path: safePath, bytes: raw } = await readBoundedWorkspaceFile({
+      filePath: item.sourcePath,
+      maxBytes: MAX_MEDIA_BYTES,
+      rootDir: safeRoot
+    });
+    const name = slugOf(item.name ?? basename4(safePath), "evidence.txt");
+    const isHtml = name.toLowerCase().endsWith(".html") || name.toLowerCase().endsWith(".htm");
+    const contentType = isHtml ? "text/html; charset=utf-8" : mediaContentType(name);
+    if (!contentType)
+      throw new Error(`unsupported evidence file extension: ${name}`);
+    const sha256 = sha256Of(raw);
+    const existing = input.state.evidence.find((entry) => entry.id === item.id);
+    if (!existing || existing.sha256 !== sha256 || existing.title !== item.title || existing.name !== name || existing.ticket !== input.ticket) {
+      if (isHtml) {
+        await publishPage(input.backend, {
+          ticket: input.ticket,
+          name,
+          title: item.title,
+          stepId: item.stepId ?? "",
+          slot: "evidence",
+          html: Buffer.from(raw).toString("utf8"),
+          flowId: input.state.flowId
+        });
+      } else {
+        await publishMediaBytes({
+          backend: input.backend,
+          ticket: input.ticket,
+          name,
+          title: item.title,
+          flowId: input.state.flowId,
+          slot: "evidence",
+          stepId: item.stepId,
+          contentType,
+          bytes: raw
+        });
+      }
+      uploaded += 1;
+    }
+    refs.push({
+      id: item.id,
+      ticket: input.ticket,
+      name,
+      title: item.title,
+      kind: isHtml ? "html" : "media",
+      contentType,
+      stepId: item.stepId ?? null,
+      sha256,
+      bytes: raw.byteLength,
+      createdAt: input.now
+    });
+  }
+  return { refs, uploaded };
+}
+function parseNumstat(numstat) {
+  const files = [];
+  const migrations = [];
+  let additions = 0;
+  let deletions = 0;
+  for (const line of numstat.split(/\r?\n/)) {
+    if (!line.trim())
+      continue;
+    const [rawAdd, rawDel, ...rest] = line.split("\t");
+    const file = rest.join("\t").trim();
+    if (!file)
+      continue;
+    files.push(file);
+    if (DATA_CHANGE_PATH.test(file))
+      migrations.push(file);
+    const add = Number(rawAdd);
+    const del = Number(rawDel);
+    if (Number.isFinite(add))
+      additions += add;
+    if (Number.isFinite(del))
+      deletions += del;
+  }
+  return {
+    files: files.slice(0, 500),
+    migrations: migrations.slice(0, 200),
+    additions,
+    deletions
+  };
+}
+async function computeDiff(input) {
+  const safeBase = assertSafeGitRef(input.base, "base");
+  const safeHead = assertSafeGitRef(input.head, "head");
+  const mergeBase = await runGit(input.repoRoot, ["merge-base", safeBase, safeHead]) ?? safeBase;
+  const numstat = await runGit(input.repoRoot, [
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--numstat",
+    `${mergeBase}..${safeHead}`,
+    "--"
+  ]) ?? "";
+  const headSha = await runGit(input.repoRoot, ["rev-parse", "--verify", safeHead]) ?? safeHead;
+  const sha256 = sha256Of(`${mergeBase}:${headSha}:${numstat}`);
+  const stats = parseNumstat(numstat);
+  const summary = {
+    base: safeBase,
+    head: headSha,
+    ticket: null,
+    name: null,
+    ...stats,
+    sha256
+  };
+  if (input.uploadedDiffSha256 && sha256 === input.uploadedDiffSha256) {
+    return { summary, uploadDiff: false, diff: null, diffTruncated: false };
+  }
+  const rawDiff = await runGit(input.repoRoot, [
+    "diff",
+    "--no-ext-diff",
+    "--no-textconv",
+    `${mergeBase}..${safeHead}`,
+    "--"
+  ]) ?? "";
+  const { text: diff, truncated: diffTruncated } = truncateDiff(rawDiff);
+  return { summary, uploadDiff: true, diff, diffTruncated };
+}
+function buildSteps(args, now) {
+  const steps = [];
+  for (const check of args.checks ?? []) {
+    steps.push({
+      id: check.id ?? stepIdFor("gate", check.command),
+      name: check.command.slice(0, 160),
+      kind: "command",
+      status: check.exitCode === 0 ? "complete" : "errored",
+      command: check.command,
+      exitCode: check.exitCode,
+      durationMs: check.durationMs ?? null,
+      summary: check.summary ?? `${check.exitCode === 0 ? "PASS" : `exit ${check.exitCode}`}`,
+      output: check.output ?? ""
+    });
+  }
+  if (args.review) {
+    const rev = args.review;
+    steps.push({
+      id: rev.id ?? stepIdFor("review", `${rev.name ?? "review"}-${rev.model ?? "agent"}-${now}`),
+      name: rev.name ?? "Code review",
+      kind: "agent",
+      role: "review",
+      status: "complete",
+      model: rev.model ?? null,
+      verdict: rev.verdict,
+      findings: rev.findings ?? [],
+      durationMs: rev.durationMs ?? null,
+      summary: rev.summary ?? `${rev.verdict} (${rev.findings?.length ?? 0} findings)`,
+      output: rev.output ?? "",
+      ...rev.usage ? { usage: rev.usage } : {}
+    });
+  }
+  return steps;
+}
+function mergeShip(existing, incoming) {
+  if (!incoming)
+    return existing;
+  return {
+    risk: incoming.risk ?? existing?.risk ?? null,
+    deployOrder: incoming.deployOrder ?? existing?.deployOrder ?? null,
+    notes: [
+      ...new Set([...existing?.notes ?? [], ...incoming.notes ?? []])
+    ]
+  };
+}
+function mergeRefs(existing, incoming) {
+  let out = existing;
+  for (const ref of incoming)
+    out = upsertById(out, ref);
+  return out;
+}
+async function resolveComputedDiff(input) {
+  if (!input.args.diff)
+    return null;
+  const repoRoot = input.repoRoot ?? input.existing.repoRoot;
+  if (!repoRoot)
+    throw new Error("diff sync requires a git repository (pass repoRoot)");
+  const safeRepoRoot = await assertGitRepoRoot(repoRoot);
+  const diffOpts = typeof input.args.diff === "object" ? input.args.diff : {};
+  const base = diffOpts.base ?? input.args.base ?? input.existing.base ?? "main";
+  const head = diffOpts.head ?? "HEAD";
+  return computeDiff({
+    repoRoot: safeRepoRoot,
+    base,
+    head,
+    uploadedDiffSha256: input.existing.diffUploadedSha256
+  });
+}
+async function attachPublishedArtifact(input) {
+  const now = input.now ?? Date.now();
+  const sha256 = sha256Of(input.html);
+  const existing = await readLocalFlow(input.flowId, input.stateDir) ?? emptyLocalFlow({ flowId: input.flowId, ticket: input.ticket, now });
+  const isEvidence = input.slot === "evidence";
+  const docRef = {
+    id: input.name,
+    ticket: input.ticket,
+    name: input.name,
+    title: input.title,
+    slot: input.slot,
+    kind: "html",
+    stepId: input.stepId || null,
+    sha256,
+    bytes: input.bytes,
+    createdAt: now
+  };
+  const evidenceRef = isEvidence ? {
+    id: input.name,
+    ticket: input.ticket,
+    name: input.name,
+    title: input.title,
+    kind: "html",
+    contentType: "text/html; charset=utf-8",
+    stepId: input.stepId || null,
+    sha256,
+    bytes: input.bytes,
+    createdAt: now
+  } : null;
+  await input.backend.request(getFlowsReportUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: input.flowId,
+      status: "running",
+      finishedAt: null,
+      steps: [],
+      docs: [docRef],
+      ...evidenceRef ? { evidence: [evidenceRef] } : {}
+    })
+  });
+  await saveLocalFlow({
+    ...existing,
+    ticket: existing.ticket ?? input.ticket,
+    docs: mergeRefs(existing.docs, [docRef]),
+    evidence: evidenceRef ? mergeRefs(existing.evidence, [evidenceRef]) : existing.evidence,
+    updatedAt: now
+  }, input.stateDir);
+}
+function assertSyncDomainsAllowed(args, allowedToolkits) {
+  const allowed = allowedToolkits !== undefined ? allowedToolkits : readAllowedToolkits();
+  assertDomainAllowed("flows", allowed);
+  if ((args.docs?.length ?? 0) > 0 || (args.evidence?.length ?? 0) > 0) {
+    assertDomainAllowed("pages", allowed);
+  }
+}
+async function syncFlow(input) {
+  assertSyncDomainsAllowed(input.args, input.allowedToolkits);
+  const now = (input.now ?? Date.now)();
+  const resolved = await resolveTargetFlowId({
+    args: input.args,
+    stateDir: input.stateDir
+  });
+  const existing = await readLocalFlow(resolved.flowId, input.stateDir) ?? emptyLocalFlow({
+    flowId: resolved.flowId,
+    repoRoot: resolved.repoRoot,
+    branch: resolved.branch,
+    base: input.args.base,
+    ticket: input.args.ticket,
+    now
+  });
+  const ticket = input.args.ticket ?? existing.ticket ?? resolved.flowId;
+  const docOut = input.args.docs ? await syncDocs({
+    state: existing,
+    docs: input.args.docs,
+    ticket,
+    backend: input.backend,
+    now
+  }) : { refs: [], uploaded: 0 };
+  const evOut = input.args.evidence ? await syncEvidence({
+    state: existing,
+    evidence: input.args.evidence,
+    ticket,
+    backend: input.backend,
+    now
+  }) : { refs: [], uploaded: 0 };
+  const computedDiff = await resolveComputedDiff({
+    args: input.args,
+    existing,
+    repoRoot: resolved.repoRoot
+  });
+  const diffSummary = computedDiff ? computedDiff.summary : existing.diffSummary;
+  const diffSummaryChanged = Boolean(computedDiff && (computedDiff.uploadDiff || JSON.stringify(computedDiff.summary) !== JSON.stringify(existing.diffSummary)));
+  const ship = mergeShip(existing.ship, input.args.ship);
+  const steps = buildSteps(input.args, now);
+  const status = input.args.status ?? "running";
+  const tabs = input.args.tabs !== undefined ? input.args.tabs : existing.tabs;
+  const defaultTab = input.args.defaultTab !== undefined ? input.args.defaultTab : existing.defaultTab;
+  await input.backend.request(getFlowsReportUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: resolved.flowId,
+      status,
+      finishedAt: status === "running" ? null : now,
+      steps,
+      ...docOut.refs.length > 0 ? { docs: docOut.refs } : {},
+      ...evOut.refs.length > 0 ? { evidence: evOut.refs } : {},
+      ...computedDiff && diffSummaryChanged ? { diffSummary: computedDiff.summary } : {},
+      ...computedDiff?.uploadDiff ? {
+        diff: computedDiff.diff,
+        diffTruncated: computedDiff.diffTruncated
+      } : {},
+      ...input.args.tabs !== undefined ? { tabs: input.args.tabs } : {},
+      ...input.args.defaultTab !== undefined ? { defaultTab: input.args.defaultTab } : {},
+      ...input.args.ship ? { ship } : {},
+      ...input.args.pr ? { pr: input.args.pr } : {},
+      ...input.args.values ? { values: input.args.values } : {},
+      ...input.args.endState !== undefined ? { endState: input.args.endState } : {},
+      ...input.args.ticketBody !== undefined ? { ticketBody: input.args.ticketBody } : {},
+      ...input.args.spec !== undefined ? { spec: input.args.spec } : {},
+      ...resolved.branch ? { branch: resolved.branch } : {}
+    })
+  });
+  const diffUploadedSha256 = computedDiff?.uploadDiff ? computedDiff.summary.sha256 : existing.diffUploadedSha256;
+  await saveLocalFlow({
+    ...existing,
+    ...resolved.repoRoot ? { repoRoot: resolved.repoRoot } : {},
+    ...resolved.branch ? { branch: resolved.branch } : {},
+    ...input.args.base ? { base: input.args.base } : {},
+    ...tabs !== undefined ? { tabs } : {},
+    ...defaultTab !== undefined ? { defaultTab } : {},
+    ...diffUploadedSha256 !== undefined ? { diffUploadedSha256 } : {},
+    ticket,
+    docs: mergeRefs(existing.docs, docOut.refs),
+    evidence: mergeRefs(existing.evidence, evOut.refs),
+    diffSummary,
+    ship,
+    updatedAt: now
+  }, input.stateDir);
+  return {
+    flowId: resolved.flowId,
+    uploadedDocs: docOut.uploaded,
+    uploadedEvidence: evOut.uploaded,
+    uploadedDiff: Boolean(computedDiff?.uploadDiff),
+    stepsReported: steps.length,
+    diffSummary,
+    ...tabs !== undefined ? { tabs } : {},
+    ...defaultTab !== undefined ? { defaultTab } : {},
+    flowUrl: `${input.backend.baseUrl}/flows/${encodeURIComponent(resolved.flowId)}`
+  };
+}
+
+// src/flow.ts
+function trimmed(value) {
+  if (typeof value !== "string")
+    return;
+  const clean = value.trim();
+  return clean.length > 0 ? clean : undefined;
+}
+var flowStartInputSchema2 = object({
+  mode: _enum(["spec", "review", "local"]).optional().describe("Optional explicit flow mode."),
+  path: string2().optional().describe("Absolute path of a local spec file (spec mode)."),
+  baseSha: string2().optional().describe("40-hex Git SHA from the caller's checkout (spec mode)."),
+  ticketUrl: string2().optional().describe("HTTPS URL of the ticket this flow runs for."),
+  paths: array(string2()).optional().describe("Absolute paths of 1..32 text files to review, 256 KiB total (review mode)."),
+  title: string2().optional().describe("Optional flow title (review or local mode)."),
+  parentId: string2().optional().describe("Optional parent flow ID to attach this local flow to."),
+  repoRoot: string2().optional().describe("Git repository root containing .nosta/workflows/<name>.yaml (or .nosta/workflow.yaml) for local mode."),
+  branch: string2().optional().describe("Git branch name to bind (local mode; defaults to current branch)."),
+  base: string2().optional().describe("Optional base branch name (local mode)."),
+  workflow: string2().optional().describe("Optional YAML workflow name in .nosta/workflows/<name>.yaml (local mode)."),
+  forceNew: boolean2().optional().describe("Start a fresh local flow instead of reusing an active (repoRoot, branch) binding."),
+  ticket: string2().optional().describe("Optional ticket key/identifier (local mode)."),
+  endState: string2().optional().describe("Optional target end state summary (local mode)."),
+  ticketBody: string2().optional().describe("Optional ticket body markdown shown on the Overview tab (auto-fetched from GitHub when ticketUrl is an issue URL)."),
+  spec: string2().optional().describe("Optional inline spec markdown text (local mode)."),
+  tabs: array(flowTabSchema).max(16).optional().describe("Optional Flow tabs overriding the workflow YAML tabs."),
+  defaultTab: flowTabIdSchema.optional().describe("Optional default landing tab id when opening the Flow page."),
+  values: record(string2(), string2()).optional().describe("Optional string key/value metadata map (local mode).")
+}).superRefine((data, ctx) => {
+  const hasSpec = data.path !== undefined;
+  const hasReview = data.paths !== undefined;
+  const isLocal = data.mode === "local" || !hasSpec && !hasReview && (data.repoRoot !== undefined || data.branch !== undefined || data.workflow !== undefined || data.forceNew !== undefined);
+  if (hasSpec && hasReview) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide either { path, baseSha, ticketUrl } or { paths }, not both"
+    });
+    return;
+  }
+  if (data.mode !== "local" && hasSpec) {
+    if (!data.path)
+      ctx.addIssue({
+        code: "custom",
+        path: ["path"],
+        message: "path must be a string"
+      });
+    if (!data.baseSha)
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseSha"],
+        message: "baseSha must be a string"
+      });
+    if (!data.ticketUrl)
+      ctx.addIssue({
+        code: "custom",
+        path: ["ticketUrl"],
+        message: "ticketUrl must be a string"
+      });
+    return;
+  }
+  if (!isLocal && !hasSpec && !hasReview) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide { path, baseSha, ticketUrl } for a spec flow, { paths } for a review flow, or { mode: 'local', repoRoot, branch } for a local ticket flow"
+    });
+  }
+});
+var flowStatusInputSchema = object({
+  flowId: string2().optional().describe("ID from start_flow."),
+  repoRoot: string2().optional().describe("Git repository root to look up a bound local Ticket Flow."),
+  branch: string2().optional().describe("Git branch to look up a bound local Ticket Flow.")
+});
+var flowAdvanceInputSchema = object({
+  node: string2().min(1).describe("Name of the active non-approval node to complete."),
+  summary: string2().min(1).describe("Evidence summary for this node."),
+  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
+  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
+  branch: string2().optional().describe("Git branch name (optional if flowId is provided)."),
+  artifactUrl: string2().optional().describe("Optional artifact/spec/diff URL."),
+  prUrl: string2().optional().describe("Optional PR URL."),
+  commitSha: string2().optional().describe("Optional Git commit SHA produced by this node."),
+  proof: string2().optional().describe("Optional verification proof summary or command result."),
+  usage: usageSchema.optional().describe("Optional token usage recorded for this node."),
+  values: record(string2(), string2()).optional().describe("Optional metadata merged onto flow values.")
+});
+var flowApproveInputSchema = object({
+  flowId: string2().optional().describe("Flow ID waiting at its approval gate."),
+  decision: _enum(["approve", "reject"]).optional(),
+  version: number2().int().min(1).optional().describe("Flow version the caller read (cloud merge gate)."),
+  attempt: number2().int().min(1).optional().describe("Flow attempt the caller read (cloud merge gate)."),
+  decisionId: string2().optional().describe("Optional caller-supplied idempotency key for this decision."),
+  node: string2().optional().describe("Approval node name for a local Ticket Flow (e.g. 'go')."),
+  repoRoot: string2().optional().describe("Git repository root (local approval node)."),
+  branch: string2().optional().describe("Git branch name (local approval node)."),
+  approvedBy: string2().optional().describe("Optional approver identifier."),
+  summary: string2().optional().describe("Optional approval note.")
+}).superRefine((data, ctx) => {
+  const node = trimmed(data.node);
+  const hasCloudGateArgs = data.version !== undefined || data.attempt !== undefined;
+  if (node && hasCloudGateArgs) {
+    ctx.addIssue({
+      code: "custom",
+      message: "provide either { node } for a local approval node or { flowId, decision, version, attempt } for a cloud merge gate, not both"
+    });
+    return;
+  }
+  if (!node) {
+    if (!data.flowId)
+      ctx.addIssue({
+        code: "custom",
+        path: ["flowId"],
+        message: "flowId must be a string"
+      });
+    if (!data.decision)
+      ctx.addIssue({
+        code: "custom",
+        path: ["decision"],
+        message: "decision must be approve or reject"
+      });
+    if (data.version === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["version"],
+        message: "version must be a positive integer"
+      });
+    if (data.attempt === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["attempt"],
+        message: "attempt must be a positive integer"
+      });
+  }
+});
+var flowBypassInputSchema = object({
+  reason: string2().min(1).describe("Mandatory explanation for the temporary workflow bypass."),
+  durationMinutes: number2().int().min(1).optional().describe("Bypass duration in minutes (default 30, max 240)."),
+  flowId: string2().optional().describe("Bound flow ID (optional if repoRoot/branch is provided)."),
+  repoRoot: string2().optional().describe("Git repository root (optional if flowId is provided)."),
+  branch: string2().optional().describe("Git branch name (optional if flowId is provided).")
+});
+function stripSafeIntMax(node) {
+  if (Array.isArray(node))
+    return node.map(stripSafeIntMax);
+  if (!node || typeof node !== "object")
+    return node;
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "maximum" && value === Number.MAX_SAFE_INTEGER)
+      continue;
+    if (key === "minimum" && value === Number.MIN_SAFE_INTEGER)
+      continue;
+    out[key] = stripSafeIntMax(value);
+  }
+  return out;
+}
+function toMcpInputSchema(schema) {
+  const raw = toJSONSchema(schema, { target: "draft-07" });
+  const cleaned = stripSafeIntMax(raw);
+  delete cleaned.$schema;
+  if (cleaned.additionalProperties === false)
+    delete cleaned.additionalProperties;
+  return cleaned;
+}
+var READ_ONLY_TOOL = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false
+};
+var WRITE_TOOL = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true
+};
+var DESTRUCTIVE_TOOL = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: true
+};
+var FLOW_TOOLS2 = [
+  {
+    name: "start_flow",
+    description: "Start one Nosta flow. Pass { workflow?, repoRoot?, branch?, title?, ticket?, ticketUrl?, forceNew? } for a YAML/local flow, { path, baseSha, ticketUrl } for a spec flow, or { paths, title? } for a 1-step review flow.",
+    inputSchema: toMcpInputSchema(flowStartInputSchema2),
+    annotations: WRITE_TOOL
+  },
+  {
+    name: "validate_flow",
+    description: "Validate a workflow YAML file or inline YAML locally: syntax, primitives, repo-relative skills/references, evidence declarations, and backend secret availability.",
+    inputSchema: toMcpInputSchema(validateFlowInputSchema),
+    annotations: READ_ONLY_TOOL
+  },
+  {
+    name: "get_flow",
+    description: "Get one flow with its direct steps, child flow records, and local gate binding status.",
+    inputSchema: toMcpInputSchema(flowStatusInputSchema),
+    annotations: READ_ONLY_TOOL
+  },
+  {
+    name: "get_flow_history",
+    description: "Aggregate recent run history for one workflow definition: pass/fail counts, failing steps with median duration, HITL pauses, and missing evidence.",
+    inputSchema: toMcpInputSchema(flowHistoryInputSchema),
+    annotations: READ_ONLY_TOOL
+  },
+  {
+    name: "advance_flow",
+    description: "Mark the current non-approval node of a bound local Ticket Flow complete with evidence and report progress to Nosta. Rejects approval nodes and out-of-order jumps.",
+    inputSchema: toMcpInputSchema(flowAdvanceInputSchema),
+    annotations: WRITE_TOOL
+  },
+  {
+    name: "sync_flow",
+    description: "Sync local docs, evidence files, command checks, review verdicts, git diff summary, PR link, and ship metadata into the bound Flow object (~/.nosta/flows/) and cloud Flow DO in one idempotent call.",
+    inputSchema: toMcpInputSchema(flowSyncInputSchema),
+    annotations: WRITE_TOOL
+  },
+  {
+    name: "approve_flow",
+    description: "Approve or reject a cloud flow merge gate ({ flowId, decision, version, attempt }) or record owner approval for an approval node in a bound local Ticket Flow ({ node, decision?, flowId?, repoRoot?, branch?, summary? }).",
+    inputSchema: toMcpInputSchema(flowApproveInputSchema),
+    annotations: DESTRUCTIVE_TOOL
+  },
+  {
+    name: "bypass_flow",
+    description: "Temporarily unlock gated writes for a (repoRoot, branch) for a bounded duration with a mandatory reason. Always requires explicit owner confirmation.",
+    inputSchema: toMcpInputSchema(flowBypassInputSchema),
+    annotations: DESTRUCTIVE_TOOL
+  }
+];
+function formatZodError(error) {
+  return error.issues.map((issue) => {
+    const path = issue.path.join(".");
+    return path && !issue.message.startsWith(path) ? `${path}: ${issue.message}` : issue.message;
+  }).join("; ");
+}
+function parseToolArgs(schema, args) {
+  const parsed = schema.safeParse(args);
+  if (!parsed.success)
+    throw new Error(formatZodError(parsed.error));
+  return parsed.data;
+}
+var FLOW_HANDLERS = {
+  start_flow: (ctx) => startFlow({
+    args: parseToolArgs(flowStartInputSchema2, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  validate_flow: async (ctx) => JSON.stringify(await validateFlow({
+    args: parseToolArgs(validateFlowInputSchema, ctx.args),
+    backend: ctx.backend
+  })),
+  get_flow: (ctx) => statusFlow({
+    args: parseToolArgs(flowStatusInputSchema, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  get_flow_history: async (ctx) => JSON.stringify(await getFlowHistory({
+    args: parseToolArgs(flowHistoryInputSchema, ctx.args),
+    backend: ctx.backend
+  })),
+  advance_flow: (ctx) => advanceLocal(parseToolArgs(flowAdvanceInputSchema, ctx.args), ctx.gate),
+  sync_flow: async (ctx) => JSON.stringify(await syncFlow({
+    args: parseToolArgs(flowSyncInputSchema, ctx.args),
+    backend: ctx.backend,
+    allowedToolkits: ctx.allowedToolkits
+  })),
+  approve_flow: (ctx) => approveFlow({
+    args: parseToolArgs(flowApproveInputSchema, ctx.args),
+    backend: ctx.backend,
+    gate: ctx.gate
+  }),
+  bypass_flow: (ctx) => bypassLocal(parseToolArgs(flowBypassInputSchema, ctx.args), ctx.gate)
+};
+async function callFlowTool(input) {
+  if (!Object.hasOwn(FLOW_HANDLERS, input.name))
+    return null;
+  const handler = FLOW_HANDLERS[input.name];
+  if (!handler)
+    return null;
+  const gate = input.gate ?? new WorkflowGate({ backend: input.backend, enableStream: false });
+  return handler({
+    args: input.args,
+    backend: input.backend,
+    gate,
+    allowedToolkits: input.allowedToolkits
+  });
+}
+function enrichFlowReply(raw, baseUrl) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    console.error(`[nosta-mcp] non-JSON flow reply: ${error instanceof Error ? error.message : String(error)}`);
+    return raw;
+  }
+  const unwrapped = unwrapToolkitData(parsed);
+  if (!unwrapped || typeof unwrapped !== "object" || Array.isArray(unwrapped))
+    return raw;
+  const record2 = unwrapped;
+  const flowObj = record2.flow && typeof record2.flow === "object" ? record2.flow : null;
+  const flowId = typeof flowObj?.id === "string" ? flowObj.id : typeof record2.flowId === "string" ? record2.flowId : typeof record2.id === "string" ? record2.id : null;
+  if (!flowId)
+    return raw;
+  return JSON.stringify({
+    ...record2,
+    flowUrl: `${baseUrl}/flows/${encodeURIComponent(flowId)}`
+  });
+}
+async function resolveReviewParentId(args) {
+  const explicit = trimmed(args.parentId);
+  if (explicit)
+    return explicit;
+  try {
+    const { repoRoot, branch } = await resolveRepoBranch({
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch)
+    });
+    return await resolveIndexedFlowId({
+      repoRoot,
+      branch,
+      ticket: trimmed(args.ticket)
+    }) ?? undefined;
+  } catch {
+    return trimmed(args.ticket) ? await resolveIndexedFlowId({ ticket: trimmed(args.ticket) }) ?? undefined : undefined;
+  }
+}
+async function startReviewFlow(args, backend) {
+  const packet = await buildPacket({ paths: args.paths, title: args.title });
+  const parentId = await resolveReviewParentId(args);
+  const raw = await backend.request(getFlowsCreateUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": randomUUID5()
+    },
+    body: JSON.stringify({
+      mode: "review",
+      title: packet.title,
+      files: packet.files,
+      ...parentId ? { parentId } : {}
+    })
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
+}
+async function startSpecFlow(args, backend) {
+  const { bytes } = await readBoundedWorkspaceFile({
+    filePath: args.path,
+    maxBytes: MAX_PACKET_BYTES
+  });
+  const spec = Buffer.from(bytes).toString("utf8");
+  const baseSha = args.baseSha;
+  const ticketUrl = args.ticketUrl;
+  const key = createHash2("sha256").update(JSON.stringify({ baseSha, ticketUrl, spec })).digest("hex");
+  const raw = await backend.request(getFlowsCreateUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json", "Idempotency-Key": key },
+    body: JSON.stringify({ mode: "spec", spec, baseSha, ticketUrl })
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
+}
+async function startFlow(input) {
+  const { args, backend, gate } = input;
+  const hasSpec = args.path !== undefined;
+  const hasReview = args.paths !== undefined;
+  const isLocal = args.mode === "local" || !hasSpec && !hasReview && (args.repoRoot !== undefined || args.branch !== undefined || args.workflow !== undefined || args.forceNew !== undefined);
+  if (isLocal) {
+    const raw = JSON.stringify(await gate.start({
+      parentId: trimmed(args.parentId),
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch),
+      base: trimmed(args.base),
+      workflow: trimmed(args.workflow),
+      forceNew: args.forceNew,
+      title: trimmed(args.title),
+      ticket: trimmed(args.ticket),
+      ticketUrl: trimmed(args.ticketUrl),
+      endState: trimmed(args.endState),
+      ticketBody: trimmed(args.ticketBody),
+      spec: trimmed(args.spec),
+      tabs: args.tabs,
+      defaultTab: trimmed(args.defaultTab),
+      values: args.values
+    }));
+    return enrichFlowReply(raw, backend.baseUrl);
+  }
+  if (hasReview)
+    return startReviewFlow(args, backend);
+  return startSpecFlow(args, backend);
+}
+async function statusFlow(input) {
+  const raw = JSON.stringify(await input.gate.status({
+    flowId: trimmed(input.args.flowId),
+    repoRoot: trimmed(input.args.repoRoot),
+    branch: trimmed(input.args.branch)
+  }));
+  return enrichFlowReply(raw, input.backend.baseUrl);
+}
+async function advanceLocal(args, gate) {
+  return JSON.stringify(await gate.advance({
+    node: args.node,
+    summary: args.summary,
+    flowId: trimmed(args.flowId),
+    repoRoot: trimmed(args.repoRoot),
+    branch: trimmed(args.branch),
+    artifactUrl: trimmed(args.artifactUrl),
+    prUrl: trimmed(args.prUrl),
+    commitSha: trimmed(args.commitSha),
+    proof: trimmed(args.proof),
+    usage: args.usage,
+    values: args.values
+  }));
+}
+async function approveFlow(input) {
+  const { args, backend, gate } = input;
+  const node = trimmed(args.node);
+  if (node) {
+    return JSON.stringify(await gate.approve({
+      node,
+      decision: args.decision ?? "approve",
+      flowId: trimmed(args.flowId),
+      repoRoot: trimmed(args.repoRoot),
+      branch: trimmed(args.branch),
+      approvedBy: trimmed(args.approvedBy),
+      summary: trimmed(args.summary)
+    }));
+  }
+  const decisionId = args.decisionId && args.decisionId.length > 0 ? args.decisionId : randomUUID5();
+  const body = {
+    id: args.flowId,
+    decision: args.decision,
+    version: args.version,
+    attempt: args.attempt,
+    decisionId
+  };
+  const raw = await backend.request(getFlowsApproveUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "Idempotency-Key": decisionId
+    },
+    body: JSON.stringify(body)
+  });
+  return enrichFlowReply(raw, backend.baseUrl);
+}
+async function bypassLocal(args, gate) {
+  return JSON.stringify(await gate.bypass({
+    reason: args.reason,
+    durationMinutes: args.durationMinutes,
+    flowId: trimmed(args.flowId),
+    repoRoot: trimmed(args.repoRoot),
+    branch: trimmed(args.branch)
+  }));
+}
+
 // src/artifacts/guides.ts
 var ARTIFACT_GUIDE_MODULES = [
   "spec",
@@ -29324,7 +32103,7 @@ function renderStartFlow(args) {
     "Steps:",
     "1. Call `start_flow` once with `path`, `baseSha`, and `ticketUrl`.",
     "2. Poll `get_flow` until every child flow finishes, blocks, errors, or reaches its merge gate.",
-    "3. On any blocked, errored, or failed step, call `get_flow_log` and report the exact failure cause.",
+    "3. On any blocked, errored, or failed step, call `flows_list_events` and report the exact failure cause.",
     "4. At any merge gate, show the PR link and summary, then stop and ask the user for an explicit decision.",
     "Never call `approve_flow` without the user's explicit word in this session."
   ].join(`
@@ -29335,7 +32114,7 @@ function renderReviewFlow(args) {
   return [
     `Inspect Nosta flow: ${flowId}`,
     "Steps:",
-    "1. Call `get_flow` and `get_flow_log` for this `flowId`.",
+    "1. Call `get_flow` and `flows_list_events` for this `flowId`.",
     "2. Summarize the flow's state, outcome, child flows, PR links, and any findings or step errors.",
     "3. Make no writes, no approvals, and no rejections."
   ].join(`
@@ -29407,19 +32186,49 @@ function getPrompt(input) {
 var backend = transportFromEnv();
 var gate = new WorkflowGate({ backend });
 var artifactSession = createArtifactSessionState();
-var TOOLS = [...FLOW_TOOLS, ...ARTIFACT_TOOLS];
-async function callTool(name, args) {
-  const flow = await callFlowTool({ name, args, backend, gate });
-  if (flow !== null)
-    return flow;
-  const artifact = await callArtifactTool({
+var FLOW_TOOL_NAMES = new Set(FLOW_TOOLS2.map((tool) => tool.name));
+var ARTIFACT_TOOL_NAMES = new Set(ARTIFACT_TOOLS.map((tool) => tool.name));
+function listServerTools(allowed) {
+  const effective = allowed !== undefined ? allowed : readAllowedToolkits();
+  return [
+    ...listPluginToolkitMcpTools(effective),
+    ...isDomainAllowed("flows", effective) ? FLOW_TOOLS2 : [],
+    ...isDomainAllowed("pages", effective) ? ARTIFACT_TOOLS : []
+  ];
+}
+async function callTool(name, args, allowedToolkits) {
+  const allowed = allowedToolkits !== undefined ? allowedToolkits : readAllowedToolkits();
+  const toolkit = await callToolkitMcpTool({
     name,
     args,
     backend,
-    session: artifactSession
+    allowedToolkits: allowed
   });
-  if (artifact !== null)
-    return artifact;
+  if (toolkit !== null)
+    return toolkit;
+  if (FLOW_TOOL_NAMES.has(name)) {
+    assertDomainAllowed("flows", allowed);
+    const flow = await callFlowTool({
+      name,
+      args,
+      backend,
+      gate,
+      allowedToolkits: allowed
+    });
+    if (flow !== null)
+      return flow;
+  }
+  if (ARTIFACT_TOOL_NAMES.has(name)) {
+    assertDomainAllowed("pages", allowed);
+    const artifact = await callArtifactTool({
+      name,
+      args,
+      backend,
+      session: artifactSession
+    });
+    if (artifact !== null)
+      return artifact;
+  }
   throw new Error(`unknown tool: ${name}`);
 }
 function send(message) {
@@ -29450,12 +32259,12 @@ async function handle(message) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion ?? "2025-06-18",
         capabilities,
-        serverInfo: { name: "nosta", version: "0.5.6" }
+        serverInfo: { name: "nosta", version: "0.6.0" }
       });
     } else if (method === "ping") {
       sendResult(id, {});
     } else if (method === "tools/list") {
-      sendResult(id, { tools: TOOLS });
+      sendResult(id, { tools: listServerTools() });
     } else if (method === "tools/call") {
       try {
         const text = await callTool(params?.name ?? "", params?.arguments ?? {});
@@ -29552,35 +32361,10 @@ async function readJsonPayload(args) {
   return JSON.parse(text);
 }
 async function runFlowSyncCli(args) {
+  assertDomainAllowed("flows", readAllowedToolkits());
   const parsed = flowSyncInputSchema.parse(await readJsonPayload(args));
   const result = await syncFlow({ args: parsed, backend: transportFromEnv() });
   process.stdout.write(`${JSON.stringify(result)}
-`);
-}
-var CLI_TOOL_ALIASES = {
-  validate: "validate_flow",
-  list: "list_flows",
-  history: "get_flow_history",
-  start: "start_flow",
-  get: "get_flow",
-  log: "get_flow_log",
-  advance: "advance_flow",
-  signal: "signal_flow",
-  retry: "retry_flow",
-  cancel: "cancel_flow",
-  approve: "approve_flow",
-  bypass: "bypass_flow"
-};
-async function runToolCli(toolName, args) {
-  const payload = args.length === 0 && process.stdin.isTTY ? {} : await readJsonPayload(args);
-  const out = await callFlowTool({
-    name: toolName,
-    args: payload,
-    backend: transportFromEnv()
-  });
-  if (out === null)
-    throw new Error(`unknown flow tool: ${toolName}`);
-  process.stdout.write(`${out}
 `);
 }
 async function main() {
@@ -29605,9 +32389,18 @@ async function main() {
     await runFlowSyncCli(command === "sync" ? args.slice(1) : args.slice(2));
     return;
   }
-  const toolName = Object.hasOwn(CLI_TOOL_ALIASES, command) ? CLI_TOOL_ALIASES[command] : undefined;
-  if (toolName) {
-    await runToolCli(toolName, args.slice(1));
+  if (resolveCliToolkitTool(command)) {
+    const rest = args.slice(1);
+    const payload = rest.length === 0 && process.stdin.isTTY ? {} : await readJsonPayload(rest);
+    const out = await callToolkitCliCommand({
+      command,
+      args: payload,
+      backend: transportFromEnv()
+    });
+    if (out === null)
+      throw new Error(`unknown toolkit command: ${command}`);
+    process.stdout.write(`${out}
+`);
     return;
   }
   throw new Error(`unknown command: ${command}

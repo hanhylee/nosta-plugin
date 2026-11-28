@@ -13,7 +13,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": ".*(approve_flow|bypass_flow)$",
+        "matcher": ".*(approve_flow|flows_approve|bypass_flow|toolkits_call)$",
         "hooks": [
           {
             "type": "command",

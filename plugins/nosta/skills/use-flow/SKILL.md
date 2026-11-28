@@ -18,7 +18,7 @@ Use this skill to run any workflow in `.nosta/workflows/<verb>.yaml` (or the bun
    - Active bindings on `(commonRepo, branch)` are reused automatically across retries and git worktrees unless `forceNew: true` is passed.
 3. **Record evidence & sync:**
    - Call `sync_flow` to publish check results, artifacts, and diff snapshots as steps complete.
-   - Poll `get_flow` / `get_flow_log` or list runs with `list_flows`.
+   - Poll `get_flow` / `flows_list_events` or list runs with `flows_list`.
 4. **Control & human gates:**
-   - Use `advance_flow`, `signal_flow`, `retry_flow`, or `cancel_flow` as needed.
-   - Never call `approve_flow` or `bypass_flow` without explicit confirmation from the human owner.
+   - Use `advance_flow`, `flows_signal`, `flows_start`, or `flows_cancel` as needed.
+   - Never call `approve_flow`, `flows_approve`, or `bypass_flow` without explicit confirmation from the human owner.
